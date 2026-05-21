@@ -14,7 +14,8 @@ export function registerTypeTool(
       title: 'Type Text',
       description:
         'Type text into the currently focused input field. ' +
-        'Tap an input element first to focus it, then call this.',
+        'Tap an input element first to focus it, then call this. ' +
+        'Appium backend clears the field first; IDB/ADB backends append to existing text.',
       inputSchema: {
         text: z.string().describe('Text to type'),
       },

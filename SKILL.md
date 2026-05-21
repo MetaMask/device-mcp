@@ -1,6 +1,6 @@
 # @metamask/device-mcp — Agent Reference
 
-You interact with a mobile device (iOS simulator or Android emulator) through the `device-mcp` MCP server. It exposes 6 tools for inspecting and controlling the device UI.
+You interact with a mobile device (iOS simulator, Android emulator, or BrowserStack remote device) through the `device-mcp` MCP server. It exposes 16 tools for inspecting UI state, interacting with elements, capturing evidence, and controlling app lifecycle.
 
 ## When to Use This
 
@@ -23,6 +23,9 @@ device_snapshot             # 3. See the result — NEVER assume screen state
 - **ALWAYS call `device_snapshot` before interacting.** You cannot guess what's on screen.
 - **NEVER call `device_snapshot` twice without acting in between.** If the screen hasn't changed, the hierarchy won't either.
 - **ALWAYS call `device_snapshot` after interacting.** Confirm the action had the expected effect.
+- **Call `device_dismiss_keyboard` after typing.** The keyboard obscures elements below the input.
+- **Call `device_dismiss_alert` when a system dialog appears.** Permission prompts block all other interaction.
+- **Use `device_screenshot` for visual evidence.** Snapshots show accessibility data; screenshots show what the user sees.
 
 ## Tools
 
@@ -56,12 +59,30 @@ Find an element by query and tap its center. Specify at least one of: `label`, `
 3. `text` — visible text content (matches both `value` and `label`)
 4. `type` — element class (least specific, combine with other fields)
 
+**Matching is fuzzy:** partial text and case-insensitive matches work. `{ label: "Confirm" }` matches `"Confirm Transaction"`.
+
 **Examples:**
 
 ```json
 { "identifier": "submit-btn" }
 { "label": "Submit" }
 { "text": "Send", "type": "Button" }
+```
+
+### device_tap_coordinates
+
+Tap at exact screen coordinates. Use as a **last resort** when element queries fail. Get coordinates from `device_snapshot` frame data.
+
+```json
+{ "x": 195, "y": 722 }
+```
+
+### device_long_press
+
+Long press an element. Used for context menus, drag initiation, and other long-press interactions.
+
+```json
+{ "label": "Transaction", "durationMs": 2000 }
 ```
 
 ### device_type
@@ -103,6 +124,12 @@ Check if an app is running, installed, or absent.
 ```json
 { "bundleId": "io.metamask" }
 ```
+
+### device_info (read-only)
+
+Get device platform, name, OS version, and device ID.
+
+**When:** Understanding which device/platform you're connected to. Including platform-specific instructions in your workflow.
 
 ### device_screenshot (read-only)
 
@@ -192,8 +219,10 @@ device_snapshot                                          # verify we're there
 device_snapshot                                          # see available inputs
 device_tap_element { "identifier": "email-input" }      # focus the field
 device_type { "text": "user@example.com" }              # type into it
+device_dismiss_keyboard                                  # hide keyboard
 device_tap_element { "identifier": "password-input" }   # focus next field
 device_type { "text": "secret123" }                     # type password
+device_dismiss_keyboard                                  # hide keyboard
 device_tap_element { "identifier": "submit-btn" }       # submit
 device_snapshot                                          # verify result
 ```
@@ -211,8 +240,25 @@ device_snapshot                                          # check again
 
 ```
 device_snapshot                                          # see dialog
-device_tap_element { "label": "Allow" }                 # accept permission
+device_dismiss_alert { "accept": true }                  # accept permission
 device_snapshot                                          # verify dismissed
+```
+
+### Launch app, debug, collect evidence
+
+```
+device_open_app { "bundleId": "io.metamask" }            # launch app
+device_snapshot                                          # see initial screen
+device_screenshot { "outputPath": "./debug/home.png" }   # visual evidence
+device_logs { "filter": "MetaMask", "durationSeconds": 60 } # check for errors
+device_close_app { "bundleId": "io.metamask" }           # stop app
+```
+
+### Navigate with device buttons
+
+```
+device_press_button { "button": "home" }                 # go to home screen
+device_press_button { "button": "back" }                 # go back (Android)
 ```
 
 ## Error Handling

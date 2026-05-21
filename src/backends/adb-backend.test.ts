@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { parseAndroidHierarchy, parseNodeAttributes } from './adb-backend.js';
+import { findElement } from '../utils/element.js';
 
 const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <hierarchy rotation="0">
@@ -12,71 +13,70 @@ const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </hierarchy>`;
 
 describe('parseAndroidHierarchy', () => {
-  it('parses uiautomator XML into flat element list', () => {
+  it('builds a tree with parent-child relationships', () => {
     const elements = parseAndroidHierarchy(SAMPLE_UIAUTOMATOR_XML);
-    expect(elements).toHaveLength(4);
+    expect(elements).toHaveLength(1);
+    expect(elements[0].type).toBe('android.widget.FrameLayout');
+    expect(elements[0].children).toHaveLength(3);
   });
 
-  it('extracts text content', () => {
+  it('nests children under the correct parent', () => {
     const elements = parseAndroidHierarchy(SAMPLE_UIAUTOMATOR_XML);
-    const title = elements.find((element) => element.value === 'MetaMask');
+    const frame = elements[0];
+    expect(frame.children![0].value).toBe('MetaMask');
+    expect(frame.children![1].label).toBe('Account avatar');
+    expect(frame.children![2].value).toBe('$0.00');
+  });
+
+  it('self-closing nodes have no children', () => {
+    const elements = parseAndroidHierarchy(SAMPLE_UIAUTOMATOR_XML);
+    const title = elements[0].children![0];
+    expect(title.children).toBeUndefined();
+  });
+
+  it('findElement still finds nested elements', () => {
+    const elements = parseAndroidHierarchy(SAMPLE_UIAUTOMATOR_XML);
+    const title = findElement(elements, { identifier: 'io.metamask:id/title' });
     expect(title).toBeDefined();
-    expect(title!.identifier).toBe('io.metamask:id/title');
-    expect(title!.type).toBe('android.widget.TextView');
-  });
-
-  it('extracts content-desc as label', () => {
-    const elements = parseAndroidHierarchy(SAMPLE_UIAUTOMATOR_XML);
-    const avatar = elements.find(
-      (element) => element.label === 'Account avatar',
-    );
-    expect(avatar).toBeDefined();
-    expect(avatar!.identifier).toBe('io.metamask:id/identicon');
-  });
-
-  it('parses bounds into frame coordinates', () => {
-    const elements = parseAndroidHierarchy(SAMPLE_UIAUTOMATOR_XML);
-    const title = elements.find((element) => element.value === 'MetaMask');
-    expect(title!.frame).toStrictEqual({
-      x: 100,
-      y: 200,
-      width: 400,
-      height: 60,
-    });
-  });
-
-  it('detects disabled elements', () => {
-    const elements = parseAndroidHierarchy(SAMPLE_UIAUTOMATOR_XML);
-    const balance = elements.find((element) => element.value === '$0.00');
-    expect(balance).toBeDefined();
-    expect(balance!.enabled).toBe(false);
+    expect(title!.value).toBe('MetaMask');
   });
 
   it('handles empty XML gracefully', () => {
-    const elements = parseAndroidHierarchy('');
-    expect(elements).toStrictEqual([]);
+    expect(parseAndroidHierarchy('')).toStrictEqual([]);
+  });
+
+  it('handles deeply nested XML', () => {
+    const deepXml = `<hierarchy>
+      <node class="Root" bounds="[0,0][100,100]">
+        <node class="Mid" bounds="[10,10][90,90]">
+          <node class="Leaf" text="deep" bounds="[20,20][80,80]" />
+        </node>
+      </node>
+    </hierarchy>`;
+    const elements = parseAndroidHierarchy(deepXml);
+    expect(elements).toHaveLength(1);
+    expect(elements[0].children).toHaveLength(1);
+    expect(elements[0].children![0].children).toHaveLength(1);
+    expect(elements[0].children![0].children![0].value).toBe('deep');
   });
 });
 
 describe('parseNodeAttributes', () => {
   it('returns null for missing bounds', () => {
-    const result = parseNodeAttributes('text="hello" class="View"');
-    expect(result).toBeNull();
+    expect(parseNodeAttributes('text="hello" class="View"')).toBeNull();
   });
 
   it('returns null for malformed bounds', () => {
-    const result = parseNodeAttributes(
-      'text="hello" class="View" bounds="invalid"',
-    );
-    expect(result).toBeNull();
+    expect(
+      parseNodeAttributes('text="hello" class="View" bounds="invalid"'),
+    ).toBeNull();
   });
 
   it('parses a complete attribute string', () => {
     const attrs =
       'text="Send" resource-id="btn_send" class="Button" ' +
       'content-desc="Send button" enabled="true" bounds="[10,20][110,70]"';
-    const result = parseNodeAttributes(attrs);
-    expect(result).toStrictEqual({
+    expect(parseNodeAttributes(attrs)).toStrictEqual({
       type: 'Button',
       label: 'Send button',
       value: 'Send',

@@ -19,26 +19,39 @@ export function findElement(
 }
 
 export function matchesQuery(element: UIElement, query: ElementQuery): boolean {
-  if (query.identifier && element.identifier !== query.identifier) {
+  if (query.identifier && !fuzzyMatch(element.identifier, query.identifier)) {
     return false;
   }
-  if (query.label && element.label !== query.label) {
+  if (query.label && !fuzzyMatch(element.label, query.label)) {
     return false;
   }
   if (
     query.text &&
-    element.value !== query.text &&
-    element.label !== query.text
+    !fuzzyMatch(element.value, query.text) &&
+    !fuzzyMatch(element.label, query.text)
   ) {
     return false;
   }
-  if (query.type && element.type !== query.type) {
+  if (query.type && !fuzzyMatch(element.type, query.type)) {
     return false;
   }
 
   const hasAtLeastOneFilter =
     query.identifier ?? query.label ?? query.text ?? query.type;
   return Boolean(hasAtLeastOneFilter);
+}
+
+function fuzzyMatch(actual: string | undefined, expected: string): boolean {
+  if (!actual) {
+    return false;
+  }
+  if (actual === expected) {
+    return true;
+  }
+  if (actual.toLowerCase() === expected.toLowerCase()) {
+    return true;
+  }
+  return actual.toLowerCase().includes(expected.toLowerCase());
 }
 
 export function describeElement(element: UIElement): string {

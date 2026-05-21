@@ -44,6 +44,29 @@ describe('matchesQuery', () => {
     expect(matchesQuery(el, { identifier: 'btn', label: 'Go' })).toBe(true);
     expect(matchesQuery(el, { identifier: 'btn', label: 'Stop' })).toBe(false);
   });
+
+  it('matches case-insensitively', () => {
+    const el = makeElement({ label: 'Submit Button' });
+    expect(matchesQuery(el, { label: 'submit button' })).toBe(true);
+    expect(matchesQuery(el, { label: 'SUBMIT BUTTON' })).toBe(true);
+  });
+
+  it('matches partial text (contains)', () => {
+    const el = makeElement({ label: 'Confirm Transaction' });
+    expect(matchesQuery(el, { label: 'Confirm' })).toBe(true);
+    expect(matchesQuery(el, { label: 'Transaction' })).toBe(true);
+    expect(matchesQuery(el, { label: 'confirm trans' })).toBe(true);
+  });
+
+  it('matches partial identifier', () => {
+    const el = makeElement({ identifier: 'io.metamask:id/submit-btn' });
+    expect(matchesQuery(el, { identifier: 'submit-btn' })).toBe(true);
+  });
+
+  it('does not match when actual is undefined', () => {
+    const el = makeElement({});
+    expect(matchesQuery(el, { label: 'anything' })).toBe(false);
+  });
 });
 
 describe('findElement', () => {
