@@ -268,6 +268,38 @@ export class IdbBackend implements DeviceBackend {
       }));
     return { entries, source: 'idb log' };
   }
+
+  async longPress(query: ElementQuery, durationMs = 1000): Promise<TapResult> {
+    await this.ensureConnected();
+    const snap = await this.snapshot();
+    const element = findElement(snap.hierarchy, query);
+    if (!element) {
+      throw new Error(
+        `Element not found: ${JSON.stringify(query)}\n` +
+          'Use device_snapshot to inspect the current UI hierarchy.',
+      );
+    }
+
+    const cx = Math.round(element.frame.x + element.frame.width / 2);
+    const cy = Math.round(element.frame.y + element.frame.height / 2);
+    await execStrict('idb', [
+      'ui',
+      'tap',
+      String(cx),
+      String(cy),
+      '--duration',
+      String(durationMs / 1000),
+      '--udid',
+      this.#udid,
+    ]);
+
+    return {
+      success: true,
+      x: cx,
+      y: cy,
+      targetDescription: describeElement(element),
+    };
+  }
 }
 
 export function parseIdbHierarchy(raw: string): UIElement[] {

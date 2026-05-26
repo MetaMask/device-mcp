@@ -108,18 +108,21 @@ The `.device-session` file is typically written by the test runner when it creat
 | ------------------- | ---------------------------------------------------------------- |
 | `device_snapshot`   | Capture the UI accessibility hierarchy. Call before interacting. |
 | `device_screenshot` | Capture a screenshot as base64 PNG. Optionally save to file.     |
+| `device_info`       | Get device platform, name, OS version, and device ID.            |
 | `device_app_state`  | Check if an app is running, installed, or absent.                |
 | `device_logs`       | Capture recent device logs (syslog/logcat) with optional filter. |
 
 ### Interaction
 
-| Tool                  | Description                                                        |
-| --------------------- | ------------------------------------------------------------------ |
-| `device_tap_element`  | Find an element by label/identifier/text/type and tap its center.  |
-| `device_type`         | Type text into the currently focused input field.                  |
-| `device_swipe`        | Swipe in a direction with optional start coordinates and distance. |
-| `device_wait_for`     | Poll until an element matching a query appears.                    |
-| `device_press_button` | Press a device button (home/back/enter/lock).                      |
+| Tool                     | Description                                                        |
+| ------------------------ | ------------------------------------------------------------------ |
+| `device_tap_element`     | Find an element by label/identifier/text/type and tap its center.  |
+| `device_tap_coordinates` | Tap at exact screen coordinates. Last resort when queries fail.    |
+| `device_type`            | Type text into the currently focused input field.                  |
+| `device_swipe`           | Swipe in a direction with optional start coordinates and distance. |
+| `device_long_press`      | Long press an element for context menus or drag initiation.        |
+| `device_wait_for`        | Poll until an element matching a query appears.                    |
+| `device_press_button`    | Press a device button (home/back/enter/lock).                      |
 
 ### App & Device Control
 
@@ -132,28 +135,31 @@ The `.device-session` file is typically written by the test runner when it creat
 
 ### Element Identification
 
-Elements are identified by accessibility attributes — not internal refs:
+Elements are identified by accessibility attributes — not internal refs. Matching is **fuzzy**: partial text and case-insensitive matches work. For example, querying `{ label: "Confirm" }` matches an element with label `"Confirm Transaction"`.
 
 - **iOS**: accessibility label, accessibility identifier
 - **Android**: content-description, resource-id, text
 
 ### Backend Implementation
 
-| Tool                      | iOS (IDB)             | Android (ADB)        | Appium (W3C WebDriver)        |
-| ------------------------- | --------------------- | -------------------- | ----------------------------- |
-| `device_snapshot`         | `idb ui describe-all` | `uiautomator dump`   | `mobile: source`              |
-| `device_screenshot`       | `idb screenshot`      | `screencap` + `pull` | `mobile: getScreenshot`       |
-| `device_tap_element`      | find + `idb ui tap`   | find + `input tap`   | find + W3C Actions            |
-| `device_type`             | `idb ui text`         | `input text`         | `findElement` + `sendKeys`    |
-| `device_swipe`            | `idb ui swipe`        | `input swipe`        | W3C Actions                   |
-| `device_wait_for`         | poll snapshot         | poll snapshot        | poll snapshot                 |
-| `device_app_state`        | `idb list-apps`       | `dumpsys activity`   | `mobile: queryAppState`       |
-| `device_open_app`         | `idb launch`          | `monkey -p`          | `mobile: activateApp`         |
-| `device_close_app`        | `idb terminate`       | `am force-stop`      | `mobile: terminateApp`        |
-| `device_press_button`     | `idb ui key`          | `input keyevent`     | `mobile: pressButton/Key`     |
-| `device_dismiss_keyboard` | `idb ui key RETURN`   | `input keyevent 111` | `mobile: hideKeyboard`        |
-| `device_dismiss_alert`    | find button + tap     | find button + tap    | `mobile: accept/dismissAlert` |
-| `device_logs`             | `idb log`             | `logcat`             | `mobile: getLog`              |
+| Tool                      | iOS (IDB)               | Android (ADB)        | Appium (W3C WebDriver)        |
+| ------------------------- | ----------------------- | -------------------- | ----------------------------- |
+| `device_snapshot`         | `idb ui describe-all`   | `uiautomator dump`   | `mobile: source`              |
+| `device_screenshot`       | `idb screenshot`        | `screencap` + `pull` | `mobile: getScreenshot`       |
+| `device_info`             | `idb describe`          | `getprop`            | session capabilities          |
+| `device_tap_element`      | find + `idb ui tap`     | find + `input tap`   | find + W3C Actions            |
+| `device_tap_coordinates`  | `idb ui tap x y`        | `input tap x y`      | W3C Actions                   |
+| `device_type`             | `idb ui text`           | `input text`         | `findElement` + `sendKeys`    |
+| `device_swipe`            | `idb ui swipe`          | `input swipe`        | W3C Actions                   |
+| `device_long_press`       | `idb ui tap --duration` | `input swipe` (hold) | W3C Actions (pause)           |
+| `device_wait_for`         | poll snapshot           | poll snapshot        | poll snapshot                 |
+| `device_app_state`        | `idb list-apps`         | `dumpsys activity`   | `mobile: queryAppState`       |
+| `device_open_app`         | `idb launch`            | `monkey -p`          | `mobile: activateApp`         |
+| `device_close_app`        | `idb terminate`         | `am force-stop`      | `mobile: terminateApp`        |
+| `device_press_button`     | `idb ui key`            | `input keyevent`     | `mobile: pressButton/Key`     |
+| `device_dismiss_keyboard` | `idb ui key RETURN`     | `input keyevent 111` | `mobile: hideKeyboard`        |
+| `device_dismiss_alert`    | find button + tap       | find button + tap    | `mobile: accept/dismissAlert` |
+| `device_logs`             | `idb log`               | `logcat`             | `mobile: getLog`              |
 
 ## MCP Client Configuration
 
@@ -229,16 +235,16 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 @metamask/device-mcp
 ├── src/
 │   ├── index.ts                # Entry point — lazy backend, stdio MCP server
-│   ├── server.ts               # MCP server — registers 13 tools
+│   ├── server.ts               # MCP server — registers 16 tools
 │   ├── backends/
-│   │   ├── types.ts            # DeviceBackend interface (13 operations)
+│   │   ├── types.ts            # DeviceBackend interface (16 operations)
 │   │   ├── idb-backend.ts      # iOS local — IDB commands + JSON parser
 │   │   ├── adb-backend.ts      # Android local — ADB commands + XML parser
 │   │   ├── appium-backend.ts   # Remote — Appium/BrowserStack via W3C WebDriver
 │   │   ├── webdriver-client.ts # Minimal W3C WebDriver HTTP client (fetch)
 │   │   ├── session-file.ts     # .device-session file reader
 │   │   └── index.ts            # createBackend() + createLazyBackend() factory
-│   ├── tools/                  # One file per MCP tool (13 tools)
+│   ├── tools/                  # One file per MCP tool (16 tools)
 │   └── utils/
 │       ├── exec.ts             # Shell execution wrapper
 │       ├── platform.ts         # Platform auto-detection
@@ -249,7 +255,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```bash
 yarn build        # Compile TypeScript
-yarn test         # Run tests (49 tests)
+yarn test         # Run tests (69 tests)
 yarn lint         # Lint everything (ESLint + Prettier + changelog)
 yarn lint:fix     # Auto-fix lint issues
 yarn dev          # Watch mode compilation

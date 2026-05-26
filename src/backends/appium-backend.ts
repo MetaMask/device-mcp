@@ -312,6 +312,42 @@ export class AppiumBackend implements DeviceBackend {
     return { entries, source: `appium ${logType}` };
   }
 
+  async longPress(query: ElementQuery, durationMs = 1000): Promise<TapResult> {
+    const snap = await this.snapshot();
+    const element = findElement(snap.hierarchy, query);
+    if (!element) {
+      throw new Error(
+        `Element not found: ${JSON.stringify(query)}\n` +
+          'Use device_snapshot to inspect the current UI hierarchy.',
+      );
+    }
+
+    const client = this.#requireClient();
+    const cx = Math.round(element.frame.x + element.frame.width / 2);
+    const cy = Math.round(element.frame.y + element.frame.height / 2);
+    await client.performActions([
+      {
+        type: 'pointer',
+        id: 'finger1',
+        parameters: { pointerType: 'touch' },
+        actions: [
+          { type: 'pointerMove', duration: 0, x: cx, y: cy },
+          { type: 'pointerDown', button: 0 },
+          { type: 'pause', duration: durationMs },
+          { type: 'pointerUp', button: 0 },
+        ],
+      },
+    ]);
+    await client.releaseActions();
+
+    return {
+      success: true,
+      x: cx,
+      y: cy,
+      targetDescription: describeElement(element),
+    };
+  }
+
   #requireClient(): WebDriverClient {
     if (!this.#client) {
       throw new Error(

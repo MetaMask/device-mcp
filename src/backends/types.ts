@@ -105,4 +105,6 @@ export type DeviceBackend = {
   dismissAlert(accept: boolean): Promise<void>;
 
   getLogs(durationSeconds?: number, filter?: string): Promise<LogsResult>;
+
+  longPress(query: ElementQuery, durationMs?: number): Promise<TapResult>;
 };

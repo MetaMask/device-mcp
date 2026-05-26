@@ -272,22 +272,78 @@ export class AdbBackend implements DeviceBackend {
       });
     return { entries, source: 'logcat' };
   }
+
+  async longPress(query: ElementQuery, durationMs = 1000): Promise<TapResult> {
+    const snap = await this.snapshot();
+    const element = findElement(snap.hierarchy, query);
+    if (!element) {
+      throw new Error(
+        `Element not found: ${JSON.stringify(query)}\n` +
+          'Use device_snapshot to inspect the current UI hierarchy.',
+      );
+    }
+
+    const cx = Math.round(element.frame.x + element.frame.width / 2);
+    const cy = Math.round(element.frame.y + element.frame.height / 2);
+    await this.#adb([
+      'shell',
+      'input',
+      'swipe',
+      String(cx),
+      String(cy),
+      String(cx),
+      String(cy),
+      String(durationMs),
+    ]);
+
+    return {
+      success: true,
+      x: cx,
+      y: cy,
+      targetDescription: describeElement(element),
+    };
+  }
 }
 
 export function parseAndroidHierarchy(xml: string): UIElement[] {
-  const elements: UIElement[] = [];
-  const nodeRegex = /<node\s+([^>]+)\/?>/gu;
-  let match;
+  const stack: UIElement[][] = [[]];
 
-  while ((match = nodeRegex.exec(xml)) !== null) {
-    const attrs = match[1];
-    const element = parseNodeAttributes(attrs);
-    if (element) {
-      elements.push(element);
+  // Matches all <node ...>, </node>, and <node .../> tags in document order
+  const tagRegex = /<(\/?)node(?:\s+([^>]*?))?\s*(\/?)>/gu;
+  let match: RegExpExecArray | null;
+
+  while ((match = tagRegex.exec(xml)) !== null) {
+    const isClosing = match[1] === '/';
+    const attrs = match[2];
+    const isSelfClosing = match[3] === '/';
+
+    if (isClosing) {
+      if (stack.length > 1) {
+        const children = stack.pop();
+        if (children?.length === 0) {
+          const parent = stack[stack.length - 1];
+          const lastEl = parent[parent.length - 1];
+          if (lastEl) {
+            delete lastEl.children;
+          }
+        }
+      }
+    } else if (isSelfClosing && attrs) {
+      const element = parseNodeAttributes(attrs);
+      if (element) {
+        stack[stack.length - 1].push(element);
+      }
+    } else if (attrs) {
+      const element = parseNodeAttributes(attrs);
+      if (element) {
+        element.children = [];
+        stack[stack.length - 1].push(element);
+        stack.push(element.children);
+      }
     }
   }
 
-  return elements;
+  return stack[0];
 }
 
 export function parseNodeAttributes(attrs: string): UIElement | null {

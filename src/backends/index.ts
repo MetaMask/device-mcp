@@ -146,5 +146,12 @@ export function createLazyBackend(explicitDeviceId?: string): DeviceBackend {
     ): Promise<LogsResult> {
       return (await resolve()).getLogs(durationSeconds, filter);
     },
+
+    async longPress(
+      query: ElementQuery,
+      durationMs?: number,
+    ): Promise<TapResult> {
+      return (await resolve()).longPress(query, durationMs);
+    },
   };
 }

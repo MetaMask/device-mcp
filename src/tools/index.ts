@@ -1,10 +1,13 @@
 export { registerSnapshotTool } from './snapshot.js';
+export { registerScreenshotTool } from './screenshot.js';
 export { registerTapElementTool } from './tap-element.js';
+export { registerTapCoordinatesTool } from './tap-coordinates.js';
 export { registerTypeTool } from './type-text.js';
 export { registerSwipeTool } from './swipe.js';
+export { registerLongPressTool } from './long-press.js';
 export { registerWaitForTool } from './wait-for.js';
 export { registerAppStateTool } from './app-state.js';
-export { registerScreenshotTool } from './screenshot.js';
+export { registerDeviceInfoTool } from './device-info.js';
 export { registerOpenAppTool } from './open-app.js';
 export { registerCloseAppTool } from './close-app.js';
 export { registerPressButtonTool } from './press-button.js';
