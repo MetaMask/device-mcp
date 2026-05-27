@@ -29,15 +29,8 @@ jobs:
           ref: ${{ github.event.inputs.base-branch }}
 
       - uses: MetaMask/action-create-release-pr@v4
-        if: ${{ github.event.inputs.release-type != '' }}
         with:
           release-type: ${{ github.event.inputs.release-type }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: MetaMask/action-create-release-pr@v4
-        if: ${{ github.event.inputs.release-type == '' && github.event.inputs.release-version != '' }}
-        with:
           release-version: ${{ github.event.inputs.release-version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

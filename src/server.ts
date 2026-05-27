@@ -29,7 +29,7 @@ import {
 
 export function createMcpServer(backend: DeviceBackend): McpServer {
   const server = new McpServer(
-    { name: '@metamask/device-mcp', version: '0.1.0' },
+    { name: '@metamask/device-mcp', version: '0.0.0' },
     {
       instructions: [
         'Mobile device interaction tools for iOS (IDB) and Android (ADB).',
