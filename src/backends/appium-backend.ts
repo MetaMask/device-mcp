@@ -1,4 +1,5 @@
 import { writeFileSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 
 import type { SessionConfig } from './session-file.js';
 import type {
@@ -449,8 +450,9 @@ export class AppiumBackend implements DeviceBackend {
     const client = this.#requireClient();
     await client.execute('mobile: startRecordingScreen', [{}]);
     this.#recording = true;
-    this.#recordingOutputPath =
-      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
+    this.#recordingOutputPath = resolvePath(
+      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`,
+    );
   }
 
   async stopScreenRecording(): Promise<string> {
@@ -459,11 +461,15 @@ export class AppiumBackend implements DeviceBackend {
     }
     const client = this.#requireClient();
     const b64 = await client.execute<string>('mobile: stopRecordingScreen', []);
-    const path = this.#recordingOutputPath;
-    writeFileSync(path, Buffer.from(b64, 'base64'));
+    const data = Buffer.from(b64, 'base64');
+    if (data.length === 0) {
+      throw new Error('Screen recording returned empty data');
+    }
+    const outputPath = resolvePath(this.#recordingOutputPath);
+    writeFileSync(outputPath, data);
     this.#recording = false;
     this.#recordingOutputPath = null;
-    return path;
+    return outputPath;
   }
 
   #requireClient(): WebDriverClient {

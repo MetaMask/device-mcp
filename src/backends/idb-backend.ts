@@ -1,6 +1,5 @@
-import { spawn } from 'node:child_process';
+import { execFile as execFileCb, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { writeFile, unlink } from 'node:fs/promises';
 
 import type {
   DeviceBackend,
@@ -410,16 +409,15 @@ export class IdbBackend implements DeviceBackend {
 
   async setClipboard(text: string): Promise<void> {
     await this.ensureConnected();
-    const tmpPath = `/tmp/device-mcp-clipboard-${Date.now()}.txt`;
-    await writeFile(tmpPath, text, 'utf-8');
-    try {
-      await execStrict('sh', [
-        '-c',
-        `cat "${tmpPath}" | xcrun simctl pbcopy ${this.#udid}`,
-      ]);
-    } finally {
-      await unlink(tmpPath).catch(() => undefined);
-    }
+    await new Promise<void>((resolve, reject) => {
+      const proc = execFileCb(
+        'xcrun',
+        ['simctl', 'pbcopy', this.#udid],
+        { timeout: 30_000 },
+        (error) => (error ? reject(new Error(error.message)) : resolve()),
+      );
+      proc.stdin?.end(text);
+    });
   }
 
   async startScreenRecording(outputPath?: string): Promise<void> {
