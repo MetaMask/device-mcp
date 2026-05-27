@@ -43,9 +43,7 @@ export function registerClipboardTool(
 
         await backend.setClipboard(text);
         return {
-          content: [
-            { type: 'text' as const, text: 'Clipboard updated' },
-          ],
+          content: [{ type: 'text' as const, text: 'Clipboard updated' }],
         };
       } catch (error) {
         return errorResult(error);

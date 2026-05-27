@@ -31,7 +31,7 @@ export class AdbBackend implements DeviceBackend {
 
   #recordingPath: string | null = null;
 
-  #recordingRemotePath = '/sdcard/device-mcp-recording.mp4';
+  readonly #recordingRemotePath = '/sdcard/device-mcp-recording.mp4';
 
   constructor(serial: string) {
     this.#serial = serial;

@@ -458,10 +458,7 @@ export class AppiumBackend implements DeviceBackend {
       throw new Error('No screen recording in progress');
     }
     const client = this.#requireClient();
-    const b64 = await client.execute<string>(
-      'mobile: stopRecordingScreen',
-      [],
-    );
+    const b64 = await client.execute<string>('mobile: stopRecordingScreen', []);
     const path = this.#recordingOutputPath;
     writeFileSync(path, Buffer.from(b64, 'base64'));
     this.#recording = false;
@@ -503,10 +500,7 @@ function collectAppiumAlertTexts(
   return texts;
 }
 
-function collectAppiumTextValues(
-  elements: UIElement[],
-  texts: string[],
-): void {
+function collectAppiumTextValues(elements: UIElement[], texts: string[]): void {
   for (const el of elements) {
     const text = el.value ?? el.label;
     if (

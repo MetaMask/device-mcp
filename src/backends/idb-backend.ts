@@ -418,7 +418,7 @@ export class IdbBackend implements DeviceBackend {
         `cat "${tmpPath}" | xcrun simctl pbcopy ${this.#udid}`,
       ]);
     } finally {
-      await unlink(tmpPath).catch(() => {});
+      await unlink(tmpPath).catch(() => undefined);
     }
   }
 
@@ -427,8 +427,7 @@ export class IdbBackend implements DeviceBackend {
     if (this.#recordingProcess) {
       throw new Error('Screen recording is already in progress');
     }
-    const path =
-      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
+    const path = outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
     this.#recordingPath = path;
     this.#recordingProcess = spawn('idb', [
       'record-video',
@@ -459,9 +458,7 @@ function collectAlertTexts(elements: UIElement[]): string[] {
   const texts: string[] = [];
   for (const el of elements) {
     const isAlertContainer =
-      el.type === 'Alert' ||
-      el.type === 'Sheet' ||
-      el.type.includes('Alert');
+      el.type === 'Alert' || el.type === 'Sheet' || el.type.includes('Alert');
     if (isAlertContainer) {
       collectTextsFromChildren(el.children ?? [], texts);
       return texts;
