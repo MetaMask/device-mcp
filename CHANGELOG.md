@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0]
 
+### Uncategorized
+
+- fix: package version temp to 0.0.0
+- fix: GH workflow release creation
+- test: security fix
+- test: lint fix
+- test: add additional tools
+- 🔒 Add MetaMask Security Code Scanner ([#2](https://github.com/MetaMask/device-mcp/pull/2))
+- test: add additional tools
+- chore: add MetaMask Security Code Scanner workflow
+- chore: dedupe postcss in lockfile
+- feat: initial release of @metamask/device-mcp
+
 ### Added
 
 - Initial release of `@metamask/device-mcp`
