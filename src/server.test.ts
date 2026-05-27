@@ -5,15 +5,22 @@ import { createMcpServer } from './server.js';
 
 const EXPECTED_TOOLS = [
   'device_app_state',
+  'device_clipboard',
   'device_close_app',
+  'device_context',
   'device_dismiss_alert',
   'device_dismiss_keyboard',
+  'device_generate_locators',
+  'device_get_alert_text',
+  'device_get_window_size',
   'device_info',
   'device_logs',
   'device_long_press',
   'device_open_app',
   'device_press_button',
+  'device_screen_recording',
   'device_screenshot',
+  'device_scroll_to_element',
   'device_snapshot',
   'device_swipe',
   'device_tap_coordinates',
@@ -41,6 +48,15 @@ function createStubBackend(): DeviceBackend {
     dismissAlert: vi.fn(),
     getLogs: vi.fn(),
     longPress: vi.fn(),
+    scrollToElement: vi.fn(),
+    getAlertText: vi.fn(),
+    getWindowSize: vi.fn(),
+    getContexts: vi.fn(),
+    setContext: vi.fn(),
+    getClipboard: vi.fn(),
+    setClipboard: vi.fn(),
+    startScreenRecording: vi.fn(),
+    stopScreenRecording: vi.fn(),
   };
 }
 
@@ -66,10 +82,10 @@ describe('createMcpServer', () => {
     expect(server.server).toBeDefined();
   });
 
-  it('registers exactly 16 tools', () => {
+  it('registers exactly 22 tools', () => {
     const server = createMcpServer(createStubBackend());
     const names = getRegisteredToolNames(server);
-    expect(names).toHaveLength(16);
+    expect(names).toHaveLength(23);
   });
 
   it('registers all expected tool names', () => {

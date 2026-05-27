@@ -1,3 +1,6 @@
+import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+
 import type {
   DeviceBackend,
   DeviceButton,
@@ -9,7 +12,9 @@ import type {
   AppStateResult,
   ElementQuery,
   UIElement,
+  WindowSize,
 } from './types.js';
+import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
 import {
   findElement,
   describeElement,
@@ -21,6 +26,12 @@ export class AdbBackend implements DeviceBackend {
   readonly platform = 'android' as const;
 
   readonly #serial: string;
+
+  #recordingProcess: ChildProcess | null = null;
+
+  #recordingPath: string | null = null;
+
+  readonly #recordingRemotePath = '/sdcard/device-mcp-recording.mp4';
 
   constructor(serial: string) {
     this.#serial = serial;
@@ -97,6 +108,17 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async typeText(text: string): Promise<void> {
+    // Android keyevent 29+shift = Ctrl+A (select all), 67 = DEL
+    await this.#adb(['shell', 'input', 'keyevent', 'KEYCODE_MOVE_HOME']);
+    await this.#adb([
+      'shell',
+      'input',
+      'keyevent',
+      '--longpress',
+      'KEYCODE_SHIFT_LEFT',
+      'KEYCODE_MOVE_END',
+    ]);
+    await this.#adb(['shell', 'input', 'keyevent', '67']);
     // Android input text requires escaping spaces and special chars
     const escaped = text.replace(/ /gu, '%s').replace(/[&|;<>]/gu, '\\$&');
     await this.#adb(['shell', 'input', 'text', escaped]);
@@ -230,23 +252,20 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async dismissAlert(accept: boolean): Promise<void> {
-    const snapshot = await this.snapshot();
-    const buttonQuery = accept ? { text: 'Allow' } : { text: 'Deny' };
-    const fallbackQuery = accept ? { text: 'OK' } : { text: 'Cancel' };
+    const snap = await this.snapshot();
+    const candidates = accept ? ACCEPT_LABELS : DENY_LABELS;
 
-    const element =
-      findElement(snapshot.hierarchy, buttonQuery) ||
-      findElement(snapshot.hierarchy, fallbackQuery);
-
-    if (element) {
-      const cx = Math.round(element.frame.x + element.frame.width / 2);
-      const cy = Math.round(element.frame.y + element.frame.height / 2);
-      await this.tapCoordinates(cx, cy);
-    } else {
-      throw new Error(
-        `No alert button found. Looked for "${buttonQuery.text}" and "${fallbackQuery.text}"`,
-      );
+    for (const label of candidates) {
+      const element = findElement(snap.hierarchy, { text: label });
+      if (element) {
+        const cx = Math.round(element.frame.x + element.frame.width / 2);
+        const cy = Math.round(element.frame.y + element.frame.height / 2);
+        await this.tapCoordinates(cx, cy);
+        return;
+      }
     }
+
+    throw new Error(`No alert button found. Tried: ${candidates.join(', ')}`);
   }
 
   async getLogs(durationSeconds = 30, filter?: string): Promise<LogsResult> {
@@ -303,6 +322,152 @@ export class AdbBackend implements DeviceBackend {
       targetDescription: describeElement(element),
     };
   }
+
+  async scrollToElement(
+    query: ElementQuery,
+    direction: 'up' | 'down' = 'down',
+    maxAttempts = 10,
+  ): Promise<UIElement> {
+    let previousRaw = '';
+
+    for (let i = 0; i < maxAttempts; i++) {
+      const snap = await this.snapshot();
+      const element = findElement(snap.hierarchy, query);
+      if (element) {
+        return element;
+      }
+      if (snap.raw === previousRaw) {
+        break;
+      }
+      previousRaw = snap.raw;
+      await this.swipe(direction);
+    }
+    throw new Error(
+      `Element not found after scrolling: ${JSON.stringify(query)}\n` +
+        'Use device_snapshot to inspect the current UI hierarchy.',
+    );
+  }
+
+  async getAlertText(): Promise<string> {
+    const snap = await this.snapshot();
+    const texts = collectAndroidAlertTexts(snap.hierarchy);
+    if (texts.length === 0) {
+      throw new Error(
+        'No alert is currently displayed.\n' +
+          'Use device_snapshot to inspect the current UI hierarchy.',
+      );
+    }
+    return texts.join('\n');
+  }
+
+  async getWindowSize(): Promise<WindowSize> {
+    const raw = await this.#adb(['shell', 'wm', 'size']);
+    const match = raw.match(/(\d+)x(\d+)/u);
+    if (match) {
+      return {
+        width: parseInt(match[1], 10),
+        height: parseInt(match[2], 10),
+      };
+    }
+    throw new Error(`Unable to parse window size from: ${raw.trim()}`);
+  }
+
+  async getContexts(): Promise<string[]> {
+    return ['NATIVE_APP'];
+  }
+
+  async setContext(context: string): Promise<void> {
+    if (context === 'NATIVE_APP') {
+      return;
+    }
+    throw new Error(
+      'Context switching requires Appium backend. ADB only supports NATIVE_APP.',
+    );
+  }
+
+  async getClipboard(): Promise<string> {
+    throw new Error(
+      'Clipboard access via ADB is not supported on modern Android. ' +
+        'Use the Appium backend for clipboard operations.',
+    );
+  }
+
+  async setClipboard(_text: string): Promise<void> {
+    throw new Error(
+      'Clipboard access via ADB is not supported on modern Android. ' +
+        'Use the Appium backend for clipboard operations.',
+    );
+  }
+
+  async startScreenRecording(outputPath?: string): Promise<void> {
+    if (this.#recordingProcess) {
+      throw new Error('Screen recording is already in progress');
+    }
+    this.#recordingPath =
+      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
+    this.#recordingProcess = spawn('adb', [
+      '-s',
+      this.#serial,
+      'shell',
+      'screenrecord',
+      this.#recordingRemotePath,
+    ]);
+    this.#recordingProcess.on('error', () => {
+      this.#recordingProcess = null;
+      this.#recordingPath = null;
+    });
+  }
+
+  async stopScreenRecording(): Promise<string> {
+    if (!this.#recordingProcess || !this.#recordingPath) {
+      throw new Error('No screen recording in progress');
+    }
+    const localPath = this.#recordingPath;
+    this.#recordingProcess.kill('SIGINT');
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    this.#recordingProcess = null;
+    this.#recordingPath = null;
+
+    await execStrict('adb', [
+      '-s',
+      this.#serial,
+      'pull',
+      this.#recordingRemotePath,
+      localPath,
+    ]);
+    await this.#adb(['shell', 'rm', '-f', this.#recordingRemotePath]);
+    return localPath;
+  }
+}
+
+function collectAndroidAlertTexts(elements: UIElement[]): string[] {
+  const texts: string[] = [];
+  for (const el of elements) {
+    const isDialog =
+      el.type.includes('Dialog') || el.type.includes('AlertDialog');
+    if (isDialog) {
+      collectTextValues(el.children ?? [], texts);
+      return texts;
+    }
+    if (el.children) {
+      const found = collectAndroidAlertTexts(el.children);
+      if (found.length > 0) {
+        return found;
+      }
+    }
+  }
+  return texts;
+}
+
+function collectTextValues(elements: UIElement[], texts: string[]): void {
+  for (const el of elements) {
+    if (el.type.includes('TextView') && el.value) {
+      texts.push(el.value);
+    }
+    if (el.children) {
+      collectTextValues(el.children, texts);
+    }
+  }
 }
 
 export function parseAndroidHierarchy(xml: string): UIElement[] {
@@ -319,14 +484,7 @@ export function parseAndroidHierarchy(xml: string): UIElement[] {
 
     if (isClosing) {
       if (stack.length > 1) {
-        const children = stack.pop();
-        if (children?.length === 0) {
-          const parent = stack[stack.length - 1];
-          const lastEl = parent[parent.length - 1];
-          if (lastEl) {
-            delete lastEl.children;
-          }
-        }
+        stack.pop();
       }
     } else if (isSelfClosing && attrs) {
       const element = parseNodeAttributes(attrs);

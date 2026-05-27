@@ -28,7 +28,7 @@ describe('parseAndroidHierarchy', () => {
     expect(frame.children![2].value).toBe('$0.00');
   });
 
-  it('self-closing nodes have no children', () => {
+  it('self-closing nodes have no children array', () => {
     const elements = parseAndroidHierarchy(SAMPLE_UIAUTOMATOR_XML);
     const title = elements[0].children![0];
     expect(title.children).toBeUndefined();
