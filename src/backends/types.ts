@@ -64,6 +64,11 @@ export type ElementQuery = {
 
 export type DeviceButton = 'home' | 'back' | 'enter' | 'lock';
 
+export type WindowSize = {
+  width: number;
+  height: number;
+};
+
 export type DeviceBackend = {
   readonly platform: Platform;
 
@@ -107,4 +112,26 @@ export type DeviceBackend = {
   getLogs(durationSeconds?: number, filter?: string): Promise<LogsResult>;
 
   longPress(query: ElementQuery, durationMs?: number): Promise<TapResult>;
+
+  scrollToElement(
+    query: ElementQuery,
+    direction?: 'up' | 'down',
+    maxAttempts?: number,
+  ): Promise<UIElement>;
+
+  getAlertText(): Promise<string>;
+
+  getWindowSize(): Promise<WindowSize>;
+
+  getContexts(): Promise<string[]>;
+
+  setContext(context: string): Promise<void>;
+
+  getClipboard(): Promise<string>;
+
+  setClipboard(text: string): Promise<void>;
+
+  startScreenRecording(outputPath?: string): Promise<void>;
+
+  stopScreenRecording(): Promise<string>;
 };

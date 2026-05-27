@@ -122,6 +122,23 @@ export class WebDriverClient {
     await this.#post(`/appium/settings`, { settings });
   }
 
+  async getContexts(): Promise<string[]> {
+    return this.#get<string[]>(`/contexts`);
+  }
+
+  async setCurrentContext(name: string): Promise<void> {
+    await this.#post(`/context`, { name });
+  }
+
+  async getWindowRect(): Promise<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }> {
+    return this.#get(`/window/rect`);
+  }
+
   async #get<Type>(path: string): Promise<Type> {
     const url = `${this.#baseUrl}/session/${this.#sessionId}${path}`;
     const response = await fetch(url, { headers: this.#headers });

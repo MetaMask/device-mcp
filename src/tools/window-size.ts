@@ -4,30 +4,27 @@ import { z } from 'zod';
 import { errorResult } from './shared.js';
 import type { DeviceBackend } from '../backends/types.js';
 
-export function registerTypeTool(
+export function registerWindowSizeTool(
   server: McpServer,
   backend: DeviceBackend,
 ): void {
   server.registerTool(
-    'device_type',
+    'device_get_window_size',
     {
-      title: 'Type Text',
+      title: 'Get Window Size',
       description:
-        'Type text into the currently focused input field. ' +
-        'Tap an input element first to focus it, then call this. ' +
-        'The field is cleared before typing on all backends.',
-      inputSchema: {
-        text: z.string().describe('Text to type'),
-      },
+        'Get the width and height of the device screen in pixels (Android) or points (iOS).',
+      inputSchema: z.object({}).shape,
+      annotations: { readOnlyHint: true },
     },
-    async ({ text }) => {
+    async () => {
       try {
-        await backend.typeText(text);
+        const size = await backend.getWindowSize();
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Typed "${text}" (${text.length} characters)`,
+              text: `Width: ${size.width}, Height: ${size.height}`,
             },
           ],
         };

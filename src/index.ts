@@ -13,6 +13,7 @@ export type {
   TapResult,
   AppStateResult,
   Platform,
+  WindowSize,
 } from './backends/types.js';
 
 export type { SessionConfig } from './backends/session-file.js';

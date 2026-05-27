@@ -14,6 +14,7 @@ import type {
   ElementQuery,
   UIElement,
   Platform,
+  WindowSize,
 } from './types.js';
 import { detectPlatform } from '../utils/platform.js';
 
@@ -152,6 +153,46 @@ export function createLazyBackend(explicitDeviceId?: string): DeviceBackend {
       durationMs?: number,
     ): Promise<TapResult> {
       return (await resolve()).longPress(query, durationMs);
+    },
+
+    async scrollToElement(
+      query: ElementQuery,
+      direction?: 'up' | 'down',
+      maxAttempts?: number,
+    ): Promise<UIElement> {
+      return (await resolve()).scrollToElement(query, direction, maxAttempts);
+    },
+
+    async getAlertText(): Promise<string> {
+      return (await resolve()).getAlertText();
+    },
+
+    async getWindowSize(): Promise<WindowSize> {
+      return (await resolve()).getWindowSize();
+    },
+
+    async getContexts(): Promise<string[]> {
+      return (await resolve()).getContexts();
+    },
+
+    async setContext(context: string): Promise<void> {
+      return (await resolve()).setContext(context);
+    },
+
+    async getClipboard(): Promise<string> {
+      return (await resolve()).getClipboard();
+    },
+
+    async setClipboard(text: string): Promise<void> {
+      return (await resolve()).setClipboard(text);
+    },
+
+    async startScreenRecording(outputPath?: string): Promise<void> {
+      return (await resolve()).startScreenRecording(outputPath);
+    },
+
+    async stopScreenRecording(): Promise<string> {
+      return (await resolve()).stopScreenRecording();
     },
   };
 }

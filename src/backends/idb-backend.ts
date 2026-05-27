@@ -1,3 +1,7 @@
+import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { writeFile, unlink } from 'node:fs/promises';
+
 import type {
   DeviceBackend,
   DeviceButton,
@@ -9,7 +13,9 @@ import type {
   AppStateResult,
   ElementQuery,
   UIElement,
+  WindowSize,
 } from './types.js';
+import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
 import {
   findElement,
   describeElement,
@@ -23,6 +29,10 @@ export class IdbBackend implements DeviceBackend {
   #connected = false;
 
   readonly #udid: string;
+
+  #recordingProcess: ChildProcess | null = null;
+
+  #recordingPath: string | null = null;
 
   constructor(udid: string) {
     this.#udid = udid;
@@ -52,13 +62,20 @@ export class IdbBackend implements DeviceBackend {
       this.#udid,
       '--json',
     ]);
-    const info = JSON.parse(raw);
+    let info: Record<string, unknown>;
+    try {
+      info = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error(
+        `idb describe returned invalid JSON for device ${this.#udid}: ${raw.slice(0, 200)}`,
+      );
+    }
     return {
       platform: 'ios',
       deviceId: this.#udid,
-      name: info.name ?? 'Unknown',
-      osVersion: info.os_version ?? 'Unknown',
-      state: info.state ?? 'Unknown',
+      name: (info.name as string) ?? 'Unknown',
+      osVersion: (info.os_version as string) ?? 'Unknown',
+      state: (info.state as string) ?? 'Unknown',
     };
   }
 
@@ -116,6 +133,15 @@ export class IdbBackend implements DeviceBackend {
 
   async typeText(text: string): Promise<void> {
     await this.ensureConnected();
+    await exec('idb', [
+      'ui',
+      'key-sequence',
+      '--',
+      'cmd+a',
+      '--udid',
+      this.#udid,
+    ]);
+    await exec('idb', ['ui', 'key', 'DELETE', '--udid', this.#udid]);
     await execStrict('idb', ['ui', 'text', text, '--udid', this.#udid]);
   }
 
@@ -222,25 +248,20 @@ export class IdbBackend implements DeviceBackend {
 
   async dismissAlert(accept: boolean): Promise<void> {
     await this.ensureConnected();
-    const snapshot = await this.snapshot();
-    const buttonQuery = accept
-      ? { label: 'Allow' }
-      : { label: 'Don\u2019t Allow' };
-    const fallbackQuery = accept ? { label: 'OK' } : { label: 'Cancel' };
+    const snap = await this.snapshot();
+    const candidates = accept ? ACCEPT_LABELS : DENY_LABELS;
 
-    const element =
-      findElement(snapshot.hierarchy, buttonQuery) ||
-      findElement(snapshot.hierarchy, fallbackQuery);
-
-    if (element) {
-      const cx = Math.round(element.frame.x + element.frame.width / 2);
-      const cy = Math.round(element.frame.y + element.frame.height / 2);
-      await this.tapCoordinates(cx, cy);
-    } else {
-      throw new Error(
-        `No alert button found. Looked for "${buttonQuery.label}" and "${fallbackQuery.label}"`,
-      );
+    for (const label of candidates) {
+      const element = findElement(snap.hierarchy, { label });
+      if (element) {
+        const cx = Math.round(element.frame.x + element.frame.width / 2);
+        const cy = Math.round(element.frame.y + element.frame.height / 2);
+        await this.tapCoordinates(cx, cy);
+        return;
+      }
     }
+
+    throw new Error(`No alert button found. Tried: ${candidates.join(', ')}`);
   }
 
   async getLogs(durationSeconds = 30, filter?: string): Promise<LogsResult> {
@@ -299,6 +320,176 @@ export class IdbBackend implements DeviceBackend {
       y: cy,
       targetDescription: describeElement(element),
     };
+  }
+
+  async scrollToElement(
+    query: ElementQuery,
+    direction: 'up' | 'down' = 'down',
+    maxAttempts = 10,
+  ): Promise<UIElement> {
+    await this.ensureConnected();
+    let previousRaw = '';
+
+    for (let i = 0; i < maxAttempts; i++) {
+      const snap = await this.snapshot();
+      const element = findElement(snap.hierarchy, query);
+      if (element) {
+        return element;
+      }
+      if (snap.raw === previousRaw) {
+        break;
+      }
+      previousRaw = snap.raw;
+      await this.swipe(direction);
+    }
+    throw new Error(
+      `Element not found after scrolling: ${JSON.stringify(query)}\n` +
+        'Use device_snapshot to inspect the current UI hierarchy.',
+    );
+  }
+
+  async getAlertText(): Promise<string> {
+    await this.ensureConnected();
+    const snap = await this.snapshot();
+    const texts = collectAlertTexts(snap.hierarchy);
+    if (texts.length === 0) {
+      throw new Error(
+        'No alert is currently displayed.\n' +
+          'Use device_snapshot to inspect the current UI hierarchy.',
+      );
+    }
+    return texts.join('\n');
+  }
+
+  async getWindowSize(): Promise<WindowSize> {
+    await this.ensureConnected();
+    const raw = await execStrict('idb', [
+      'describe',
+      '--udid',
+      this.#udid,
+      '--json',
+    ]);
+    try {
+      const info = JSON.parse(raw) as Record<string, unknown>;
+      const dims = info.screen_dimensions as
+        | { width: number; height: number }
+        | undefined;
+      if (dims?.width && dims?.height) {
+        return { width: dims.width, height: dims.height };
+      }
+    } catch {
+      // fall through to snapshot-based approach
+    }
+    const snap = await this.snapshot();
+    if (snap.hierarchy.length > 0) {
+      const root = snap.hierarchy[0];
+      if (root.frame.width > 0 && root.frame.height > 0) {
+        return { width: root.frame.width, height: root.frame.height };
+      }
+    }
+    throw new Error('Unable to determine window size from device');
+  }
+
+  async getContexts(): Promise<string[]> {
+    return ['NATIVE_APP'];
+  }
+
+  async setContext(context: string): Promise<void> {
+    if (context === 'NATIVE_APP') {
+      return;
+    }
+    throw new Error(
+      'Context switching requires Appium backend. IDB only supports NATIVE_APP.',
+    );
+  }
+
+  async getClipboard(): Promise<string> {
+    await this.ensureConnected();
+    return execStrict('xcrun', ['simctl', 'pbpaste', this.#udid]);
+  }
+
+  async setClipboard(text: string): Promise<void> {
+    await this.ensureConnected();
+    const tmpPath = `/tmp/device-mcp-clipboard-${Date.now()}.txt`;
+    await writeFile(tmpPath, text, 'utf-8');
+    try {
+      await execStrict('sh', [
+        '-c',
+        `cat "${tmpPath}" | xcrun simctl pbcopy ${this.#udid}`,
+      ]);
+    } finally {
+      await unlink(tmpPath).catch(() => {});
+    }
+  }
+
+  async startScreenRecording(outputPath?: string): Promise<void> {
+    await this.ensureConnected();
+    if (this.#recordingProcess) {
+      throw new Error('Screen recording is already in progress');
+    }
+    const path =
+      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
+    this.#recordingPath = path;
+    this.#recordingProcess = spawn('idb', [
+      'record-video',
+      path,
+      '--udid',
+      this.#udid,
+    ]);
+    this.#recordingProcess.on('error', () => {
+      this.#recordingProcess = null;
+      this.#recordingPath = null;
+    });
+  }
+
+  async stopScreenRecording(): Promise<string> {
+    if (!this.#recordingProcess || !this.#recordingPath) {
+      throw new Error('No screen recording in progress');
+    }
+    const path = this.#recordingPath;
+    this.#recordingProcess.kill('SIGINT');
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    this.#recordingProcess = null;
+    this.#recordingPath = null;
+    return path;
+  }
+}
+
+function collectAlertTexts(elements: UIElement[]): string[] {
+  const texts: string[] = [];
+  for (const el of elements) {
+    const isAlertContainer =
+      el.type === 'Alert' ||
+      el.type === 'Sheet' ||
+      el.type.includes('Alert');
+    if (isAlertContainer) {
+      collectTextsFromChildren(el.children ?? [], texts);
+      return texts;
+    }
+    if (el.children) {
+      const found = collectAlertTexts(el.children);
+      if (found.length > 0) {
+        return found;
+      }
+    }
+  }
+  return texts;
+}
+
+function collectTextsFromChildren(
+  elements: UIElement[],
+  texts: string[],
+): void {
+  for (const el of elements) {
+    if (el.type === 'StaticText' || el.type === 'TextView') {
+      const text = el.value ?? el.label;
+      if (text) {
+        texts.push(text);
+      }
+    }
+    if (el.children) {
+      collectTextsFromChildren(el.children, texts);
+    }
   }
 }
 

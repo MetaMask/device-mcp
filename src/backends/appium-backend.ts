@@ -1,3 +1,5 @@
+import { writeFileSync } from 'node:fs';
+
 import type { SessionConfig } from './session-file.js';
 import type {
   DeviceBackend,
@@ -11,6 +13,7 @@ import type {
   ElementQuery,
   UIElement,
   Platform,
+  WindowSize,
 } from './types.js';
 import { WebDriverClient, createSession } from './webdriver-client.js';
 import {
@@ -25,6 +28,10 @@ export class AppiumBackend implements DeviceBackend {
   #client: WebDriverClient | null = null;
 
   readonly #config: SessionConfig;
+
+  #recording = false;
+
+  #recordingOutputPath: string | null = null;
 
   constructor(config: SessionConfig) {
     this.#config = config;
@@ -348,6 +355,120 @@ export class AppiumBackend implements DeviceBackend {
     };
   }
 
+  async scrollToElement(
+    query: ElementQuery,
+    direction: 'up' | 'down' = 'down',
+    maxAttempts = 10,
+  ): Promise<UIElement> {
+    let previousRaw = '';
+
+    for (let i = 0; i < maxAttempts; i++) {
+      const snap = await this.snapshot();
+      const element = findElement(snap.hierarchy, query);
+      if (element) {
+        return element;
+      }
+      if (snap.raw === previousRaw) {
+        break;
+      }
+      previousRaw = snap.raw;
+      await this.swipe(direction);
+    }
+    throw new Error(
+      `Element not found after scrolling: ${JSON.stringify(query)}\n` +
+        'Use device_snapshot to inspect the current UI hierarchy.',
+    );
+  }
+
+  async getAlertText(): Promise<string> {
+    const client = this.#requireClient();
+    try {
+      return await client.execute<string>('mobile: getAlertText', []);
+    } catch {
+      const snap = await this.snapshot();
+      const texts = collectAppiumAlertTexts(snap.hierarchy, this.platform);
+      if (texts.length === 0) {
+        throw new Error(
+          'No alert is currently displayed.\n' +
+            'Use device_snapshot to inspect the current UI hierarchy.',
+        );
+      }
+      return texts.join('\n');
+    }
+  }
+
+  async getWindowSize(): Promise<WindowSize> {
+    const client = this.#requireClient();
+    try {
+      const rect = await client.getWindowRect();
+      return { width: rect.width, height: rect.height };
+    } catch {
+      const snap = await this.snapshot();
+      if (snap.hierarchy.length > 0) {
+        const root = snap.hierarchy[0];
+        if (root.frame.width > 0 && root.frame.height > 0) {
+          return { width: root.frame.width, height: root.frame.height };
+        }
+      }
+      throw new Error('Unable to determine window size');
+    }
+  }
+
+  async getContexts(): Promise<string[]> {
+    const client = this.#requireClient();
+    return client.getContexts();
+  }
+
+  async setContext(context: string): Promise<void> {
+    const client = this.#requireClient();
+    await client.setCurrentContext(context);
+  }
+
+  async getClipboard(): Promise<string> {
+    const client = this.#requireClient();
+    const b64 = await client.execute<string>('mobile: getClipboard', [
+      { contentType: 'plaintext' },
+    ]);
+    return Buffer.from(b64, 'base64').toString('utf-8');
+  }
+
+  async setClipboard(text: string): Promise<void> {
+    const client = this.#requireClient();
+    await client.execute('mobile: setClipboard', [
+      {
+        content: Buffer.from(text).toString('base64'),
+        contentType: 'plaintext',
+      },
+    ]);
+  }
+
+  async startScreenRecording(outputPath?: string): Promise<void> {
+    if (this.#recording) {
+      throw new Error('Screen recording is already in progress');
+    }
+    const client = this.#requireClient();
+    await client.execute('mobile: startRecordingScreen', [{}]);
+    this.#recording = true;
+    this.#recordingOutputPath =
+      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
+  }
+
+  async stopScreenRecording(): Promise<string> {
+    if (!this.#recording || !this.#recordingOutputPath) {
+      throw new Error('No screen recording in progress');
+    }
+    const client = this.#requireClient();
+    const b64 = await client.execute<string>(
+      'mobile: stopRecordingScreen',
+      [],
+    );
+    const path = this.#recordingOutputPath;
+    writeFileSync(path, Buffer.from(b64, 'base64'));
+    this.#recording = false;
+    this.#recordingOutputPath = null;
+    return path;
+  }
+
   #requireClient(): WebDriverClient {
     if (!this.#client) {
       throw new Error(
@@ -358,14 +479,63 @@ export class AppiumBackend implements DeviceBackend {
   }
 }
 
+function collectAppiumAlertTexts(
+  elements: UIElement[],
+  platform: Platform,
+): string[] {
+  const texts: string[] = [];
+  for (const el of elements) {
+    const isAlert =
+      platform === 'ios'
+        ? el.type === 'Alert' || el.type === 'Sheet'
+        : el.type.includes('Dialog');
+    if (isAlert) {
+      collectAppiumTextValues(el.children ?? [], texts);
+      return texts;
+    }
+    if (el.children) {
+      const found = collectAppiumAlertTexts(el.children, platform);
+      if (found.length > 0) {
+        return found;
+      }
+    }
+  }
+  return texts;
+}
+
+function collectAppiumTextValues(
+  elements: UIElement[],
+  texts: string[],
+): void {
+  for (const el of elements) {
+    const text = el.value ?? el.label;
+    if (
+      text &&
+      (el.type === 'StaticText' ||
+        el.type.includes('TextView') ||
+        el.type === 'Text')
+    ) {
+      texts.push(text);
+    }
+    if (el.children) {
+      collectAppiumTextValues(el.children, texts);
+    }
+  }
+}
+
 function extractElementId(element: Record<string, string>): string {
   // W3C uses 'element-6066-11e4-a52e-4f735466cecf', JSONWP uses 'ELEMENT'
-  return (
+  const id =
     element['element-6066-11e4-a52e-4f735466cecf'] ||
     element.ELEMENT ||
-    Object.values(element)[0] ||
-    ''
-  );
+    Object.values(element)[0];
+
+  if (!id) {
+    throw new Error(
+      `Failed to extract element ID from Appium response: ${JSON.stringify(element)}`,
+    );
+  }
+  return id;
 }
 
 export function parseAppiumAndroidHierarchy(xml: string): UIElement[] {

@@ -88,6 +88,142 @@ export function computeSwipeEnd(
   }
 }
 
+export type LocatorSuggestion = {
+  strategy: 'identifier' | 'label' | 'text' | 'type';
+  value: string;
+  confidence: 'high' | 'medium' | 'low';
+};
+
+export type ElementLocator = {
+  description: string;
+  frame: { x: number; y: number; width: number; height: number };
+  suggestions: LocatorSuggestion[];
+};
+
+const INTERACTIVE_TYPES = new Set([
+  'Button',
+  'TextField',
+  'SecureTextField',
+  'Switch',
+  'Slider',
+  'Picker',
+  'Link',
+  'SearchField',
+  'TextArea',
+  'Tab',
+  'MenuItem',
+  'Cell',
+  'android.widget.Button',
+  'android.widget.EditText',
+  'android.widget.CheckBox',
+  'android.widget.RadioButton',
+  'android.widget.Switch',
+  'android.widget.ToggleButton',
+  'android.widget.Spinner',
+  'android.widget.SeekBar',
+  'android.widget.ImageButton',
+]);
+
+function isInteractive(element: UIElement): boolean {
+  if (INTERACTIVE_TYPES.has(element.type)) {
+    return true;
+  }
+  for (const t of INTERACTIVE_TYPES) {
+    if (element.type.includes(t)) {
+      return true;
+    }
+  }
+  return element.enabled && Boolean(element.identifier);
+}
+
+function buildSuggestions(element: UIElement): LocatorSuggestion[] {
+  const suggestions: LocatorSuggestion[] = [];
+
+  if (element.identifier) {
+    suggestions.push({
+      strategy: 'identifier',
+      value: element.identifier,
+      confidence: 'high',
+    });
+  }
+
+  if (element.label) {
+    suggestions.push({
+      strategy: 'label',
+      value: element.label,
+      confidence: element.identifier ? 'medium' : 'high',
+    });
+  }
+
+  if (element.value && element.value !== element.label) {
+    suggestions.push({
+      strategy: 'text',
+      value: element.value,
+      confidence: 'low',
+    });
+  }
+
+  if (suggestions.length === 0) {
+    suggestions.push({
+      strategy: 'type',
+      value: element.type,
+      confidence: 'low',
+    });
+  }
+
+  return suggestions;
+}
+
+export function generateLocators(elements: UIElement[]): ElementLocator[] {
+  const results: ElementLocator[] = [];
+  collectLocators(elements, results);
+  return results;
+}
+
+function collectLocators(
+  elements: UIElement[],
+  results: ElementLocator[],
+): void {
+  for (const el of elements) {
+    if (isInteractive(el)) {
+      const suggestions = buildSuggestions(el);
+      results.push({
+        description: describeElement(el),
+        frame: el.frame,
+        suggestions,
+      });
+    }
+    if (el.children) {
+      collectLocators(el.children, results);
+    }
+  }
+}
+
+export function formatLocators(locators: ElementLocator[]): string {
+  if (locators.length === 0) {
+    return 'No interactive elements found on screen.';
+  }
+
+  const confidenceIcon: Record<string, string> = {
+    high: '***',
+    medium: '**',
+    low: '*',
+  };
+
+  return locators
+    .map((loc, i) => {
+      const header = `${i + 1}. ${loc.description} (${loc.frame.x},${loc.frame.y} ${loc.frame.width}x${loc.frame.height})`;
+      const strategies = loc.suggestions
+        .map(
+          (s) =>
+            `   ${confidenceIcon[s.confidence]} { ${s.strategy}: "${s.value}" }`,
+        )
+        .join('\n');
+      return `${header}\n${strategies}`;
+    })
+    .join('\n\n');
+}
+
 export function formatHierarchy(elements: UIElement[], depth: number): string {
   const indent = '  '.repeat(depth);
   return elements

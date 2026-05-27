@@ -18,6 +18,13 @@ import {
   registerDismissKeyboardTool,
   registerDismissAlertTool,
   registerLogsTool,
+  registerScrollToElementTool,
+  registerAlertTextTool,
+  registerWindowSizeTool,
+  registerContextTool,
+  registerClipboardTool,
+  registerScreenRecordingTool,
+  registerGenerateLocatorsTool,
 } from './tools/index.js';
 
 export function createMcpServer(backend: DeviceBackend): McpServer {
@@ -52,6 +59,13 @@ export function createMcpServer(backend: DeviceBackend): McpServer {
   registerDismissKeyboardTool(server, backend);
   registerDismissAlertTool(server, backend);
   registerLogsTool(server, backend);
+  registerScrollToElementTool(server, backend);
+  registerAlertTextTool(server, backend);
+  registerWindowSizeTool(server, backend);
+  registerContextTool(server, backend);
+  registerClipboardTool(server, backend);
+  registerScreenRecordingTool(server, backend);
+  registerGenerateLocatorsTool(server, backend);
 
   return server;
 }

@@ -12,12 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial release of `@metamask/device-mcp`
-- MCP server with stdio transport for mobile device interaction
-- iOS backend via IDB (`idb ui describe-all`, `idb ui tap`, `idb ui text`, `idb ui swipe`)
-- Android backend via ADB (`uiautomator dump`, `input tap`, `input text`, `input swipe`)
-- Auto-detection of platform from connected device or `DEVICE_ID` env var
-- 6 tools: `device_snapshot`, `device_tap_element`, `device_type`, `device_swipe`, `device_wait_for`, `device_app_state`
+- MCP server with stdio transport and lazy backend initialization
+- Three backends: iOS (IDB), Android (ADB), Appium/BrowserStack (W3C WebDriver)
+- `.device-session` file for attaching to existing Appium sessions or creating new ones
+- 16 MCP tools: `device_snapshot`, `device_screenshot`, `device_info`, `device_tap_element`, `device_tap_coordinates`, `device_type`, `device_swipe`, `device_long_press`, `device_wait_for`, `device_app_state`, `device_open_app`, `device_close_app`, `device_press_button`, `device_dismiss_keyboard`, `device_dismiss_alert`, `device_logs`
+- Fuzzy element matching (case-insensitive, partial text)
+- Android tree-structured UI hierarchy parser (nested, not flat)
+- iOS `snapshotMaxDepth` and `mobile: source` fallback for deep hierarchies
+- Auto-detection of platform from `.device-session`, `DEVICE_ID`, or booted simulator/emulator
 - Runtime health check with actionable error messages for missing IDB/ADB
+- SKILL.md agent reference with core loop, common patterns, and platform differences
+- MetaMask module template compliance (ts-bridge, dual CJS/ESM, yarn constraints, CI workflows)
 
 [Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/MetaMask/device-mcp/releases/tag/v0.1.0
