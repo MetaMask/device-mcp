@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0]
 
+### Fixed
+
+- fix: GH workflow release creation
+- chore: add additional tools
+- chore: add MetaMask Security Code Scanner workflow
+
 ### Added
 
 - Initial release of `@metamask/device-mcp`
