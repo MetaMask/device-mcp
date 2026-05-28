@@ -24,5 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SKILL.md agent reference with core loop, common patterns, and platform differences
 - MetaMask module template compliance (ts-bridge, dual CJS/ESM, yarn constraints, CI workflows)
 
+### Fixed
+
+- fix: GH workflow release creation
+- chore: add additional tools
+- chore: add MetaMask Security Code Scanner workflow
+
 [Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/MetaMask/device-mcp/releases/tag/v0.1.0
