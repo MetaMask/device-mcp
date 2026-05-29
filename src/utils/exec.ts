@@ -32,17 +32,21 @@ export async function exec(
         maxBuffer: 10 * 1024 * 1024, // 10MB — UI hierarchies can be large
       },
       (error, stdout, stderr) => {
-        if (error && !('code' in error)) {
-          // Spawn failure (command not found, ENOENT, etc.)
-          reject(new Error(error.message));
-          return;
+        if (error) {
+          const errno = error as NodeJS.ErrnoException;
+          if (
+            errno.code === 'ENOENT' ||
+            errno.code === 'EACCES' ||
+            errno.code === 'EPERM'
+          ) {
+            reject(new Error(error.message));
+            return;
+          }
         }
         resolve({
           stdout: stdout?.toString() ?? '',
           stderr: stderr?.toString() ?? '',
-          exitCode: (error as NodeJS.ErrnoException)?.code
-            ? 1
-            : (child.exitCode ?? 0),
+          exitCode: child.exitCode ?? (error ? 1 : 0),
         });
       },
     );
@@ -67,8 +71,8 @@ export async function execStrict(
 
 export async function isCommandAvailable(command: string): Promise<boolean> {
   try {
-    await exec('which', [command], { timeoutMs: 5_000 });
-    return true;
+    const result = await exec('which', [command], { timeoutMs: 5_000 });
+    return result.exitCode === 0;
   } catch {
     return false;
   }

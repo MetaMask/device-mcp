@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import type { DeviceBackend } from './backends/types.js';
+import type { LazyDeviceBackend } from './backends/index.js';
 import { createMcpServer } from './server.js';
 
 const EXPECTED_TOOLS = [
@@ -14,6 +14,7 @@ const EXPECTED_TOOLS = [
   'device_get_alert_text',
   'device_get_window_size',
   'device_info',
+  'device_list_devices',
   'device_logs',
   'device_long_press',
   'device_open_app',
@@ -21,6 +22,7 @@ const EXPECTED_TOOLS = [
   'device_screen_recording',
   'device_screenshot',
   'device_scroll_to_element',
+  'device_select_device',
   'device_snapshot',
   'device_swipe',
   'device_tap_coordinates',
@@ -29,7 +31,7 @@ const EXPECTED_TOOLS = [
   'device_wait_for',
 ];
 
-function createStubBackend(): DeviceBackend {
+function createStubBackend(): LazyDeviceBackend {
   return {
     platform: 'ios',
     getDeviceInfo: vi.fn(),
@@ -57,6 +59,8 @@ function createStubBackend(): DeviceBackend {
     setClipboard: vi.fn(),
     startScreenRecording: vi.fn(),
     stopScreenRecording: vi.fn(),
+    selectDevice: vi.fn(),
+    listDevices: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -85,7 +89,7 @@ describe('createMcpServer', () => {
   it('registers exactly 22 tools', () => {
     const server = createMcpServer(createStubBackend());
     const names = getRegisteredToolNames(server);
-    expect(names).toHaveLength(23);
+    expect(names).toHaveLength(25);
   });
 
   it('registers all expected tool names', () => {

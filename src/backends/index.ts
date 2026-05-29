@@ -16,15 +16,26 @@ import type {
   Platform,
   WindowSize,
 } from './types.js';
-import { detectPlatform } from '../utils/platform.js';
+import {
+  detectPlatform,
+  detectAllDevices,
+  MultipleDevicesError,
+} from '../utils/platform.js';
+import type { DetectedDevice } from '../utils/platform.js';
 
 export type { DeviceBackend } from './types.js';
 export { AdbBackend } from './adb-backend.js';
 export { AppiumBackend } from './appium-backend.js';
 export { IdbBackend } from './idb-backend.js';
 
+export type LazyDeviceBackend = DeviceBackend & {
+  selectDevice(deviceId: string): void;
+  listDevices(): Promise<DetectedDevice[]>;
+};
+
 export async function createBackend(
   explicitDeviceId?: string,
+  explicitPlatform?: Platform,
 ): Promise<DeviceBackend> {
   const sessionConfig = await readSessionFile();
 
@@ -37,7 +48,10 @@ export async function createBackend(
     return backend;
   }
 
-  const { platform, deviceId } = await detectPlatform(explicitDeviceId);
+  const { platform, deviceId } = await detectPlatform(
+    explicitDeviceId,
+    explicitPlatform,
+  );
 
   const backend =
     platform === 'ios' ? new IdbBackend(deviceId) : new AdbBackend(deviceId);
@@ -46,27 +60,39 @@ export async function createBackend(
   return backend;
 }
 
-/**
- * Lazy backend that defers device detection to first tool call.
- * Allows the MCP server to start and complete the handshake
- * even when no device is connected yet.
- *
- * @param explicitDeviceId - Optional device ID override.
- * @returns A DeviceBackend that resolves on first use.
- */
-export function createLazyBackend(explicitDeviceId?: string): DeviceBackend {
+export function createLazyBackend(
+  explicitDeviceId?: string,
+  explicitPlatform?: Platform,
+): LazyDeviceBackend {
   let inner: DeviceBackend | null = null;
   let connecting: Promise<DeviceBackend> | null = null;
+  let pendingDevices: DetectedDevice[] | null = null;
+  let selectedOverride: string | null = null;
 
   async function resolve(): Promise<DeviceBackend> {
     if (inner) {
       return inner;
     }
+
+    if (pendingDevices && !selectedOverride) {
+      throw new MultipleDevicesError(pendingDevices);
+    }
+
     if (!connecting) {
-      connecting = createBackend(explicitDeviceId).then((backend) => {
-        inner = backend;
-        return backend;
-      });
+      const deviceId = selectedOverride ?? explicitDeviceId;
+      connecting = createBackend(deviceId, explicitPlatform)
+        .then((backend) => {
+          inner = backend;
+          pendingDevices = null;
+          return backend;
+        })
+        .catch((error: unknown) => {
+          connecting = null;
+          if (error instanceof MultipleDevicesError) {
+            pendingDevices = error.devices;
+          }
+          throw error;
+        });
     }
     return connecting;
   }
@@ -74,6 +100,19 @@ export function createLazyBackend(explicitDeviceId?: string): DeviceBackend {
   return {
     get platform(): Platform {
       return inner?.platform ?? 'ios';
+    },
+
+    selectDevice(deviceId: string): void {
+      selectedOverride = deviceId;
+      inner = null;
+      connecting = null;
+    },
+
+    async listDevices(): Promise<DetectedDevice[]> {
+      if (pendingDevices) {
+        return pendingDevices;
+      }
+      return detectAllDevices(explicitPlatform);
     },
 
     async getDeviceInfo(): Promise<DeviceInfo> {

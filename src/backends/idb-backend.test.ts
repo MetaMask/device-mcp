@@ -1,6 +1,23 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import { parseIdbHierarchy, mapIdbElement } from './idb-backend.js';
+import { parseIdbHierarchy, mapIdbElement, IdbBackend } from './idb-backend.js';
+import * as execModule from '../utils/exec.js';
+
+vi.mock('../utils/exec.js', () => ({
+  exec: vi.fn(),
+  execStrict: vi.fn(),
+  isCommandAvailable: vi.fn(),
+}));
+
+vi.mock('../utils/platform.js', () => ({
+  resolveIdbPath: vi.fn().mockResolvedValue('/usr/local/bin/idb'),
+  detectPlatform: vi.fn(),
+  detectAllDevices: vi.fn(),
+  MultipleDevicesError: class extends Error {},
+}));
+
+const mockExec = vi.mocked(execModule.exec);
+const mockExecStrict = vi.mocked(execModule.execStrict);
 
 describe('parseIdbHierarchy', () => {
   it('parses a JSON array of elements', () => {
@@ -144,5 +161,131 @@ describe('mapIdbElement', () => {
     const node = { frame: { x: 0, y: 0, width: 10, height: 10 } };
     const result = mapIdbElement(node);
     expect(result.type).toBe('Unknown');
+  });
+});
+
+describe('IdbBackend simctl fallback', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    backend = new IdbBackend(udid);
+  });
+
+  describe('openApp', () => {
+    it('uses idb launch when it succeeds', async () => {
+      mockExecStrict.mockResolvedValue('');
+
+      await backend.openApp('io.metamask');
+
+      expect(mockExecStrict).toHaveBeenCalledWith('/usr/local/bin/idb', [
+        'launch',
+        'io.metamask',
+        '--udid',
+        udid,
+      ]);
+      expect(mockExecStrict).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to simctl launch when idb fails', async () => {
+      mockExecStrict
+        .mockRejectedValueOnce(new Error('companion conflict'))
+        .mockResolvedValueOnce('');
+
+      await backend.openApp('io.metamask');
+
+      expect(mockExecStrict).toHaveBeenCalledTimes(2);
+      expect(mockExecStrict).toHaveBeenLastCalledWith('xcrun', [
+        'simctl',
+        'launch',
+        udid,
+        'io.metamask',
+      ]);
+    });
+  });
+
+  describe('closeApp', () => {
+    it('uses idb terminate when it succeeds', async () => {
+      mockExecStrict.mockResolvedValue('');
+
+      await backend.closeApp('io.metamask');
+
+      expect(mockExecStrict).toHaveBeenCalledWith('/usr/local/bin/idb', [
+        'terminate',
+        'io.metamask',
+        '--udid',
+        udid,
+      ]);
+    });
+
+    it('falls back to simctl terminate when idb fails', async () => {
+      mockExecStrict
+        .mockRejectedValueOnce(new Error('companion conflict'))
+        .mockResolvedValueOnce('');
+
+      await backend.closeApp('io.metamask');
+
+      expect(mockExecStrict).toHaveBeenLastCalledWith('xcrun', [
+        'simctl',
+        'terminate',
+        udid,
+        'io.metamask',
+      ]);
+    });
+  });
+
+  describe('getAppState', () => {
+    it('uses idb list-apps when it succeeds', async () => {
+      mockExecStrict.mockResolvedValue(
+        'io.metamask | MetaMask | Running | 12345\n',
+      );
+
+      const result = await backend.getAppState('io.metamask');
+
+      expect(result).toStrictEqual({
+        bundleId: 'io.metamask',
+        state: 'Running',
+        pid: 12345,
+      });
+    });
+
+    it('falls back to simctl listapps when idb fails', async () => {
+      mockExecStrict.mockRejectedValue(new Error('companion conflict'));
+      mockExec.mockImplementation(async (cmd) => {
+        if (cmd === 'xcrun') {
+          return {
+            exitCode: 0,
+            stdout: 'CFBundleIdentifier = "io.metamask"',
+            stderr: '',
+          };
+        }
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+
+      const result = await backend.getAppState('io.metamask');
+
+      expect(result).toStrictEqual({
+        bundleId: 'io.metamask',
+        state: 'Running',
+      });
+    });
+
+    it('returns Not Installed when simctl fallback finds no match', async () => {
+      mockExecStrict.mockRejectedValue(new Error('companion conflict'));
+      mockExec.mockResolvedValue({
+        exitCode: 0,
+        stdout: 'CFBundleIdentifier = "com.apple.Maps"',
+        stderr: '',
+      });
+
+      const result = await backend.getAppState('io.metamask');
+
+      expect(result).toStrictEqual({
+        bundleId: 'io.metamask',
+        state: 'Not Installed',
+      });
+    });
   });
 });
