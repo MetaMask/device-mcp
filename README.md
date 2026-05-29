@@ -53,7 +53,7 @@ The server selects a backend in this order:
 
 1. **`.device-session` file** — if present in the working directory, connects via Appium (local or BrowserStack)
 2. **`DEVICE_ID` + `DEVICE_PLATFORM`** — direct connect, no auto-detection
-3. **`DEVICE_ID` only** — platform inferred from format (UUID = iOS, serial/emulator-* = Android)
+3. **`DEVICE_ID` only** — platform inferred from format (UUID = iOS, serial/emulator-\* = Android)
 4. **`DEVICE_PLATFORM` only** — auto-detect first device of that platform
 5. **Nothing set, 1 device** — auto-connect
 6. **Nothing set, multiple devices** — returns device list, agent asks user to pick via `device_select_device`
@@ -121,10 +121,10 @@ The `.device-session` file is typically written by the test runner when it creat
 
 ### Device Management
 
-| Tool                   | Description                                                             |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `device_list_devices`  | List all connected devices and simulators/emulators.                    |
-| `device_select_device` | Select a device for this session. Use after `device_list_devices`.      |
+| Tool                   | Description                                                        |
+| ---------------------- | ------------------------------------------------------------------ |
+| `device_list_devices`  | List all connected devices and simulators/emulators.               |
+| `device_select_device` | Select a device for this session. Use after `device_list_devices`. |
 
 ### Inspection
 
@@ -166,26 +166,26 @@ Elements are identified by accessibility attributes — not internal refs. Match
 
 ### Backend Implementation
 
-| Tool                      | iOS (IDB)               | Android (ADB)        | Appium (W3C WebDriver)        |
-| ------------------------- | ----------------------- | -------------------- | ----------------------------- |
-| `device_snapshot`         | `idb ui describe-all`   | `uiautomator dump`   | `mobile: source`              |
-| `device_screenshot`       | `idb screenshot`        | `screencap` + `pull` | `mobile: getScreenshot`       |
-| `device_info`             | `idb describe`          | `getprop`            | session capabilities          |
-| `device_tap_element`      | find + `idb ui tap`     | find + `input tap`   | find + W3C Actions            |
-| `device_tap_coordinates`  | `idb ui tap x y`        | `input tap x y`      | W3C Actions                   |
-| `device_type`             | `idb ui text`           | `input text`         | `findElement` + `sendKeys`    |
-| `device_swipe`            | `idb ui swipe`          | `input swipe`        | W3C Actions                   |
-| `device_long_press`       | `idb ui tap --duration` | `input swipe` (hold) | W3C Actions (pause)           |
-| `device_wait_for`         | poll snapshot           | poll snapshot        | poll snapshot                 |
-| `device_list_devices`     | `xcrun simctl list`     | `adb devices`        | N/A                           |
-| `device_select_device`    | select by UDID          | select by serial     | N/A                           |
-| `device_app_state`        | `idb list-apps` / `simctl listapps` | `dumpsys activity` | `mobile: queryAppState` |
-| `device_open_app`         | `idb launch` / `simctl launch` | `monkey -p`    | `mobile: activateApp`         |
-| `device_close_app`        | `idb terminate` / `simctl terminate` | `am force-stop` | `mobile: terminateApp`  |
-| `device_press_button`     | `idb ui key`            | `input keyevent`     | `mobile: pressButton/Key`     |
-| `device_dismiss_keyboard` | `idb ui key RETURN`     | `input keyevent 111` | `mobile: hideKeyboard`        |
-| `device_dismiss_alert`    | find button + tap       | find button + tap    | `mobile: accept/dismissAlert` |
-| `device_logs`             | `idb log`               | `logcat`             | `mobile: getLog`              |
+| Tool                      | iOS (IDB)                            | Android (ADB)        | Appium (W3C WebDriver)        |
+| ------------------------- | ------------------------------------ | -------------------- | ----------------------------- |
+| `device_snapshot`         | `idb ui describe-all`                | `uiautomator dump`   | `mobile: source`              |
+| `device_screenshot`       | `idb screenshot`                     | `screencap` + `pull` | `mobile: getScreenshot`       |
+| `device_info`             | `idb describe`                       | `getprop`            | session capabilities          |
+| `device_tap_element`      | find + `idb ui tap`                  | find + `input tap`   | find + W3C Actions            |
+| `device_tap_coordinates`  | `idb ui tap x y`                     | `input tap x y`      | W3C Actions                   |
+| `device_type`             | `idb ui text`                        | `input text`         | `findElement` + `sendKeys`    |
+| `device_swipe`            | `idb ui swipe`                       | `input swipe`        | W3C Actions                   |
+| `device_long_press`       | `idb ui tap --duration`              | `input swipe` (hold) | W3C Actions (pause)           |
+| `device_wait_for`         | poll snapshot                        | poll snapshot        | poll snapshot                 |
+| `device_list_devices`     | `xcrun simctl list`                  | `adb devices`        | N/A                           |
+| `device_select_device`    | select by UDID                       | select by serial     | N/A                           |
+| `device_app_state`        | `idb list-apps` / `simctl listapps`  | `dumpsys activity`   | `mobile: queryAppState`       |
+| `device_open_app`         | `idb launch` / `simctl launch`       | `monkey -p`          | `mobile: activateApp`         |
+| `device_close_app`        | `idb terminate` / `simctl terminate` | `am force-stop`      | `mobile: terminateApp`        |
+| `device_press_button`     | `idb ui key`                         | `input keyevent`     | `mobile: pressButton/Key`     |
+| `device_dismiss_keyboard` | `idb ui key RETURN`                  | `input keyevent 111` | `mobile: hideKeyboard`        |
+| `device_dismiss_alert`    | find button + tap                    | find button + tap    | `mobile: accept/dismissAlert` |
+| `device_logs`             | `idb log`                            | `logcat`             | `mobile: getLog`              |
 
 ## MCP Client Configuration
 
