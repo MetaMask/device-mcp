@@ -20,7 +20,8 @@ import {
   describeElement,
   computeSwipeEnd,
 } from '../utils/element.js';
-import { execStrict, exec, isCommandAvailable } from '../utils/exec.js';
+import { execStrict, exec } from '../utils/exec.js';
+import { resolveIdbPath } from '../utils/platform.js';
 
 export class IdbBackend implements DeviceBackend {
   readonly platform = 'ios' as const;
@@ -28,6 +29,8 @@ export class IdbBackend implements DeviceBackend {
   #connected = false;
 
   readonly #udid: string;
+
+  #idbPath = 'idb';
 
   #recordingProcess: ChildProcess | null = null;
 
@@ -42,20 +45,14 @@ export class IdbBackend implements DeviceBackend {
       return;
     }
 
-    if (!(await isCommandAvailable('idb'))) {
-      throw new Error(
-        'idb is not installed.\n' +
-          'Install: brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb',
-      );
-    }
-
-    await exec('idb', ['connect', this.#udid]);
+    this.#idbPath = await resolveIdbPath();
+    await exec(this.#idbPath, ['connect', this.#udid]);
     this.#connected = true;
   }
 
   async getDeviceInfo(): Promise<DeviceInfo> {
     await this.ensureConnected();
-    const raw = await execStrict('idb', [
+    const raw = await execStrict(this.#idbPath, [
       'describe',
       '--udid',
       this.#udid,
@@ -80,7 +77,7 @@ export class IdbBackend implements DeviceBackend {
 
   async snapshot(): Promise<SnapshotResult> {
     await this.ensureConnected();
-    const raw = await execStrict('idb', [
+    const raw = await execStrict(this.#idbPath, [
       'ui',
       'describe-all',
       '--udid',
@@ -120,7 +117,7 @@ export class IdbBackend implements DeviceBackend {
 
   async tapCoordinates(x: number, y: number): Promise<void> {
     await this.ensureConnected();
-    await execStrict('idb', [
+    await execStrict(this.#idbPath, [
       'ui',
       'tap',
       String(x),
@@ -132,7 +129,7 @@ export class IdbBackend implements DeviceBackend {
 
   async typeText(text: string): Promise<void> {
     await this.ensureConnected();
-    await exec('idb', [
+    await exec(this.#idbPath, [
       'ui',
       'key-sequence',
       '--',
@@ -140,8 +137,8 @@ export class IdbBackend implements DeviceBackend {
       '--udid',
       this.#udid,
     ]);
-    await exec('idb', ['ui', 'key', 'DELETE', '--udid', this.#udid]);
-    await execStrict('idb', ['ui', 'text', text, '--udid', this.#udid]);
+    await exec(this.#idbPath, ['ui', 'key', 'DELETE', '--udid', this.#udid]);
+    await execStrict(this.#idbPath, ['ui', 'text', text, '--udid', this.#udid]);
   }
 
   async swipe(
@@ -156,7 +153,7 @@ export class IdbBackend implements DeviceBackend {
     const sy = startY ?? 400;
     const [endX, endY] = computeSwipeEnd(sx, sy, direction, d);
 
-    await execStrict('idb', [
+    await execStrict(this.#idbPath, [
       'ui',
       'swipe',
       String(sx),
@@ -189,38 +186,72 @@ export class IdbBackend implements DeviceBackend {
 
   async getAppState(bundleId: string): Promise<AppStateResult> {
     await this.ensureConnected();
-    const raw = await execStrict('idb', ['list-apps', '--udid', this.#udid]);
+    try {
+      const raw = await execStrict(this.#idbPath, [
+        'list-apps',
+        '--udid',
+        this.#udid,
+      ]);
 
-    for (const line of raw.trim().split('\n')) {
-      if (line.includes(bundleId)) {
-        const parts = line.split('|').map((s) => s.trim());
-        return {
-          bundleId,
-          state: parts[2] ?? 'Unknown',
-          pid: parts[3] ? parseInt(parts[3], 10) : undefined,
-        };
+      for (const line of raw.trim().split('\n')) {
+        if (line.includes(bundleId)) {
+          const parts = line.split('|').map((s) => s.trim());
+          return {
+            bundleId,
+            state: parts[2] ?? 'Unknown',
+            pid: parts[3] ? parseInt(parts[3], 10) : undefined,
+          };
+        }
       }
-    }
 
+      return { bundleId, state: 'Not Installed' };
+    } catch {
+      return this.#getAppStateViaSimctl(bundleId);
+    }
+  }
+
+  async #getAppStateViaSimctl(bundleId: string): Promise<AppStateResult> {
+    const result = await exec('xcrun', ['simctl', 'listapps', this.#udid]);
+    if (result.exitCode === 0 && result.stdout.includes(bundleId)) {
+      return { bundleId, state: 'Running' };
+    }
     return { bundleId, state: 'Not Installed' };
   }
 
   async screenshot(outputPath?: string): Promise<ScreenshotResult> {
     await this.ensureConnected();
     const path = outputPath ?? `/tmp/device-mcp-screenshot-${Date.now()}.png`;
-    await execStrict('idb', ['screenshot', path, '--udid', this.#udid]);
+    await execStrict(this.#idbPath, ['screenshot', path, '--udid', this.#udid]);
     const data = await execStrict('base64', [path]);
     return { data: data.trim(), format: 'png', path };
   }
 
   async openApp(bundleId: string): Promise<void> {
     await this.ensureConnected();
-    await execStrict('idb', ['launch', bundleId, '--udid', this.#udid]);
+    try {
+      await execStrict(this.#idbPath, [
+        'launch',
+        bundleId,
+        '--udid',
+        this.#udid,
+      ]);
+    } catch {
+      await execStrict('xcrun', ['simctl', 'launch', this.#udid, bundleId]);
+    }
   }
 
   async closeApp(bundleId: string): Promise<void> {
     await this.ensureConnected();
-    await execStrict('idb', ['terminate', bundleId, '--udid', this.#udid]);
+    try {
+      await execStrict(this.#idbPath, [
+        'terminate',
+        bundleId,
+        '--udid',
+        this.#udid,
+      ]);
+    } catch {
+      await execStrict('xcrun', ['simctl', 'terminate', this.#udid, bundleId]);
+    }
   }
 
   async pressButton(button: DeviceButton): Promise<void> {
@@ -231,7 +262,7 @@ export class IdbBackend implements DeviceBackend {
       back: 'HOME',
       enter: 'RETURN',
     };
-    await execStrict('idb', [
+    await execStrict(this.#idbPath, [
       'ui',
       'key',
       keyMap[button],
@@ -242,7 +273,13 @@ export class IdbBackend implements DeviceBackend {
 
   async dismissKeyboard(): Promise<void> {
     await this.ensureConnected();
-    await execStrict('idb', ['ui', 'key', 'RETURN', '--udid', this.#udid]);
+    await execStrict(this.#idbPath, [
+      'ui',
+      'key',
+      'RETURN',
+      '--udid',
+      this.#udid,
+    ]);
   }
 
   async dismissAlert(accept: boolean): Promise<void> {
@@ -276,7 +313,7 @@ export class IdbBackend implements DeviceBackend {
     if (filter) {
       args.push('--predicate', `eventMessage CONTAINS "${filter}"`);
     }
-    const raw = await execStrict('idb', args);
+    const raw = await execStrict(this.#idbPath, args);
     const entries = raw
       .trim()
       .split('\n')
@@ -302,7 +339,7 @@ export class IdbBackend implements DeviceBackend {
 
     const cx = Math.round(element.frame.x + element.frame.width / 2);
     const cy = Math.round(element.frame.y + element.frame.height / 2);
-    await execStrict('idb', [
+    await execStrict(this.#idbPath, [
       'ui',
       'tap',
       String(cx),
@@ -362,7 +399,7 @@ export class IdbBackend implements DeviceBackend {
 
   async getWindowSize(): Promise<WindowSize> {
     await this.ensureConnected();
-    const raw = await execStrict('idb', [
+    const raw = await execStrict(this.#idbPath, [
       'describe',
       '--udid',
       this.#udid,
@@ -427,7 +464,7 @@ export class IdbBackend implements DeviceBackend {
     }
     const path = outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
     this.#recordingPath = path;
-    this.#recordingProcess = spawn('idb', [
+    this.#recordingProcess = spawn(this.#idbPath, [
       'record-video',
       path,
       '--udid',

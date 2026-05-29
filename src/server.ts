@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import type { DeviceBackend } from './backends/types.js';
+import type { LazyDeviceBackend } from './backends/index.js';
 import {
   registerSnapshotTool,
   registerScreenshotTool,
@@ -25,9 +25,11 @@ import {
   registerClipboardTool,
   registerScreenRecordingTool,
   registerGenerateLocatorsTool,
+  registerListDevicesTool,
+  registerSelectDeviceTool,
 } from './tools/index.js';
 
-export function createMcpServer(backend: DeviceBackend): McpServer {
+export function createMcpServer(backend: LazyDeviceBackend): McpServer {
   const server = new McpServer(
     { name: '@metamask/device-mcp', version: '0.0.0' },
     {
@@ -39,6 +41,8 @@ export function createMcpServer(backend: DeviceBackend): McpServer {
         'Element matching is fuzzy: partial text and case-insensitive matches work.',
         'After typing, call device_dismiss_keyboard to reveal elements obscured by the keyboard.',
         'Check for system alerts with device_snapshot before interacting with app elements.',
+        'If multiple devices are connected and no device is selected, tools will return the device list.',
+        'Call device_list_devices to see available devices, then device_select_device to choose one.',
       ].join('\n'),
     },
   );
@@ -66,6 +70,8 @@ export function createMcpServer(backend: DeviceBackend): McpServer {
   registerClipboardTool(server, backend);
   registerScreenRecordingTool(server, backend);
   registerGenerateLocatorsTool(server, backend);
+  registerListDevicesTool(server, backend);
+  registerSelectDeviceTool(server, backend);
 
   return server;
 }
