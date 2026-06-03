@@ -102,6 +102,7 @@ function createMockBackendFields(
     setClipboard: vi.fn().mockResolvedValue(undefined),
     startScreenRecording: vi.fn().mockResolvedValue(undefined),
     stopScreenRecording: vi.fn().mockResolvedValue('/tmp/recording.mp4'),
+    getElementText: vi.fn().mockResolvedValue('Hello'),
   };
 }
 

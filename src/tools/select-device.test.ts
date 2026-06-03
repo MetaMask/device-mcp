@@ -51,6 +51,7 @@ function createMockBackend(
     setClipboard: vi.fn(),
     startScreenRecording: vi.fn(),
     stopScreenRecording: vi.fn(),
+    getElementText: vi.fn(),
     ...overrides,
   };
 }

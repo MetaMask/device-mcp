@@ -113,6 +113,18 @@ export class AppiumBackend implements DeviceBackend {
     };
   }
 
+  async getElementText(query: ElementQuery): Promise<string> {
+    const snapshot = await this.snapshot();
+    const element = findElement(snapshot.hierarchy, query);
+    if (!element) {
+      throw new Error(
+        `Element not found: ${JSON.stringify(query)}\n` +
+          'Use device_snapshot to inspect the current UI hierarchy.',
+      );
+    }
+    return element.label ?? element.value ?? '';
+  }
+
   async tapCoordinates(targetX: number, targetY: number): Promise<void> {
     const client = this.#requireClient();
     await client.performActions([

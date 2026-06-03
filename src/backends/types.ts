@@ -134,4 +134,6 @@ export type DeviceBackend = {
   startScreenRecording(outputPath?: string): Promise<void>;
 
   stopScreenRecording(): Promise<string>;
+
+  getElementText(query: ElementQuery): Promise<string>;
 };

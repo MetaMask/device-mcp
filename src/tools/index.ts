@@ -21,5 +21,6 @@ export { registerContextTool } from './context.js';
 export { registerClipboardTool } from './clipboard.js';
 export { registerScreenRecordingTool } from './screen-recording.js';
 export { registerGenerateLocatorsTool } from './generate-locators.js';
+export { registerGetElementTextTool } from './get-element-text.js';
 export { registerListDevicesTool } from './list-devices.js';
 export { registerSelectDeviceTool } from './select-device.js';
