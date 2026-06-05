@@ -38,9 +38,6 @@ jobs:
 
   publish-npm-dry-run:
     needs: publish-release
-    permissions:
-      contents: read
-      id-token: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout and setup environment
