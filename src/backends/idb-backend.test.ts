@@ -288,4 +288,47 @@ describe('IdbBackend simctl fallback', () => {
       });
     });
   });
+
+  describe('getElementText', () => {
+    it('returns label from matching element', async () => {
+      const hierarchy = [
+        {
+          type: 'StaticText',
+          AXLabel: 'Balance',
+          AXValue: '$100.00',
+          frame: { x: 0, y: 0, width: 200, height: 30 },
+          enabled: true,
+        },
+      ];
+      mockExecStrict.mockResolvedValue(JSON.stringify(hierarchy));
+
+      const text = await backend.getElementText({ label: 'Balance' });
+
+      expect(text).toBe('Balance');
+    });
+
+    it('returns value when label is missing', async () => {
+      const hierarchy = [
+        {
+          type: 'TextField',
+          AXValue: 'typed text',
+          frame: { x: 0, y: 0, width: 200, height: 44 },
+          enabled: true,
+        },
+      ];
+      mockExecStrict.mockResolvedValue(JSON.stringify(hierarchy));
+
+      const text = await backend.getElementText({ type: 'TextField' });
+
+      expect(text).toBe('typed text');
+    });
+
+    it('throws when element is not found', async () => {
+      mockExecStrict.mockResolvedValue(JSON.stringify([]));
+
+      await expect(
+        backend.getElementText({ identifier: 'nonexistent' }),
+      ).rejects.toThrow('Element not found');
+    });
+  });
 });

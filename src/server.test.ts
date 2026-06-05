@@ -12,6 +12,7 @@ const EXPECTED_TOOLS = [
   'device_dismiss_keyboard',
   'device_generate_locators',
   'device_get_alert_text',
+  'device_get_element_text',
   'device_get_window_size',
   'device_info',
   'device_list_devices',
@@ -59,6 +60,7 @@ function createStubBackend(): LazyDeviceBackend {
     setClipboard: vi.fn(),
     startScreenRecording: vi.fn(),
     stopScreenRecording: vi.fn(),
+    getElementText: vi.fn(),
     selectDevice: vi.fn(),
     listDevices: vi.fn().mockResolvedValue([]),
   };
@@ -89,7 +91,7 @@ describe('createMcpServer', () => {
   it('registers exactly 22 tools', () => {
     const server = createMcpServer(createStubBackend());
     const names = getRegisteredToolNames(server);
-    expect(names).toHaveLength(25);
+    expect(names).toHaveLength(26);
   });
 
   it('registers all expected tool names', () => {

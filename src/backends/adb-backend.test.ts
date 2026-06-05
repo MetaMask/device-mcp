@@ -1,7 +1,20 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import { parseAndroidHierarchy, parseNodeAttributes } from './adb-backend.js';
+import {
+  parseAndroidHierarchy,
+  parseNodeAttributes,
+  AdbBackend,
+} from './adb-backend.js';
 import { findElement } from '../utils/element.js';
+import * as execModule from '../utils/exec.js';
+
+vi.mock('../utils/exec.js', () => ({
+  exec: vi.fn(),
+  execStrict: vi.fn(),
+  isCommandAvailable: vi.fn().mockResolvedValue(true),
+}));
+
+const mockExecStrict = vi.mocked(execModule.execStrict);
 
 const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <hierarchy rotation="0">
@@ -94,5 +107,66 @@ describe('parseNodeAttributes', () => {
     expect(result!.label).toBeUndefined();
     expect(result!.value).toBeUndefined();
     expect(result!.identifier).toBeUndefined();
+  });
+});
+
+describe('AdbBackend.getElementText', () => {
+  let backend: AdbBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecStrict.mockResolvedValue('device');
+    backend = new AdbBackend('emulator-5554');
+  });
+
+  const xmlWithElement = `<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy>
+  <node text="$42.00" resource-id="io.metamask:id/balance" class="android.widget.TextView" content-desc="Account balance" enabled="true" bounds="[100,200][500,260]" />
+</hierarchy>`;
+
+  it('returns label (content-desc) from matching element', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('get-state')) {
+        return 'device';
+      }
+      return xmlWithElement;
+    });
+
+    const text = await backend.getElementText({
+      identifier: 'io.metamask:id/balance',
+    });
+
+    expect(text).toBe('Account balance');
+  });
+
+  it('returns value (text attr) when no label', async () => {
+    const xmlNoDesc = `<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy>
+  <node text="hello" resource-id="field" class="EditText" content-desc="" enabled="true" bounds="[0,0][100,50]" />
+</hierarchy>`;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('get-state')) {
+        return 'device';
+      }
+      return xmlNoDesc;
+    });
+
+    const text = await backend.getElementText({ identifier: 'field' });
+
+    expect(text).toBe('hello');
+  });
+
+  it('throws when element not found', async () => {
+    const emptyXml = `<?xml version="1.0" encoding="UTF-8"?><hierarchy></hierarchy>`;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('get-state')) {
+        return 'device';
+      }
+      return emptyXml;
+    });
+
+    await expect(
+      backend.getElementText({ identifier: 'missing' }),
+    ).rejects.toThrow('Element not found');
   });
 });

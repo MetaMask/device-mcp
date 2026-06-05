@@ -102,6 +102,7 @@ function createMockBackendFields(
     setClipboard: vi.fn().mockResolvedValue(undefined),
     startScreenRecording: vi.fn().mockResolvedValue(undefined),
     stopScreenRecording: vi.fn().mockResolvedValue('/tmp/recording.mp4'),
+    getElementText: vi.fn().mockResolvedValue('Hello'),
   };
 }
 
@@ -380,6 +381,7 @@ describe('createLazyBackend', () => {
       await lazy.setClipboard('copied');
       await lazy.startScreenRecording('/tmp/rec.mp4');
       await lazy.stopScreenRecording();
+      await lazy.getElementText({ label: 'Balance' });
 
       expect(mockDetectPlatform).toHaveBeenCalledTimes(1);
     });
