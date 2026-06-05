@@ -381,6 +381,7 @@ describe('createLazyBackend', () => {
       await lazy.setClipboard('copied');
       await lazy.startScreenRecording('/tmp/rec.mp4');
       await lazy.stopScreenRecording();
+      await lazy.getElementText({ label: 'Balance' });
 
       expect(mockDetectPlatform).toHaveBeenCalledTimes(1);
     });

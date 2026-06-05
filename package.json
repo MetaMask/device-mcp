@@ -86,7 +86,7 @@
     "vite": "^6.4.1",
     "vitest": "^3.2.1"
   },
-  "packageManager": "yarn@4.11.0",
+  "packageManager": "yarn@4.16.0",
   "engines": {
     "node": "^20 || ^22 || >=24"
   },
