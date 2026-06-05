@@ -9,13 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0]
 
-### Uncategorized
+### Added
 
-- fix: add permissions for publish job ([#12](https://github.com/MetaMask/device-mcp/pull/12))
-- Revert "0.2.0" ([#11](https://github.com/MetaMask/device-mcp/pull/11))
-- 0.2.0 ([#10](https://github.com/MetaMask/device-mcp/pull/10))
-- test: add get element text and mapping to all backends ([#9](https://github.com/MetaMask/device-mcp/pull/9))
-- chore: add device selection tools ([#7](https://github.com/MetaMask/device-mcp/pull/7))
+- Add get element text and mapping to all backends ([#9](https://github.com/MetaMask/device-mcp/pull/9))
+- Add device selection tools ([#7](https://github.com/MetaMask/device-mcp/pull/7))
 
 ## [0.1.0]
 
