@@ -233,5 +233,9 @@ export function createLazyBackend(
     async stopScreenRecording(): Promise<string> {
       return (await resolve()).stopScreenRecording();
     },
+
+    async getElementText(query: ElementQuery): Promise<string> {
+      return (await resolve()).getElementText(query);
+    },
   };
 }

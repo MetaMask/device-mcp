@@ -25,6 +25,7 @@ import {
   registerClipboardTool,
   registerScreenRecordingTool,
   registerGenerateLocatorsTool,
+  registerGetElementTextTool,
   registerListDevicesTool,
   registerSelectDeviceTool,
 } from './tools/index.js';
@@ -70,6 +71,7 @@ export function createMcpServer(backend: LazyDeviceBackend): McpServer {
   registerClipboardTool(server, backend);
   registerScreenRecordingTool(server, backend);
   registerGenerateLocatorsTool(server, backend);
+  registerGetElementTextTool(server, backend);
   registerListDevicesTool(server, backend);
   registerSelectDeviceTool(server, backend);
 

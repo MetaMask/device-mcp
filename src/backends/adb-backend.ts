@@ -103,6 +103,18 @@ export class AdbBackend implements DeviceBackend {
     };
   }
 
+  async getElementText(query: ElementQuery): Promise<string> {
+    const snapshot = await this.snapshot();
+    const element = findElement(snapshot.hierarchy, query);
+    if (!element) {
+      throw new Error(
+        `Element not found: ${JSON.stringify(query)}\n` +
+          'Use device_snapshot to inspect the current UI hierarchy.',
+      );
+    }
+    return element.label ?? element.value ?? '';
+  }
+
   async tapCoordinates(x: number, y: number): Promise<void> {
     await this.#adb(['shell', 'input', 'tap', String(x), String(y)]);
   }
