@@ -8,6 +8,9 @@ on:
       SLACK_WEBHOOK_URL:
         required: true
 
+permissions:
+  contents: read
+
 jobs:
   publish-release:
     permissions:
@@ -35,8 +38,6 @@ jobs:
 
   publish-npm-dry-run:
     needs: publish-release
-    permissions:
-      id-token: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout and setup environment
@@ -59,6 +60,7 @@ jobs:
   publish-npm:
     needs: publish-npm-dry-run
     permissions:
+      contents: read
       id-token: write
     runs-on: ubuntu-latest
     environment: npm-publish
