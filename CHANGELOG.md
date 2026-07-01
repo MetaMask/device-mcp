@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add Hermes CDP tools (`hermes_cdp`, `hermes_targets`) for inspecting the React Native Hermes JS runtime via Metro
+
 ## [0.2.0]
 
 ### Added

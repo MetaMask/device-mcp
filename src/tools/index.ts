@@ -24,3 +24,5 @@ export { registerGenerateLocatorsTool } from './generate-locators.js';
 export { registerGetElementTextTool } from './get-element-text.js';
 export { registerListDevicesTool } from './list-devices.js';
 export { registerSelectDeviceTool } from './select-device.js';
+export { registerHermesCdpTool } from './hermes-cdp.js';
+export { registerHermesTargetsTool } from './hermes-targets.js';

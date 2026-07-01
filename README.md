@@ -18,6 +18,7 @@ Provides device interaction tools for LLM agents to inspect UI state, interact w
 - **iOS local**: Xcode Command Line Tools (for `xcrun simctl`) + [IDB](https://fbidb.io/) for UI interaction (`brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb`)
 - **Android local**: ADB (Android SDK platform-tools) — auto-discovered from `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or `~/Library/Android/sdk`
 - **Remote/BrowserStack**: No local tools needed — connects via Appium W3C WebDriver HTTP
+- **Hermes CDP** (debugging the React Native JS runtime): uses the global `WebSocket` API. Node 22+ works out of the box; **Node 20 requires launching with `NODE_OPTIONS="--experimental-websocket"`**.
 
 ## Installation
 
@@ -157,6 +158,13 @@ The `.device-session` file is typically written by the test runner when it creat
 | `device_dismiss_keyboard` | Hide the on-screen keyboard after typing.              |
 | `device_dismiss_alert`    | Accept or dismiss a system alert or permission dialog. |
 
+### Hermes CDP
+
+| Tool             | Description                                                               |
+| ---------------- | ------------------------------------------------------------------------- |
+| `hermes_cdp`     | Speak raw Chrome DevTools Protocol to the React Native Hermes JS runtime. |
+| `hermes_targets` | List and diagnose the debuggable Hermes targets exposed by Metro.         |
+
 ### Element Identification
 
 Elements are identified by accessibility attributes — not internal refs. Matching is **fuzzy**: partial text and case-insensitive matches work. For example, querying `{ label: "Confirm" }` matches an element with label `"Confirm Transaction"`.
@@ -186,6 +194,43 @@ Elements are identified by accessibility attributes — not internal refs. Match
 | `device_dismiss_keyboard` | `idb ui key RETURN`                  | `input keyevent 111` | `mobile: hideKeyboard`        |
 | `device_dismiss_alert`    | find button + tap                    | find button + tap    | `mobile: accept/dismissAlert` |
 | `device_logs`             | `idb log`                            | `logcat`             | `mobile: getLog`              |
+
+## Hermes CDP
+
+Beyond native UI automation (idb/adb), the server can speak [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/) (CDP) directly to the **React Native Hermes** JS runtime of a running app via Metro's inspector proxy. This lets an agent evaluate JavaScript, inspect runtime state, and diagnose the app's JS layer — complementing the native tools. Works on **both iOS and Android** (the transport is identical HTTP/WebSocket to Metro; only the default `appId` differs).
+
+This is _React Native Hermes CDP via Metro's inspector proxy_ — not WebView/browser CDP, and not the iOS WebKit Inspector Protocol. The app's Hermes runtime connects out to Metro; Metro exposes debuggable targets over `http://localhost:<metroPort>/json` and a per-target `webSocketDebuggerUrl`, and the server speaks real CDP over that WebSocket.
+
+### Prerequisites
+
+- A **DEBUG build with Metro running** on the inspector port. Release builds expose no inspector (`/json` returns `[]`).
+- The global `WebSocket` API: **Node 22+ works out of the box**; **Node 20 requires launching with `NODE_OPTIONS="--experimental-websocket"`** (see [Requirements](#requirements)).
+
+### Tools
+
+| Tool             | Description                                                               |
+| ---------------- | ------------------------------------------------------------------------- |
+| `hermes_cdp`     | Speak raw Chrome DevTools Protocol to the React Native Hermes JS runtime. |
+| `hermes_targets` | List and diagnose the debuggable Hermes targets exposed by Metro.         |
+
+Example `hermes_cdp` call: method `Runtime.evaluate` with params `{"expression":"1+1","returnByValue":true}` — the raw response nests the value at `result.result.value`.
+
+### Safety model
+
+A single Metro can have multiple apps/simulators registered, so executing CDP against the wrong target could run code in the wrong workspace. The server applies five fail-closed checks before executing:
+
+1. **Strict `appId` match** — only targets whose `appId` equals the expected id (no substring, no `targets[0]` fallback).
+2. **`HermesInternal` identity probe** — evaluates `HermesInternal.getRuntimeProperties()` before the user's method; non-Hermes targets fail closed.
+3. **Device pin** — pins `reactNative.logicalDeviceId` on first success; later calls are filtered to the pin.
+4. **Multi-device fail-closed** — multiple distinct logical devices (or any missing the field) fail closed rather than guess.
+5. **WebSocket URL validation** — protocol must be `ws:`, hostname must be loopback, and port must equal the resolved Metro port.
+
+The synthetic legacy page (`React Native Experimental (Improved Chrome Reloads)`) is filtered out, and destructive methods `Runtime.terminateExecution` and `Inspector.detached` are blocked.
+
+### Configuration
+
+- **appId** defaults to `io.metamask.MetaMask` (iOS) / `io.metamask` (Android). Override globally via the `HERMES_APP_ID` env var or per-call via the tool's `appId` param. Android users not on the default must pass `appId` or set `HERMES_APP_ID`; `hermes_targets` with `all: true` aids discovery of the real appId.
+- **Metro port** defaults to `8081`. Override via the `HERMES_METRO_PORT` env var or per-call via the tool's `metroPort` param.
 
 ## MCP Client Configuration
 
@@ -260,7 +305,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 @metamask/device-mcp
 ├── src/
 │   ├── index.ts                # Entry point — lazy backend, stdio MCP server
-│   ├── server.ts               # MCP server — registers 25 tools
+│   ├── server.ts               # MCP server — registers 28 tools
 │   ├── backends/
 │   │   ├── types.ts            # DeviceBackend interface
 │   │   ├── idb-backend.ts      # iOS local — IDB commands + simctl fallback
@@ -269,7 +314,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 │   │   ├── webdriver-client.ts # Minimal W3C WebDriver HTTP client (fetch)
 │   │   ├── session-file.ts     # .device-session file reader
 │   │   └── index.ts            # createBackend() + createLazyBackend() factory
-│   ├── tools/                  # One file per MCP tool (25 tools)
+│   ├── tools/                  # One file per MCP tool (28 tools)
 │   │   ├── list-devices.ts     # device_list_devices — enumerate connected devices
 │   │   ├── select-device.ts    # device_select_device — choose device for session
 │   │   └── ...                 # snapshot, tap, type, swipe, etc.

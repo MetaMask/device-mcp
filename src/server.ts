@@ -28,6 +28,8 @@ import {
   registerGetElementTextTool,
   registerListDevicesTool,
   registerSelectDeviceTool,
+  registerHermesCdpTool,
+  registerHermesTargetsTool,
 } from './tools/index.js';
 
 export function createMcpServer(backend: LazyDeviceBackend): McpServer {
@@ -44,6 +46,7 @@ export function createMcpServer(backend: LazyDeviceBackend): McpServer {
         'Check for system alerts with device_snapshot before interacting with app elements.',
         'If multiple devices are connected and no device is selected, tools will return the device list.',
         'Call device_list_devices to see available devices, then device_select_device to choose one.',
+        'The Hermes tools (hermes_cdp, hermes_targets) talk to the React Native Hermes JS runtime via Metro and require a DEBUG build with Metro running (Node 20 needs NODE_OPTIONS="--experimental-websocket").',
       ].join('\n'),
     },
   );
@@ -74,6 +77,8 @@ export function createMcpServer(backend: LazyDeviceBackend): McpServer {
   registerGetElementTextTool(server, backend);
   registerListDevicesTool(server, backend);
   registerSelectDeviceTool(server, backend);
+  registerHermesCdpTool(server, backend);
+  registerHermesTargetsTool(server, backend);
 
   return server;
 }
