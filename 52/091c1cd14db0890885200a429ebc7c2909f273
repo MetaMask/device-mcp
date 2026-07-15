@@ -1,0 +1,85 @@
+src/tools/screenshot.ts
+  s_80e504db200115::t_88a269fa9e1183 28-37,40
+src/backends/idb-backend.test.ts
+  s_80e504db200115::t_ae109f8e3faed8 1,7-10,26
+  s_80e504db200115::t_7606d1203adde6 341-406
+src/backends/appium-backend.test.ts
+  s_fe67e770992496::t_3c912d22874b85 184-201
+  s_80e504db200115::t_0a29294d745d3f 1-3,6,10-27
+  s_80e504db200115::t_cd0e440c6902c0 127-158,160-165,171-183,202
+  s_80e504db200115::t_546a12b817200b 159,166-170
+vitest.config.mts
+  s_fe67e770992496::t_4a6884573f00d8 15
+  s_80e504db200115::t_c4bb079d441779 16
+  s_fe67e770992496::t_c1affa5050c1ac 17-18
+src/index.ts
+  s_fe67e770992496::t_b95673b488360a 16
+  s_80e504db200115::t_3455f77fde9561 17
+src/backends/index.ts
+  s_fe67e770992496::t_0bc8ba97113903 11
+  s_80e504db200115::t_61985676013203 12
+  s_fe67e770992496::t_4e888415b5fb0b 102-120
+  s_fe67e770992496::t_1785840c640d66 180
+src/backends/appium-backend.ts
+  s_80e504db200115::t_8487c58818fde9 278-279
+  s_fe67e770992496::t_e096d39ca93da2 255-258,260-263,265-268,273,276-277,280-285,288
+  s_fe67e770992496::t_649812f737cce8 12
+  s_fe67e770992496::t_51636a6676eb8b 259,264,269
+  s_80e504db200115::t_32eaf729f575ea 270-272,286-287
+  s_80e504db200115::t_33150c21ebc73d 2,13
+src/backends/idb-backend.ts
+  s_fe67e770992496::t_07faf86d2cc0fe 11
+  s_fe67e770992496::t_2be73d970d3f2f 237-240,242-245,247-250,255,259-262
+  s_fe67e770992496::t_51636a6676eb8b 241,246,251
+  s_80e504db200115::t_74d84df14377a5 252-254,263
+  s_80e504db200115::t_262540b5a03e5c 3,12
+src/backends/types.ts
+  s_fe67e770992496::t_ffda90ca7a10c3 49
+  s_80e504db200115::t_cdade4840fda2c 114-115,117
+  s_80e504db200115::t_e463e7e4684a2f 54-56,58-59
+  s_fe67e770992496::t_5216d744507fbe 42,45,50-53
+  s_80e504db200115::t_bc694d2889feed 57
+  s_fe67e770992496::t_92aa3a1afca8e8 116,118-125
+  s_80e504db200115::t_b62e20697d2718 60
+CHANGELOG.md
+  s_80e504db200115::t_cdc69b19393132 14-22
+src/backends/adb-backend.ts
+  s_80e504db200115::t_0094140d97ff6e 3,12
+  s_fe67e770992496::t_10a298c7024c8d 222-225,227-230,232-235,240,252-255
+  s_fe67e770992496::t_b7c83d5e2ac9d3 11
+  s_fe67e770992496::t_51636a6676eb8b 226,231,236
+  s_80e504db200115::t_dd4ae3bba251c5 237-239,256
+src/backends/adb-backend.test.ts
+  s_80e504db200115::t_2db12639164864 1,12-15,23
+  s_80e504db200115::t_bdc6dc3834984f 179-232,243
+  s_fe67e770992496::t_594fa5bc6d5300 233-242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "52091c1cd14db0890885200a429ebc7c2909f273",
+  "prompts": {},
+  "humans": {
+    "h_d6a04d82b61d5e": {
+      "author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  },
+  "sessions": {
+    "s_80e504db200115": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0ba1a82e8ffeqZjdnkMA5PTrYF",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    },
+    "s_fe67e770992496": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_0a29d0a7effeq835pzbXIJniVD",
+        "model": "unknown"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
