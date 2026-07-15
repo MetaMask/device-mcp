@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 
 import type {
   DeviceBackend,
@@ -7,6 +8,8 @@ import type {
   DeviceInfo,
   SnapshotResult,
   ScreenshotResult,
+  ScreenshotFileResult,
+  ScreenshotOptions,
   LogsResult,
   TapResult,
   AppStateResult,
@@ -216,7 +219,25 @@ export class AdbBackend implements DeviceBackend {
     return xml;
   }
 
-  async screenshot(outputPath?: string): Promise<ScreenshotResult> {
+  screenshot(
+    outputPath?: string,
+    options?: { encode?: true },
+  ): Promise<ScreenshotResult>;
+
+  screenshot(
+    outputPath: string | undefined,
+    options: { encode: false },
+  ): Promise<ScreenshotFileResult>;
+
+  screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult>;
+
+  async screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult> {
     const localPath =
       outputPath ?? `/tmp/device-mcp-screenshot-${Date.now()}.png`;
     await this.#adb(['shell', 'screencap', '-p', '/sdcard/screenshot.png']);
@@ -228,8 +249,11 @@ export class AdbBackend implements DeviceBackend {
       localPath,
     ]);
     await this.#adb(['shell', 'rm', '-f', '/sdcard/screenshot.png']);
-    const data = await execStrict('base64', [localPath]);
-    return { data: data.trim(), format: 'png', path: localPath };
+    if (options?.encode === false) {
+      return { data: undefined, format: 'png', path: localPath };
+    }
+    const data = await readFile(localPath, 'base64');
+    return { data, format: 'png', path: localPath };
   }
 
   async openApp(bundleId: string): Promise<void> {

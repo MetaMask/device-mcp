@@ -1,9 +1,30 @@
-import { describe, it, expect } from 'vitest';
+import { writeFile } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import {
+  AppiumBackend,
   parseAppiumAndroidHierarchy,
   parseAppiumIosHierarchy,
 } from './appium-backend.js';
+import type { AttachSessionConfig } from './session-file.js';
+
+const mockGetStatus = vi.fn();
+const mockExecute = vi.fn();
+
+vi.mock('./webdriver-client.js', () => ({
+  WebDriverClient: vi.fn().mockImplementation(() => ({
+    getStatus: mockGetStatus,
+    execute: mockExecute,
+  })),
+  createSession: vi.fn(),
+}));
+
+vi.mock('node:fs/promises', () => ({
+  writeFile: vi.fn(),
+}));
+
+const mockWriteFile = vi.mocked(writeFile);
 
 const SAMPLE_ANDROID_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <hierarchy rotation="0">
@@ -101,5 +122,81 @@ describe('parseAppiumIosHierarchy', () => {
 
   it('handles empty XML', () => {
     expect(parseAppiumIosHierarchy('')).toStrictEqual([]);
+  });
+});
+
+describe('AppiumBackend.screenshot', () => {
+  const config: AttachSessionConfig = {
+    mode: 'attach',
+    appiumUrl: 'http://localhost:4723',
+    sessionId: 'session-1',
+    platform: 'ios',
+  };
+
+  let backend: AppiumBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetStatus.mockResolvedValue({});
+    backend = new AppiumBackend(config);
+    await backend.ensureConnected();
+  });
+
+  it('returns base64 image data from the WebDriver session by default', async () => {
+    mockExecute.mockResolvedValue('YmFzZTY0LWltYWdl');
+
+    const result = await backend.screenshot();
+
+    expect(mockExecute).toHaveBeenCalledWith('mobile: getScreenshot', []);
+    expect(mockWriteFile).not.toHaveBeenCalled();
+    expect(result).toStrictEqual({
+      data: 'YmFzZTY0LWltYWdl',
+      format: 'png',
+      path: undefined,
+    });
+  });
+
+  it('writes to a temp file and omits base64 data when encode is false', async () => {
+    mockExecute.mockResolvedValue('YmFzZTY0LWltYWdl');
+
+    const result = await backend.screenshot(undefined, { encode: false });
+
+    expect(result.data).toBeUndefined();
+    expect(result.format).toBe('png');
+    expect(result.path).toMatch(/^\/tmp\/device-mcp-screenshot-\d+\.png$/u);
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      result.path,
+      Buffer.from('YmFzZTY0LWltYWdl', 'base64'),
+    );
+  });
+
+  it('writes the decoded image to outputPath when provided', async () => {
+    mockExecute.mockResolvedValue('YmFzZTY0LWltYWdl');
+
+    const result = await backend.screenshot('/tmp/appium-shot.png');
+
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      resolvePath('/tmp/appium-shot.png'),
+      Buffer.from('YmFzZTY0LWltYWdl', 'base64'),
+    );
+    expect(result.path).toBe(resolvePath('/tmp/appium-shot.png'));
+  });
+
+  it('writes to outputPath and omits base64 data when encode is false', async () => {
+    mockExecute.mockResolvedValue('YmFzZTY0LWltYWdl');
+
+    const result = await backend.screenshot('/tmp/appium-shot.png', {
+      encode: false,
+    });
+
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      resolvePath('/tmp/appium-shot.png'),
+      Buffer.from('YmFzZTY0LWltYWdl', 'base64'),
+    );
+    expect(result).toStrictEqual({
+      data: undefined,
+      format: 'png',
+      path: resolvePath('/tmp/appium-shot.png'),
+    });
   });
 });

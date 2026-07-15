@@ -1,4 +1,5 @@
 import { writeFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
 
 import type { SessionConfig } from './session-file.js';
@@ -8,6 +9,8 @@ import type {
   DeviceInfo,
   SnapshotResult,
   ScreenshotResult,
+  ScreenshotFileResult,
+  ScreenshotOptions,
   LogsResult,
   TapResult,
   AppStateResult,
@@ -249,10 +252,40 @@ export class AppiumBackend implements DeviceBackend {
     }
   }
 
-  async screenshot(): Promise<ScreenshotResult> {
+  screenshot(
+    outputPath?: string,
+    options?: { encode?: true },
+  ): Promise<ScreenshotResult>;
+
+  screenshot(
+    outputPath: string | undefined,
+    options: { encode: false },
+  ): Promise<ScreenshotFileResult>;
+
+  screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult>;
+
+  async screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult> {
     const client = this.#requireClient();
     const data = await client.execute<string>('mobile: getScreenshot', []);
-    return { data, format: 'png' };
+    if (options?.encode === false) {
+      const path = resolvePath(
+        outputPath ?? `/tmp/device-mcp-screenshot-${Date.now()}.png`,
+      );
+      await writeFile(path, Buffer.from(data, 'base64'));
+      return { data: undefined, format: 'png', path };
+    }
+    let path: string | undefined;
+    if (outputPath) {
+      path = resolvePath(outputPath);
+      await writeFile(path, Buffer.from(data, 'base64'));
+    }
+    return { data, format: 'png', path };
   }
 
   async openApp(bundleId: string): Promise<void> {

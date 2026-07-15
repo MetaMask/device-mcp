@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import {
@@ -8,6 +9,10 @@ import {
 import { findElement } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
 
+vi.mock('node:fs/promises', () => ({
+  readFile: vi.fn(),
+}));
+
 vi.mock('../utils/exec.js', () => ({
   exec: vi.fn(),
   execStrict: vi.fn(),
@@ -15,6 +20,7 @@ vi.mock('../utils/exec.js', () => ({
 }));
 
 const mockExecStrict = vi.mocked(execModule.execStrict);
+const mockReadFile = vi.mocked(readFile);
 
 const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <hierarchy rotation="0">
@@ -168,5 +174,70 @@ describe('AdbBackend.getElementText', () => {
     await expect(
       backend.getElementText({ identifier: 'missing' }),
     ).rejects.toThrow('Element not found');
+  });
+});
+
+describe('AdbBackend.screenshot', () => {
+  let backend: AdbBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    backend = new AdbBackend('emulator-5554');
+  });
+
+  it('captures with screencap and encodes base64 in-process by default', async () => {
+    mockExecStrict.mockResolvedValue('');
+    mockReadFile.mockResolvedValue('QUJDREVG');
+
+    const result = await backend.screenshot('/tmp/a.png');
+
+    expect(mockExecStrict).toHaveBeenCalledWith('adb', [
+      '-s',
+      'emulator-5554',
+      'pull',
+      '/sdcard/screenshot.png',
+      '/tmp/a.png',
+    ]);
+    expect(mockReadFile).toHaveBeenCalledWith('/tmp/a.png', 'base64');
+    expect(result).toStrictEqual({
+      data: 'QUJDREVG',
+      format: 'png',
+      path: '/tmp/a.png',
+    });
+  });
+
+  it('never shells out to the non-portable base64 binary', async () => {
+    mockExecStrict.mockResolvedValue('');
+    mockReadFile.mockResolvedValue('Zm9v');
+
+    await backend.screenshot('/tmp/a.png');
+
+    expect(mockExecStrict).not.toHaveBeenCalledWith(
+      'base64',
+      expect.anything(),
+    );
+  });
+
+  it('skips base64 encoding when encode is false', async () => {
+    mockExecStrict.mockResolvedValue('');
+
+    const result = await backend.screenshot('/tmp/a.png', { encode: false });
+
+    expect(mockReadFile).not.toHaveBeenCalled();
+    expect(result).toStrictEqual({
+      data: undefined,
+      format: 'png',
+      path: '/tmp/a.png',
+    });
+  });
+
+  it('defaults to a tmp path when none is provided', async () => {
+    mockExecStrict.mockResolvedValue('');
+    mockReadFile.mockResolvedValue('YmFy');
+
+    const result = await backend.screenshot();
+
+    expect(result.path).toMatch(/^\/tmp\/device-mcp-screenshot-\d+\.png$/u);
+    expect(result.data).toBe('YmFy');
   });
 });

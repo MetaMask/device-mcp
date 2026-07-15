@@ -1,5 +1,6 @@
 import { execFile as execFileCb, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 
 import type {
   DeviceBackend,
@@ -7,6 +8,8 @@ import type {
   DeviceInfo,
   SnapshotResult,
   ScreenshotResult,
+  ScreenshotFileResult,
+  ScreenshotOptions,
   LogsResult,
   TapResult,
   AppStateResult,
@@ -231,12 +234,33 @@ export class IdbBackend implements DeviceBackend {
     return { bundleId, state: 'Not Installed' };
   }
 
-  async screenshot(outputPath?: string): Promise<ScreenshotResult> {
+  screenshot(
+    outputPath?: string,
+    options?: { encode?: true },
+  ): Promise<ScreenshotResult>;
+
+  screenshot(
+    outputPath: string | undefined,
+    options: { encode: false },
+  ): Promise<ScreenshotFileResult>;
+
+  screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult>;
+
+  async screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult> {
     await this.ensureConnected();
     const path = outputPath ?? `/tmp/device-mcp-screenshot-${Date.now()}.png`;
     await execStrict(this.#idbPath, ['screenshot', path, '--udid', this.#udid]);
-    const data = await execStrict('base64', [path]);
-    return { data: data.trim(), format: 'png', path };
+    if (options?.encode === false) {
+      return { data: undefined, format: 'png', path };
+    }
+    const data = await readFile(path, 'base64');
+    return { data, format: 'png', path };
   }
 
   async openApp(bundleId: string): Promise<void> {

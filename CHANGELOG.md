@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add Hermes CDP tools (`hermes_cdp`, `hermes_targets`) for inspecting the React Native Hermes JS runtime via Metro
 
+### Changed
+
+- Make screenshot base64 encoding optional — `DeviceBackend.screenshot(outputPath, { encode })` accepts `{ encode: false }` to return only the file `path` and skip base64 encoding. `ScreenshotResult.data` is now optional; the default (`encode: true`) preserves existing behavior
+- The Appium backend now saves the screenshot to `outputPath` when one is provided (previously the argument was ignored)
+
+### Fixed
+
+- Fix `device_screenshot` failing on macOS — the captured PNG is now read in-process via `fs.readFile(path, 'base64')` instead of shelling out to the `base64` CLI, which is not portable (BSD `base64` on macOS rejects the GNU positional-file syntax that was used previously)
+
 ## [0.2.0]
 
 ### Added
