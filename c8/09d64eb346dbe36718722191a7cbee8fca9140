@@ -1,0 +1,58 @@
+src/backends/adb-backend.ts
+  s_f24b77579bf3fe::t_de738e71ccbe9b 478
+  s_f24b77579bf3fe::t_3acdfa47502dd0 245,255
+  s_f24b77579bf3fe::t_c19a5bef0bcae4 27-30
+  s_f24b77579bf3fe::t_ac16e6e8259e7a 446
+README.md
+  s_f24b77579bf3fe::t_ae1c6a49a84e81 235-242
+src/backends/appium-backend.ts
+  s_f24b77579bf3fe::t_33d4d044732eb5 277-278,283-284
+  s_f24b77579bf3fe::t_bc4b71e4d534db 24-27
+  s_f24b77579bf3fe::t_f731d38b82c1c5 496
+  s_f24b77579bf3fe::t_41f5eee9dbe111 509-510
+src/backends/idb-backend.ts
+  s_f24b77579bf3fe::t_a9f625a1190d11 507
+  s_f24b77579bf3fe::t_73e79c8cb8c693 530
+  s_f24b77579bf3fe::t_7094a2277dfeba 261,263
+  s_f24b77579bf3fe::t_9ebca5836c1fe8 27-30
+src/backends/appium-backend.test.ts
+  s_f24b77579bf3fe::t_4b94d6a983ef09 166-168,172
+  s_f24b77579bf3fe::t_fdb6e5b6ac2e88 184
+  s_f24b77579bf3fe::t_ec74ddc380b4e7 199
+src/utils/output-path.ts
+  s_f24b77579bf3fe::t_9ec4a9aeef2f41 24,30
+  s_f24b77579bf3fe::t_a85ee15b0dd394 1-23,25-29,31-147
+src/backends/adb-backend.test.ts
+  s_f24b77579bf3fe::t_79950d757c32a9 240-242
+src/backends/idb-backend.test.ts
+  s_f24b77579bf3fe::t_a07445f1de7372 403-405
+src/utils/output-path.test.ts
+  s_f24b77579bf3fe::t_f60d0a8c4db683 2-22,26-91,96-129,131-137,144,159-171,178,180,184-188
+  s_f24b77579bf3fe::t_03030de8d9eec3 1,23-25,92-95,130,138-143,145-158
+  s_f24b77579bf3fe::t_7ed05ff25dc999 172-177,179,181-183
+vitest.config.mts
+  s_f24b77579bf3fe::t_3486d26b804802 15-18
+CHANGELOG.md
+  s_f24b77579bf3fe::t_6ab670ad97991f 23-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c809d64eb346dbe36718722191a7cbee8fca9140",
+  "prompts": {},
+  "humans": {
+    "h_d6a04d82b61d5e": {
+      "author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  },
+  "sessions": {
+    "s_f24b77579bf3fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_07a2355f9ffeVLPLsEbJqx18qB",
+        "model": "unknown"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
