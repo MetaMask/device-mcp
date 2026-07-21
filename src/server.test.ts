@@ -30,6 +30,8 @@ const EXPECTED_TOOLS = [
   'device_tap_element',
   'device_type',
   'device_wait_for',
+  'hermes_cdp',
+  'hermes_targets',
 ];
 
 function createStubBackend(): LazyDeviceBackend {
@@ -88,10 +90,10 @@ describe('createMcpServer', () => {
     expect(server.server).toBeDefined();
   });
 
-  it('registers exactly 22 tools', () => {
+  it('registers exactly 28 tools', () => {
     const server = createMcpServer(createStubBackend());
     const names = getRegisteredToolNames(server);
-    expect(names).toHaveLength(26);
+    expect(names).toHaveLength(28);
   });
 
   it('registers all expected tool names', () => {
