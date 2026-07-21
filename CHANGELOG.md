@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fix `device_screenshot` failing on macOS — the captured PNG is now read in-process via `fs.readFile(path, 'base64')` instead of shelling out to the `base64` CLI, which is not portable (BSD `base64` on macOS rejects the GNU positional-file syntax that was used previously)
 
+### Security
+
+- Harden screenshot and screen-recording file writes across the ADB, IDB, and Appium backends — default captures now use a private per-process temporary directory (`0700`) with unpredictable names instead of the predictable `/tmp/device-mcp-*-<timestamp>` paths, files are written owner-only (`0600`), and a symlink at the destination is never followed. Caller-supplied output paths can be confined to a single directory via the new `DEVICE_MCP_OUTPUT_DIR` environment variable
+
 ## [0.2.0]
 
 ### Added

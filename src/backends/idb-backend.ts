@@ -24,6 +24,10 @@ import {
   computeSwipeEnd,
 } from '../utils/element.js';
 import { execStrict, exec } from '../utils/exec.js';
+import {
+  hardenArtifactFile,
+  resolveArtifactPath,
+} from '../utils/output-path.js';
 import { resolveIdbPath } from '../utils/platform.js';
 
 export class IdbBackend implements DeviceBackend {
@@ -254,8 +258,9 @@ export class IdbBackend implements DeviceBackend {
     options?: ScreenshotOptions,
   ): Promise<ScreenshotResult | ScreenshotFileResult> {
     await this.ensureConnected();
-    const path = outputPath ?? `/tmp/device-mcp-screenshot-${Date.now()}.png`;
+    const path = resolveArtifactPath(outputPath, 'screenshot');
     await execStrict(this.#idbPath, ['screenshot', path, '--udid', this.#udid]);
+    hardenArtifactFile(path);
     if (options?.encode === false) {
       return { data: undefined, format: 'png', path };
     }
@@ -499,7 +504,7 @@ export class IdbBackend implements DeviceBackend {
     if (this.#recordingProcess) {
       throw new Error('Screen recording is already in progress');
     }
-    const path = outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
+    const path = resolveArtifactPath(outputPath, 'recording');
     this.#recordingPath = path;
     this.#recordingProcess = spawn(this.#idbPath, [
       'record-video',
@@ -522,6 +527,7 @@ export class IdbBackend implements DeviceBackend {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     this.#recordingProcess = null;
     this.#recordingPath = null;
+    hardenArtifactFile(path);
     return path;
   }
 }

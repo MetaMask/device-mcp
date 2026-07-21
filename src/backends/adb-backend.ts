@@ -24,6 +24,10 @@ import {
   computeSwipeEnd,
 } from '../utils/element.js';
 import { execStrict, isCommandAvailable } from '../utils/exec.js';
+import {
+  hardenArtifactFile,
+  resolveArtifactPath,
+} from '../utils/output-path.js';
 
 export class AdbBackend implements DeviceBackend {
   readonly platform = 'android' as const;
@@ -238,8 +242,7 @@ export class AdbBackend implements DeviceBackend {
     outputPath?: string,
     options?: ScreenshotOptions,
   ): Promise<ScreenshotResult | ScreenshotFileResult> {
-    const localPath =
-      outputPath ?? `/tmp/device-mcp-screenshot-${Date.now()}.png`;
+    const localPath = resolveArtifactPath(outputPath, 'screenshot');
     await this.#adb(['shell', 'screencap', '-p', '/sdcard/screenshot.png']);
     await execStrict('adb', [
       '-s',
@@ -249,6 +252,7 @@ export class AdbBackend implements DeviceBackend {
       localPath,
     ]);
     await this.#adb(['shell', 'rm', '-f', '/sdcard/screenshot.png']);
+    hardenArtifactFile(localPath);
     if (options?.encode === false) {
       return { data: undefined, format: 'png', path: localPath };
     }
@@ -439,8 +443,7 @@ export class AdbBackend implements DeviceBackend {
     if (this.#recordingProcess) {
       throw new Error('Screen recording is already in progress');
     }
-    this.#recordingPath =
-      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
+    this.#recordingPath = resolveArtifactPath(outputPath, 'recording');
     this.#recordingProcess = spawn('adb', [
       '-s',
       this.#serial,
@@ -472,6 +475,7 @@ export class AdbBackend implements DeviceBackend {
       localPath,
     ]);
     await this.#adb(['shell', 'rm', '-f', this.#recordingRemotePath]);
+    hardenArtifactFile(localPath);
     return localPath;
   }
 }

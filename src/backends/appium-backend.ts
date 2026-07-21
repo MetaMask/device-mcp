@@ -1,7 +1,3 @@
-import { writeFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
-import { resolve as resolvePath } from 'node:path';
-
 import type { SessionConfig } from './session-file.js';
 import type {
   DeviceBackend,
@@ -25,6 +21,10 @@ import {
   describeElement,
   computeSwipeEnd,
 } from '../utils/element.js';
+import {
+  resolveArtifactPath,
+  writeArtifactFile,
+} from '../utils/output-path.js';
 
 export class AppiumBackend implements DeviceBackend {
   readonly platform: Platform;
@@ -274,16 +274,14 @@ export class AppiumBackend implements DeviceBackend {
     const client = this.#requireClient();
     const data = await client.execute<string>('mobile: getScreenshot', []);
     if (options?.encode === false) {
-      const path = resolvePath(
-        outputPath ?? `/tmp/device-mcp-screenshot-${Date.now()}.png`,
-      );
-      await writeFile(path, Buffer.from(data, 'base64'));
+      const path = resolveArtifactPath(outputPath, 'screenshot');
+      await writeArtifactFile(path, Buffer.from(data, 'base64'));
       return { data: undefined, format: 'png', path };
     }
     let path: string | undefined;
     if (outputPath) {
-      path = resolvePath(outputPath);
-      await writeFile(path, Buffer.from(data, 'base64'));
+      path = resolveArtifactPath(outputPath, 'screenshot');
+      await writeArtifactFile(path, Buffer.from(data, 'base64'));
     }
     return { data, format: 'png', path };
   }
@@ -495,9 +493,7 @@ export class AppiumBackend implements DeviceBackend {
     const client = this.#requireClient();
     await client.execute('mobile: startRecordingScreen', [{}]);
     this.#recording = true;
-    this.#recordingOutputPath = resolvePath(
-      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`,
-    );
+    this.#recordingOutputPath = resolveArtifactPath(outputPath, 'recording');
   }
 
   async stopScreenRecording(): Promise<string> {
@@ -510,8 +506,8 @@ export class AppiumBackend implements DeviceBackend {
     if (data.length === 0) {
       throw new Error('Screen recording returned empty data');
     }
-    const outputPath = resolvePath(this.#recordingOutputPath);
-    writeFileSync(outputPath, data);
+    const outputPath = this.#recordingOutputPath;
+    await writeArtifactFile(outputPath, data);
     this.#recording = false;
     this.#recordingOutputPath = null;
     return outputPath;

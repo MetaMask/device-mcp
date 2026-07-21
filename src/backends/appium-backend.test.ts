@@ -163,10 +163,13 @@ describe('AppiumBackend.screenshot', () => {
 
     expect(result.data).toBeUndefined();
     expect(result.format).toBe('png');
-    expect(result.path).toMatch(/^\/tmp\/device-mcp-screenshot-\d+\.png$/u);
+    expect(result.path).toMatch(
+      /[/\\]device-mcp-[^/\\]+[/\\]screenshot-[0-9a-f]{16}\.png$/u,
+    );
     expect(mockWriteFile).toHaveBeenCalledWith(
       result.path,
       Buffer.from('YmFzZTY0LWltYWdl', 'base64'),
+      expect.objectContaining({ mode: 0o600 }),
     );
   });
 
@@ -178,6 +181,7 @@ describe('AppiumBackend.screenshot', () => {
     expect(mockWriteFile).toHaveBeenCalledWith(
       resolvePath('/tmp/appium-shot.png'),
       Buffer.from('YmFzZTY0LWltYWdl', 'base64'),
+      expect.objectContaining({ mode: 0o600 }),
     );
     expect(result.path).toBe(resolvePath('/tmp/appium-shot.png'));
   });
@@ -192,6 +196,7 @@ describe('AppiumBackend.screenshot', () => {
     expect(mockWriteFile).toHaveBeenCalledWith(
       resolvePath('/tmp/appium-shot.png'),
       Buffer.from('YmFzZTY0LWltYWdl', 'base64'),
+      expect.objectContaining({ mode: 0o600 }),
     );
     expect(result).toStrictEqual({
       data: undefined,

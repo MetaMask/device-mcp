@@ -237,7 +237,9 @@ describe('AdbBackend.screenshot', () => {
 
     const result = await backend.screenshot();
 
-    expect(result.path).toMatch(/^\/tmp\/device-mcp-screenshot-\d+\.png$/u);
+    expect(result.path).toMatch(
+      /[/\\]device-mcp-[^/\\]+[/\\]screenshot-[0-9a-f]{16}\.png$/u,
+    );
     expect(result.data).toBe('YmFy');
   });
 });
