@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 
 import type {
   DeviceBackend,
@@ -7,6 +8,8 @@ import type {
   DeviceInfo,
   SnapshotResult,
   ScreenshotResult,
+  ScreenshotFileResult,
+  ScreenshotOptions,
   LogsResult,
   TapResult,
   AppStateResult,
@@ -21,6 +24,10 @@ import {
   computeSwipeEnd,
 } from '../utils/element.js';
 import { execStrict, isCommandAvailable } from '../utils/exec.js';
+import {
+  hardenArtifactFile,
+  resolveArtifactPath,
+} from '../utils/output-path.js';
 
 export class AdbBackend implements DeviceBackend {
   readonly platform = 'android' as const;
@@ -216,9 +223,26 @@ export class AdbBackend implements DeviceBackend {
     return xml;
   }
 
-  async screenshot(outputPath?: string): Promise<ScreenshotResult> {
-    const localPath =
-      outputPath ?? `/tmp/device-mcp-screenshot-${Date.now()}.png`;
+  screenshot(
+    outputPath?: string,
+    options?: { encode?: true },
+  ): Promise<ScreenshotResult>;
+
+  screenshot(
+    outputPath: string | undefined,
+    options: { encode: false },
+  ): Promise<ScreenshotFileResult>;
+
+  screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult>;
+
+  async screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult> {
+    const localPath = resolveArtifactPath(outputPath, 'screenshot');
     await this.#adb(['shell', 'screencap', '-p', '/sdcard/screenshot.png']);
     await execStrict('adb', [
       '-s',
@@ -228,8 +252,12 @@ export class AdbBackend implements DeviceBackend {
       localPath,
     ]);
     await this.#adb(['shell', 'rm', '-f', '/sdcard/screenshot.png']);
-    const data = await execStrict('base64', [localPath]);
-    return { data: data.trim(), format: 'png', path: localPath };
+    hardenArtifactFile(localPath);
+    if (options?.encode === false) {
+      return { data: undefined, format: 'png', path: localPath };
+    }
+    const data = await readFile(localPath, 'base64');
+    return { data, format: 'png', path: localPath };
   }
 
   async openApp(bundleId: string): Promise<void> {
@@ -415,8 +443,7 @@ export class AdbBackend implements DeviceBackend {
     if (this.#recordingProcess) {
       throw new Error('Screen recording is already in progress');
     }
-    this.#recordingPath =
-      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
+    this.#recordingPath = resolveArtifactPath(outputPath, 'recording');
     this.#recordingProcess = spawn('adb', [
       '-s',
       this.#serial,
@@ -448,6 +475,7 @@ export class AdbBackend implements DeviceBackend {
       localPath,
     ]);
     await this.#adb(['shell', 'rm', '-f', this.#recordingRemotePath]);
+    hardenArtifactFile(localPath);
     return localPath;
   }
 }

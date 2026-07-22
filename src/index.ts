@@ -13,6 +13,8 @@ export type {
   ElementQuery,
   SnapshotResult,
   ScreenshotResult,
+  ScreenshotFileResult,
+  ScreenshotOptions,
   LogsResult,
   TapResult,
   AppStateResult,

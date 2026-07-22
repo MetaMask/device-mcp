@@ -39,9 +39,23 @@ export type AppStateResult = {
 };
 
 export type ScreenshotResult = {
+  /** Base64-encoded image data. */
   data: string;
   format: 'png' | 'jpeg';
+  /** File path the screenshot was written to, when captured to disk. */
   path?: string;
+};
+
+/** Result of a screenshot captured with `encode: false`: file `path` only, no base64 `data`. */
+export type ScreenshotFileResult = {
+  data?: undefined;
+  format: 'png' | 'jpeg';
+  path: string;
+};
+
+export type ScreenshotOptions = {
+  /** Include base64 image data in the result. Defaults to `true`. */
+  encode?: boolean;
 };
 
 export type LogEntry = {
@@ -97,7 +111,18 @@ export type DeviceBackend = {
 
   getAppState(bundleId: string): Promise<AppStateResult>;
 
-  screenshot(outputPath?: string): Promise<ScreenshotResult>;
+  screenshot(
+    outputPath?: string,
+    options?: { encode?: true },
+  ): Promise<ScreenshotResult>;
+  screenshot(
+    outputPath: string | undefined,
+    options: { encode: false },
+  ): Promise<ScreenshotFileResult>;
+  screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult>;
 
   openApp(bundleId: string): Promise<void>;
 

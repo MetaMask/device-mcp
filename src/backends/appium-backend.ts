@@ -1,6 +1,3 @@
-import { writeFileSync } from 'node:fs';
-import { resolve as resolvePath } from 'node:path';
-
 import type { SessionConfig } from './session-file.js';
 import type {
   DeviceBackend,
@@ -8,6 +5,8 @@ import type {
   DeviceInfo,
   SnapshotResult,
   ScreenshotResult,
+  ScreenshotFileResult,
+  ScreenshotOptions,
   LogsResult,
   TapResult,
   AppStateResult,
@@ -22,6 +21,10 @@ import {
   describeElement,
   computeSwipeEnd,
 } from '../utils/element.js';
+import {
+  resolveArtifactPath,
+  writeArtifactFile,
+} from '../utils/output-path.js';
 
 export class AppiumBackend implements DeviceBackend {
   readonly platform: Platform;
@@ -249,10 +252,38 @@ export class AppiumBackend implements DeviceBackend {
     }
   }
 
-  async screenshot(): Promise<ScreenshotResult> {
+  screenshot(
+    outputPath?: string,
+    options?: { encode?: true },
+  ): Promise<ScreenshotResult>;
+
+  screenshot(
+    outputPath: string | undefined,
+    options: { encode: false },
+  ): Promise<ScreenshotFileResult>;
+
+  screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult>;
+
+  async screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult> {
     const client = this.#requireClient();
     const data = await client.execute<string>('mobile: getScreenshot', []);
-    return { data, format: 'png' };
+    if (options?.encode === false) {
+      const path = resolveArtifactPath(outputPath, 'screenshot');
+      await writeArtifactFile(path, Buffer.from(data, 'base64'));
+      return { data: undefined, format: 'png', path };
+    }
+    let path: string | undefined;
+    if (outputPath) {
+      path = resolveArtifactPath(outputPath, 'screenshot');
+      await writeArtifactFile(path, Buffer.from(data, 'base64'));
+    }
+    return { data, format: 'png', path };
   }
 
   async openApp(bundleId: string): Promise<void> {
@@ -462,9 +493,7 @@ export class AppiumBackend implements DeviceBackend {
     const client = this.#requireClient();
     await client.execute('mobile: startRecordingScreen', [{}]);
     this.#recording = true;
-    this.#recordingOutputPath = resolvePath(
-      outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`,
-    );
+    this.#recordingOutputPath = resolveArtifactPath(outputPath, 'recording');
   }
 
   async stopScreenRecording(): Promise<string> {
@@ -477,8 +506,8 @@ export class AppiumBackend implements DeviceBackend {
     if (data.length === 0) {
       throw new Error('Screen recording returned empty data');
     }
-    const outputPath = resolvePath(this.#recordingOutputPath);
-    writeFileSync(outputPath, data);
+    const outputPath = this.#recordingOutputPath;
+    await writeArtifactFile(outputPath, data);
     this.#recording = false;
     this.#recordingOutputPath = null;
     return outputPath;

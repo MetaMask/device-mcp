@@ -1,5 +1,6 @@
 import { execFile as execFileCb, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 
 import type {
   DeviceBackend,
@@ -7,6 +8,8 @@ import type {
   DeviceInfo,
   SnapshotResult,
   ScreenshotResult,
+  ScreenshotFileResult,
+  ScreenshotOptions,
   LogsResult,
   TapResult,
   AppStateResult,
@@ -21,6 +24,10 @@ import {
   computeSwipeEnd,
 } from '../utils/element.js';
 import { execStrict, exec } from '../utils/exec.js';
+import {
+  hardenArtifactFile,
+  resolveArtifactPath,
+} from '../utils/output-path.js';
 import { resolveIdbPath } from '../utils/platform.js';
 
 export class IdbBackend implements DeviceBackend {
@@ -231,12 +238,34 @@ export class IdbBackend implements DeviceBackend {
     return { bundleId, state: 'Not Installed' };
   }
 
-  async screenshot(outputPath?: string): Promise<ScreenshotResult> {
+  screenshot(
+    outputPath?: string,
+    options?: { encode?: true },
+  ): Promise<ScreenshotResult>;
+
+  screenshot(
+    outputPath: string | undefined,
+    options: { encode: false },
+  ): Promise<ScreenshotFileResult>;
+
+  screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult>;
+
+  async screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult> {
     await this.ensureConnected();
-    const path = outputPath ?? `/tmp/device-mcp-screenshot-${Date.now()}.png`;
+    const path = resolveArtifactPath(outputPath, 'screenshot');
     await execStrict(this.#idbPath, ['screenshot', path, '--udid', this.#udid]);
-    const data = await execStrict('base64', [path]);
-    return { data: data.trim(), format: 'png', path };
+    hardenArtifactFile(path);
+    if (options?.encode === false) {
+      return { data: undefined, format: 'png', path };
+    }
+    const data = await readFile(path, 'base64');
+    return { data, format: 'png', path };
   }
 
   async openApp(bundleId: string): Promise<void> {
@@ -475,7 +504,7 @@ export class IdbBackend implements DeviceBackend {
     if (this.#recordingProcess) {
       throw new Error('Screen recording is already in progress');
     }
-    const path = outputPath ?? `/tmp/device-mcp-recording-${Date.now()}.mp4`;
+    const path = resolveArtifactPath(outputPath, 'recording');
     this.#recordingPath = path;
     this.#recordingProcess = spawn(this.#idbPath, [
       'record-video',
@@ -498,6 +527,7 @@ export class IdbBackend implements DeviceBackend {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     this.#recordingProcess = null;
     this.#recordingPath = null;
+    hardenArtifactFile(path);
     return path;
   }
 }

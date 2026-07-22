@@ -8,6 +8,8 @@ import type {
   DeviceInfo,
   LogsResult,
   ScreenshotResult,
+  ScreenshotFileResult,
+  ScreenshotOptions,
   SnapshotResult,
   TapResult,
   AppStateResult,
@@ -97,6 +99,25 @@ export function createLazyBackend(
     return connecting;
   }
 
+  function screenshot(
+    outputPath?: string,
+    options?: { encode?: true },
+  ): Promise<ScreenshotResult>;
+  function screenshot(
+    outputPath: string | undefined,
+    options: { encode: false },
+  ): Promise<ScreenshotFileResult>;
+  function screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult>;
+  async function screenshot(
+    outputPath?: string,
+    options?: ScreenshotOptions,
+  ): Promise<ScreenshotResult | ScreenshotFileResult> {
+    return (await resolve()).screenshot(outputPath, options);
+  }
+
   return {
     get platform(): Platform {
       return inner?.platform ?? 'ios';
@@ -156,9 +177,7 @@ export function createLazyBackend(
       return (await resolve()).getAppState(bundleId);
     },
 
-    async screenshot(outputPath?: string): Promise<ScreenshotResult> {
-      return (await resolve()).screenshot(outputPath);
-    },
+    screenshot,
 
     async openApp(bundleId: string): Promise<void> {
       return (await resolve()).openApp(bundleId);

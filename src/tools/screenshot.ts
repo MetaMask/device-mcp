@@ -25,14 +25,19 @@ export function registerScreenshotTool(
     },
     async ({ outputPath }) => {
       try {
-        const result = await backend.screenshot(outputPath);
+        const result = await backend.screenshot(outputPath, { encode: true });
+        const imageContent = result.data
+          ? [
+              {
+                type: 'image' as const,
+                data: result.data,
+                mimeType: `image/${result.format}`,
+              },
+            ]
+          : [];
         return {
           content: [
-            {
-              type: 'image' as const,
-              data: result.data,
-              mimeType: `image/${result.format}`,
-            },
+            ...imageContent,
             {
               type: 'text' as const,
               text: result.path

@@ -232,6 +232,14 @@ The synthetic legacy page (`React Native Experimental (Improved Chrome Reloads)`
 - **appId** defaults to `io.metamask.MetaMask` (iOS) / `io.metamask` (Android). Override globally via the `HERMES_APP_ID` env var or per-call via the tool's `appId` param. Android users not on the default must pass `appId` or set `HERMES_APP_ID`; `hermes_targets` with `all: true` aids discovery of the real appId.
 - **Metro port** defaults to `8081`. Override via the `HERMES_METRO_PORT` env var or per-call via the tool's `metroPort` param.
 
+## File Output & Safety
+
+`device_screenshot` and `device_screen_recording` write image/video files to disk. These artifacts can contain sensitive on-screen content (seed phrases, private keys, balances), so writes are hardened:
+
+- **No `outputPath`** — the file is written into a private, per-process temporary directory (`0700`) with an unpredictable name, rather than a predictable `/tmp/device-mcp-*-<timestamp>` path (which is exposed to symlink and information-disclosure attacks on shared hosts).
+- **With `outputPath`** — the path is resolved to an absolute path and written owner-only (`0600`); a symlink already present at the destination is never followed.
+- **`DEVICE_MCP_OUTPUT_DIR`** — set this to confine every caller-supplied `outputPath` to a single directory. Any path resolving outside it is rejected. Leave it unset to allow writing to any path the server process can access.
+
 ## MCP Client Configuration
 
 ### opencode

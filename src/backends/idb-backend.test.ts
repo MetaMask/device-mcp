@@ -1,7 +1,12 @@
+import { readFile } from 'node:fs/promises';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { parseIdbHierarchy, mapIdbElement, IdbBackend } from './idb-backend.js';
 import * as execModule from '../utils/exec.js';
+
+vi.mock('node:fs/promises', () => ({
+  readFile: vi.fn(),
+}));
 
 vi.mock('../utils/exec.js', () => ({
   exec: vi.fn(),
@@ -18,6 +23,7 @@ vi.mock('../utils/platform.js', () => ({
 
 const mockExec = vi.mocked(execModule.exec);
 const mockExecStrict = vi.mocked(execModule.execStrict);
+const mockReadFile = vi.mocked(readFile);
 
 describe('parseIdbHierarchy', () => {
   it('parses a JSON array of elements', () => {
@@ -330,5 +336,73 @@ describe('IdbBackend simctl fallback', () => {
         backend.getElementText({ identifier: 'nonexistent' }),
       ).rejects.toThrow('Element not found');
     });
+  });
+});
+
+describe('IdbBackend.screenshot', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    backend = new IdbBackend(udid);
+  });
+
+  it('captures with idb and encodes base64 in-process by default', async () => {
+    mockExecStrict.mockResolvedValue('');
+    mockReadFile.mockResolvedValue('ZmFrZS1wbmc=');
+
+    const result = await backend.screenshot('/tmp/shot.png');
+
+    expect(mockExecStrict).toHaveBeenCalledWith('/usr/local/bin/idb', [
+      'screenshot',
+      '/tmp/shot.png',
+      '--udid',
+      udid,
+    ]);
+    expect(mockReadFile).toHaveBeenCalledWith('/tmp/shot.png', 'base64');
+    expect(result).toStrictEqual({
+      data: 'ZmFrZS1wbmc=',
+      format: 'png',
+      path: '/tmp/shot.png',
+    });
+  });
+
+  it('never shells out to the non-portable base64 binary', async () => {
+    mockExecStrict.mockResolvedValue('');
+    mockReadFile.mockResolvedValue('Zm9v');
+
+    await backend.screenshot('/tmp/shot.png');
+
+    expect(mockExecStrict).not.toHaveBeenCalledWith(
+      'base64',
+      expect.anything(),
+    );
+  });
+
+  it('skips base64 encoding when encode is false', async () => {
+    mockExecStrict.mockResolvedValue('');
+
+    const result = await backend.screenshot('/tmp/shot.png', { encode: false });
+
+    expect(mockReadFile).not.toHaveBeenCalled();
+    expect(result).toStrictEqual({
+      data: undefined,
+      format: 'png',
+      path: '/tmp/shot.png',
+    });
+  });
+
+  it('defaults to a tmp path when none is provided', async () => {
+    mockExecStrict.mockResolvedValue('');
+    mockReadFile.mockResolvedValue('YmFy');
+
+    const result = await backend.screenshot();
+
+    expect(result.path).toMatch(
+      /[/\\]device-mcp-[^/\\]+[/\\]screenshot-[0-9a-f]{16}\.png$/u,
+    );
+    expect(result.data).toBe('YmFy');
   });
 });
