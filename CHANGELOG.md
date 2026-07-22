@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0]
+
+### Uncategorized
+
+- feat: make screenshot base64 encoding optional ([#15](https://github.com/MetaMask/device-mcp/pull/15))
+- feat: add Hermes CDP tools for React Native runtime access ([#14](https://github.com/MetaMask/device-mcp/pull/14))
+
 ### Added
 
 - Add Hermes CDP tools (`hermes_cdp`, `hermes_targets`) for inspecting the React Native Hermes JS runtime via Metro
@@ -41,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.device-session` file for attaching to existing Appium sessions or creating new ones
 - 16 MCP tools: `device_snapshot`, `device_screenshot`, `device_info`, `device_tap_element`, `device_tap_coordinates`, `device_type`, `device_swipe`, `device_long_press`, `device_wait_for`, `device_app_state`, `device_open_app`, `device_close_app`, `device_press_button`, `device_dismiss_keyboard`, `device_dismiss_alert`, `device_logs`
 
-[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/MetaMask/device-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/MetaMask/device-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MetaMask/device-mcp/releases/tag/v0.1.0
