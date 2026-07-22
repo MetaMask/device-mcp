@@ -9,23 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0]
 
-### Uncategorized
-
-- feat: make screenshot base64 encoding optional ([#15](https://github.com/MetaMask/device-mcp/pull/15))
-- feat: add Hermes CDP tools for React Native runtime access ([#14](https://github.com/MetaMask/device-mcp/pull/14))
-
 ### Added
 
-- Add Hermes CDP tools (`hermes_cdp`, `hermes_targets`) for inspecting the React Native Hermes JS runtime via Metro
+- Add Hermes CDP tools (`hermes_cdp`, `hermes_targets`) for inspecting the React Native Hermes JS runtime via Metro ([#14](https://github.com/MetaMask/device-mcp/pull/14))
 
 ### Changed
 
-- Make screenshot base64 encoding optional — `DeviceBackend.screenshot(outputPath, { encode })` accepts `{ encode: false }` to return only the file `path` and skip base64 encoding. `ScreenshotResult.data` is now optional; the default (`encode: true`) preserves existing behavior
-- The Appium backend now saves the screenshot to `outputPath` when one is provided (previously the argument was ignored)
+- Make screenshot base64 encoding optional — `DeviceBackend.screenshot(outputPath, { encode })` accepts `{ encode: false }` to return only the file `path` and skip base64 encoding. `ScreenshotResult.data` is now optional; the default (`encode: true`) preserves existing behavior ([#15](https://github.com/MetaMask/device-mcp/pull/15))
+- The Appium backend now saves the screenshot to `outputPath` when one is provided (previously the argument was ignored) ([#15](https://github.com/MetaMask/device-mcp/pull/15))
 
 ### Fixed
 
-- Fix `device_screenshot` failing on macOS — the captured PNG is now read in-process via `fs.readFile(path, 'base64')` instead of shelling out to the `base64` CLI, which is not portable (BSD `base64` on macOS rejects the GNU positional-file syntax that was used previously)
+- Fix `device_screenshot` failing on macOS — the captured PNG is now read in-process via `fs.readFile(path, 'base64')` instead of shelling out to the `base64` CLI, which is not portable (BSD `base64` on macOS rejects the GNU positional-file syntax that was used previously) ([#15](https://github.com/MetaMask/device-mcp/pull/15))
 
 ### Security
 
