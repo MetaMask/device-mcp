@@ -7,18 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0]
+
 ### Added
 
-- Add Hermes CDP tools (`hermes_cdp`, `hermes_targets`) for inspecting the React Native Hermes JS runtime via Metro
+- Add Hermes CDP tools (`hermes_cdp`, `hermes_targets`) for inspecting the React Native Hermes JS runtime via Metro ([#14](https://github.com/MetaMask/device-mcp/pull/14))
 
 ### Changed
 
-- Make screenshot base64 encoding optional — `DeviceBackend.screenshot(outputPath, { encode })` accepts `{ encode: false }` to return only the file `path` and skip base64 encoding. `ScreenshotResult.data` is now optional; the default (`encode: true`) preserves existing behavior
-- The Appium backend now saves the screenshot to `outputPath` when one is provided (previously the argument was ignored)
+- Make screenshot base64 encoding optional — `DeviceBackend.screenshot(outputPath, { encode })` accepts `{ encode: false }` to return only the file `path` and skip base64 encoding. `ScreenshotResult.data` is now optional; the default (`encode: true`) preserves existing behavior ([#15](https://github.com/MetaMask/device-mcp/pull/15))
+- The Appium backend now saves the screenshot to `outputPath` when one is provided (previously the argument was ignored) ([#15](https://github.com/MetaMask/device-mcp/pull/15))
 
 ### Fixed
 
-- Fix `device_screenshot` failing on macOS — the captured PNG is now read in-process via `fs.readFile(path, 'base64')` instead of shelling out to the `base64` CLI, which is not portable (BSD `base64` on macOS rejects the GNU positional-file syntax that was used previously)
+- Fix `device_screenshot` failing on macOS — the captured PNG is now read in-process via `fs.readFile(path, 'base64')` instead of shelling out to the `base64` CLI, which is not portable (BSD `base64` on macOS rejects the GNU positional-file syntax that was used previously) ([#15](https://github.com/MetaMask/device-mcp/pull/15))
 
 ### Security
 
@@ -41,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.device-session` file for attaching to existing Appium sessions or creating new ones
 - 16 MCP tools: `device_snapshot`, `device_screenshot`, `device_info`, `device_tap_element`, `device_tap_coordinates`, `device_type`, `device_swipe`, `device_long_press`, `device_wait_for`, `device_app_state`, `device_open_app`, `device_close_app`, `device_press_button`, `device_dismiss_keyboard`, `device_dismiss_alert`, `device_logs`
 
-[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/MetaMask/device-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/MetaMask/device-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MetaMask/device-mcp/releases/tag/v0.1.0
