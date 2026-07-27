@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.1]
 
-### Uncategorized
+### Changed
 
-- chore: export generateLocators/formatLocators from package root for downstream consumers ([#17](https://github.com/MetaMask/device-mcp/pull/17))
+- Export generateLocators/formatLocators ([#17](https://github.com/MetaMask/device-mcp/pull/17))
 
 ## [0.3.0]
 
