@@ -1,6 +1,6 @@
 {
   "name": "@metamask/device-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MCP server for mobile device interaction — iOS (IDB), Android (ADB), and Appium/BrowserStack",
   "homepage": "https://github.com/MetaMask/device-mcp#readme",
   "bugs": {
