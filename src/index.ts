@@ -53,3 +53,11 @@ export type {
   HermesSessionResolved,
   HermesSessionResolveInput,
 } from './hermes/session.js';
+
+export {
+  generateLocators,
+  formatLocators,
+  findElement,
+  describeElement,
+} from './utils/element.js';
+export type { ElementLocator, LocatorSuggestion } from './utils/element.js';

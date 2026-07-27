@@ -6,6 +6,8 @@ import {
   describeElement,
   computeSwipeEnd,
   formatHierarchy,
+  generateLocators,
+  formatLocators,
 } from './element.js';
 import type { UIElement } from '../backends/types.js';
 
@@ -161,5 +163,114 @@ describe('formatHierarchy', () => {
     const elements = [makeElement({ enabled: false })];
     const output = formatHierarchy(elements, 0);
     expect(output).toContain('DISABLED');
+  });
+});
+
+describe('generateLocators', () => {
+  it('returns a locator for an interactive element', () => {
+    const elements = [makeElement({ type: 'Button', identifier: 'submit' })];
+    const locators = generateLocators(elements);
+    expect(locators).toHaveLength(1);
+    expect(locators[0]?.description).toContain('Button');
+    expect(locators[0]?.frame).toStrictEqual({
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 44,
+    });
+  });
+
+  it('skips non-interactive elements without an identifier', () => {
+    const elements = [makeElement({ type: 'StaticText', label: 'Heading' })];
+    expect(generateLocators(elements)).toHaveLength(0);
+  });
+
+  it('treats an enabled element with an identifier as interactive', () => {
+    const elements = [
+      makeElement({ type: 'StaticText', identifier: 'total', enabled: true }),
+    ];
+    expect(generateLocators(elements)).toHaveLength(1);
+  });
+
+  it('matches interactive types by substring (Android class names)', () => {
+    const elements = [
+      makeElement({ type: 'android.widget.Button', identifier: 'ok' }),
+    ];
+    expect(generateLocators(elements)).toHaveLength(1);
+  });
+
+  it('recurses into children', () => {
+    const elements = [
+      makeElement({
+        type: 'Window',
+        children: [makeElement({ type: 'Button', identifier: 'nested' })],
+      }),
+    ];
+    const locators = generateLocators(elements);
+    expect(locators).toHaveLength(1);
+    expect(locators[0]?.description).toContain('id="nested"');
+  });
+
+  it('ranks identifier high, label medium when an identifier is present', () => {
+    const elements = [
+      makeElement({ type: 'Button', identifier: 'btn', label: 'Submit' }),
+    ];
+    const [locator] = generateLocators(elements);
+    expect(locator?.suggestions[0]).toStrictEqual({
+      strategy: 'identifier',
+      value: 'btn',
+      confidence: 'high',
+    });
+    expect(locator?.suggestions[1]).toStrictEqual({
+      strategy: 'label',
+      value: 'Submit',
+      confidence: 'medium',
+    });
+  });
+
+  it('ranks label high when no identifier is present', () => {
+    const elements = [makeElement({ type: 'Button', label: 'Submit' })];
+    const [locator] = generateLocators(elements);
+    expect(locator?.suggestions[0]).toStrictEqual({
+      strategy: 'label',
+      value: 'Submit',
+      confidence: 'high',
+    });
+  });
+
+  it('adds a low-confidence text suggestion when value differs from label', () => {
+    const elements = [
+      makeElement({ type: 'Button', label: 'Amount', value: '1.5' }),
+    ];
+    const [locator] = generateLocators(elements);
+    expect(locator?.suggestions).toContainEqual({
+      strategy: 'text',
+      value: '1.5',
+      confidence: 'low',
+    });
+  });
+
+  it('falls back to a type suggestion when no other signal exists', () => {
+    const elements = [makeElement({ type: 'Button' })];
+    const [locator] = generateLocators(elements);
+    expect(locator?.suggestions).toStrictEqual([
+      { strategy: 'type', value: 'Button', confidence: 'low' },
+    ]);
+  });
+});
+
+describe('formatLocators', () => {
+  it('returns a message when there are no interactive elements', () => {
+    expect(formatLocators([])).toBe('No interactive elements found on screen.');
+  });
+
+  it('numbers entries and renders each suggestion with a confidence icon', () => {
+    const locators = generateLocators([
+      makeElement({ type: 'Button', identifier: 'btn', label: 'Submit' }),
+    ]);
+    const output = formatLocators(locators);
+    expect(output).toContain('1. ');
+    expect(output).toContain('*** { identifier: "btn" }');
+    expect(output).toContain('** { label: "Submit" }');
   });
 });
