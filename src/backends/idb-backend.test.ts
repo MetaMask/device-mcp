@@ -406,3 +406,60 @@ describe('IdbBackend.screenshot', () => {
     expect(result.data).toBe('YmFy');
   });
 });
+
+describe('IdbBackend.ensureConnected', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    backend = new IdbBackend(udid);
+  });
+
+  it('connects and enables the simulator accessibility bridge', async () => {
+    await backend.ensureConnected();
+
+    expect(mockExec).toHaveBeenCalledWith('/usr/local/bin/idb', [
+      'connect',
+      udid,
+    ]);
+    expect(mockExec).toHaveBeenCalledWith('xcrun', [
+      'simctl',
+      'spawn',
+      udid,
+      'defaults',
+      'write',
+      'com.apple.Accessibility',
+      'ApplicationAccessibilityEnabled',
+      '-bool',
+      'true',
+    ]);
+  });
+
+  it('enables accessibility only once across repeated calls', async () => {
+    await backend.ensureConnected();
+    await backend.ensureConnected();
+
+    const axCalls = mockExec.mock.calls.filter(
+      ([cmd, args]) =>
+        cmd === 'xcrun' && args.includes('ApplicationAccessibilityEnabled'),
+    );
+    expect(axCalls).toHaveLength(1);
+  });
+
+  it('still connects when enabling accessibility fails', async () => {
+    mockExec.mockImplementation(async (cmd: string) => {
+      if (cmd === 'xcrun') {
+        throw new Error('defaults write not permitted');
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+
+    expect(await backend.ensureConnected()).toBeUndefined();
+    expect(mockExec).toHaveBeenCalledWith('/usr/local/bin/idb', [
+      'connect',
+      udid,
+    ]);
+  });
+});
