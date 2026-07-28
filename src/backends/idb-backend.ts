@@ -54,7 +54,37 @@ export class IdbBackend implements DeviceBackend {
 
     this.#idbPath = await resolveIdbPath();
     await exec(this.#idbPath, ['connect', this.#udid]);
+    await this.#enableSimulatorAccessibility();
     this.#connected = true;
+  }
+
+  /**
+   * Enable the simulator's software accessibility bridge, which `idb ui
+   * describe-all` reads. React Native publishes its UI to this bridge; when
+   * `ApplicationAccessibilityEnabled` is off, idb sees only native UIKit views
+   * and an RN screen collapses to the app root node (a bottom sheet over it
+   * appears as ~2 nodes). XCUITest backends avoid this because attaching a
+   * test runner enables the bridge as a side effect; idb does not, so we set
+   * it explicitly. The value is read when an app initializes accessibility, so
+   * callers should launch/relaunch the app after connecting.
+   */
+  async #enableSimulatorAccessibility(): Promise<void> {
+    try {
+      await exec('xcrun', [
+        'simctl',
+        'spawn',
+        this.#udid,
+        'defaults',
+        'write',
+        'com.apple.Accessibility',
+        'ApplicationAccessibilityEnabled',
+        '-bool',
+        'true',
+      ]);
+    } catch {
+      // Best-effort: on hosts where the write is unavailable, keep the
+      // connection usable for native views and coordinate taps.
+    }
   }
 
   async getDeviceInfo(): Promise<DeviceInfo> {
