@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.3]
 
-### Uncategorized
+### Changed
 
 - feat: add public `kind` discriminator to DeviceBackend ([#21](https://github.com/MetaMask/device-mcp/pull/21))
 
