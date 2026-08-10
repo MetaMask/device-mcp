@@ -7,14 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Add a public `kind` discriminator (`'idb' | 'adb' | 'appium'`) to `DeviceBackend` so consumers can identify the concrete backend without deep-importing internals or relying on `instanceof` (which is unreliable across the package's dual ESM/CJS builds). The new `BackendKind` type is exported from the package entry
-
-### Changed
-
-- **Breaking for custom `DeviceBackend` implementers:** `DeviceBackend` now requires a `readonly kind: BackendKind` field. All backends shipped by this package implement it; only external code that structurally implements `DeviceBackend` needs to add it. Consumers that merely read backends returned by `createBackend()` / `createLazyBackend()` are unaffected
-
 ## [0.3.2]
 
 ### Changed
