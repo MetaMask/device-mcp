@@ -1,0 +1,60 @@
+src/tools/select-device.test.ts
+  s_5def3b8618b798::t_ca0754cae1bb73 20
+src/backends/types.ts
+  s_5def3b8618b798::t_e377f7870c5080 4-5
+  s_5def3b8618b798::t_89d3e24379583e 93-94
+  s_5def3b8618b798::t_2b6b18dea71077 3,6-8
+CHANGELOG.md
+  s_5def3b8618b798::t_f38a82372cfd6e 13-16
+  s_5def3b8618b798::t_77e9425d9465fd 10-11,17
+  s_5def3b8618b798::t_ad787bf9b481ee 12
+src/index.ts
+  s_5def3b8618b798::t_d0c34a658a92d9 9
+src/tools/get-element-text.test.ts
+  s_5def3b8618b798::t_ae53da5ee505b5 20
+src/backends/adb-backend.test.ts
+  s_5def3b8618b798::t_733d217e5185f0 119-124
+src/server.test.ts
+  s_5def3b8618b798::t_2a9ef9f0f49d9a 39
+src/backends/idb-backend.test.ts
+  s_5def3b8618b798::t_24ef140b7b7188 173-180
+src/backends/idb-backend.ts
+  s_5def3b8618b798::t_7f61b37579ce80 34-35
+src/backends/appium-backend.test.ts
+  s_5def3b8618b798::t_9993274e1b32fa 46-66
+src/backends/appium-backend.ts
+  s_5def3b8618b798::t_9102baa05b2858 30-31
+src/backends/lazy-backend.test.ts
+  s_5def3b8618b798::t_fcd389717bfc3b 44
+  s_5def3b8618b798::t_fe508ee34fc671 322,324-326,328-343
+  s_5def3b8618b798::t_2f6827bc6bbed6 323,327
+src/backends/index.ts
+  s_5def3b8618b798::t_e46c529f96526e 125-126
+  s_5def3b8618b798::t_e80b73080eef28 6
+  s_5def3b8618b798::t_d43f82f6124a20 123-124
+src/backends/adb-backend.ts
+  s_5def3b8618b798::t_7f5de5ee4f9301 33-34
+src/tools/list-devices.test.ts
+  s_5def3b8618b798::t_589dc44f268f03 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "36ea17b5d516ab7409d1428ddb25197067b23d67",
+  "prompts": {},
+  "humans": {
+    "h_d6a04d82b61d5e": {
+      "author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  },
+  "sessions": {
+    "s_5def3b8618b798": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_0150bca86ffeZ3ntVe5A0DLxbH",
+        "model": "unknown"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
