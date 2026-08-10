@@ -43,6 +43,27 @@ const SAMPLE_IOS_XML = `<?xml version="1.0" encoding="UTF-8"?>
   </XCUIElementTypeApplication>
 </AppiumAUT>`;
 
+describe('AppiumBackend.kind', () => {
+  it('is the stable "appium" discriminator regardless of platform', () => {
+    const iosBackend = new AppiumBackend({
+      mode: 'attach',
+      appiumUrl: 'http://localhost:4723',
+      sessionId: 'session-1',
+      platform: 'ios',
+    });
+    const androidBackend = new AppiumBackend({
+      mode: 'attach',
+      appiumUrl: 'http://localhost:4723',
+      sessionId: 'session-2',
+      platform: 'android',
+    });
+
+    expect(iosBackend.kind).toBe('appium');
+    expect(androidBackend.kind).toBe('appium');
+    expect(androidBackend.platform).toBe('android');
+  });
+});
+
 describe('parseAppiumAndroidHierarchy', () => {
   it('parses Android XML into flat element list', () => {
     const elements = parseAppiumAndroidHierarchy(SAMPLE_ANDROID_XML);

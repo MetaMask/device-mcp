@@ -17,6 +17,7 @@ function createMockBackend(
   overrides: Partial<DeviceBackend> = {},
 ): DeviceBackend {
   return {
+    kind: 'idb',
     platform: 'ios',
     getDeviceInfo: vi.fn(),
     snapshot: vi.fn(),

@@ -30,6 +30,8 @@ import {
 } from '../utils/output-path.js';
 
 export class AdbBackend implements DeviceBackend {
+  readonly kind = 'adb' as const;
+
   readonly platform = 'android' as const;
 
   readonly #serial: string;

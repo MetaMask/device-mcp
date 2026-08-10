@@ -3,6 +3,7 @@ import { AppiumBackend } from './appium-backend.js';
 import { IdbBackend } from './idb-backend.js';
 import { readSessionFile } from './session-file.js';
 import type {
+  BackendKind,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,
@@ -119,6 +120,10 @@ export function createLazyBackend(
   }
 
   return {
+    get kind(): BackendKind {
+      return inner?.kind ?? 'idb';
+    },
+
     get platform(): Platform {
       return inner?.platform ?? 'ios';
     },
