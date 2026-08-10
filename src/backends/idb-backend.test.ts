@@ -170,6 +170,14 @@ describe('mapIdbElement', () => {
   });
 });
 
+describe('IdbBackend.kind', () => {
+  it('is the stable "idb" discriminator', () => {
+    expect(new IdbBackend('AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF').kind).toBe(
+      'idb',
+    );
+  });
+});
+
 describe('IdbBackend simctl fallback', () => {
   const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
   let backend: IdbBackend;

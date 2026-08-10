@@ -116,6 +116,12 @@ describe('parseNodeAttributes', () => {
   });
 });
 
+describe('AdbBackend.kind', () => {
+  it('is the stable "adb" discriminator', () => {
+    expect(new AdbBackend('emulator-5554').kind).toBe('adb');
+  });
+});
+
 describe('AdbBackend.getElementText', () => {
   let backend: AdbBackend;
 

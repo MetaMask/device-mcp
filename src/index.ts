@@ -6,6 +6,7 @@ export { detectAllDevices, MultipleDevicesError } from './utils/platform.js';
 export type { DetectedDevice } from './utils/platform.js';
 
 export type {
+  BackendKind,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,

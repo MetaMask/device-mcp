@@ -31,6 +31,8 @@ import {
 import { resolveIdbPath } from '../utils/platform.js';
 
 export class IdbBackend implements DeviceBackend {
+  readonly kind = 'idb' as const;
+
   readonly platform = 'ios' as const;
 
   #connected = false;

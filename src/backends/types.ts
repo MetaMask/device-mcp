@@ -1,5 +1,11 @@
 export type Platform = 'ios' | 'android';
 
+/**
+ * Stable discriminator for the concrete backend implementation. Prefer this
+ * over `instanceof`, which is unreliable across dual-package (ESM/CJS) builds.
+ */
+export type BackendKind = 'idb' | 'adb' | 'appium';
+
 export type DeviceInfo = {
   platform: Platform;
   deviceId: string;
@@ -84,6 +90,8 @@ export type WindowSize = {
 };
 
 export type DeviceBackend = {
+  readonly kind: BackendKind;
+
   readonly platform: Platform;
 
   getDeviceInfo(): Promise<DeviceInfo>;

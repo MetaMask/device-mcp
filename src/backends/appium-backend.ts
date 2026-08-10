@@ -27,6 +27,8 @@ import {
 } from '../utils/output-path.js';
 
 export class AppiumBackend implements DeviceBackend {
+  readonly kind = 'appium' as const;
+
   readonly platform: Platform;
 
   #client: WebDriverClient | null = null;

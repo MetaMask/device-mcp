@@ -41,6 +41,7 @@ function createMockBackendFields(
   deviceId: string,
 ): DeviceBackend {
   return {
+    kind: platform === 'ios' ? 'idb' : 'adb',
     platform,
     getDeviceInfo: vi.fn().mockResolvedValue({
       platform,
@@ -315,6 +316,28 @@ describe('createLazyBackend', () => {
       await lazy.getDeviceInfo();
 
       expect(lazy.platform).toBe('android');
+    });
+  });
+
+  describe('kind getter', () => {
+    it('returns idb as default before resolution', async () => {
+      const createLazyBackend = await getLazyBackend();
+      const lazy = createLazyBackend();
+
+      expect(lazy.kind).toBe('idb');
+    });
+
+    it('returns resolved kind after connection', async () => {
+      const createLazyBackend = await getLazyBackend();
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'android',
+        deviceId: 'emulator-5554',
+      });
+
+      const lazy = createLazyBackend();
+      await lazy.getDeviceInfo();
+
+      expect(lazy.kind).toBe('adb');
     });
   });
 

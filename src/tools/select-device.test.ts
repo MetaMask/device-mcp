@@ -17,6 +17,7 @@ function createMockBackend(
   overrides: Partial<LazyDeviceBackend> = {},
 ): LazyDeviceBackend {
   return {
+    kind: 'idb',
     platform: 'ios',
     selectDevice: vi.fn(),
     listDevices: vi.fn().mockResolvedValue([]),

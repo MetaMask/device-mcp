@@ -36,6 +36,7 @@ const EXPECTED_TOOLS = [
 
 function createStubBackend(): LazyDeviceBackend {
   return {
+    kind: 'idb',
     platform: 'ios',
     getDeviceInfo: vi.fn(),
     snapshot: vi.fn(),
