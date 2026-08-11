@@ -20,6 +20,7 @@ vi.mock('../utils/exec.js', () => ({
 }));
 
 const mockExecStrict = vi.mocked(execModule.execStrict);
+const mockExec = vi.mocked(execModule.exec);
 const mockReadFile = vi.mocked(readFile);
 
 const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -122,6 +123,146 @@ describe('AdbBackend.kind', () => {
   });
 });
 
+describe('AdbBackend.snapshot', () => {
+  let backend: AdbBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    backend = new AdbBackend('emulator-5554');
+    mockExec.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+  });
+
+  /**
+   * Drive the dump/cat sequence, returning a queued payload per `cat` call.
+   *
+   * @param catResults - The stdout each successive `cat` should produce.
+   * @returns The remote paths passed to `uiautomator dump`.
+   */
+  function stubDumps(catResults: string[]): string[] {
+    const dumpPaths: string[] = [];
+    let catIndex = 0;
+
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('cat')) {
+        const result = catResults[catIndex] ?? '';
+        catIndex += 1;
+        return result;
+      }
+      return '';
+    });
+    mockExec.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('dump')) {
+        dumpPaths.push(args[args.length - 1]);
+      }
+      return { stdout: '', stderr: '', exitCode: 0 };
+    });
+
+    return dumpPaths;
+  }
+
+  /**
+   * Run a snapshot with retry backoff elided, so the suite does not truly sleep.
+   *
+   * @param run - Invokes the operation under test.
+   * @returns The settled promise of the operation.
+   */
+  async function withoutRetryDelay<Result>(
+    run: () => Promise<Result>,
+  ): Promise<Result> {
+    vi.useFakeTimers();
+    try {
+      const pending = run();
+      await vi.runAllTimersAsync();
+      return await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('never returns a stale hierarchy: dumps to a unique remote path each attempt', async () => {
+    const dumpPaths = stubDumps([
+      '',
+      '',
+      '<hierarchy><node class="T" bounds="[0,0][1,1]" /></hierarchy>',
+    ]);
+
+    await withoutRetryDelay(async () => backend.snapshot());
+
+    expect(dumpPaths).toHaveLength(3);
+    expect(new Set(dumpPaths).size).toBe(3);
+    for (const path of dumpPaths) {
+      expect(path).toMatch(
+        /^\/data\/local\/tmp\/device-mcp-dump-[0-9a-f-]{36}\.xml$/u,
+      );
+    }
+  });
+
+  it('removes the remote dump file even when the read fails', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('cat')) {
+        throw new Error('cat: No such file or directory');
+      }
+      return '';
+    });
+
+    await expect(
+      withoutRetryDelay(async () => backend.snapshot()),
+    ).rejects.toThrow('uiautomator failed to capture the UI hierarchy');
+
+    const removed = mockExecStrict.mock.calls.filter((call) =>
+      call[1]?.includes('rm'),
+    );
+    expect(removed).toHaveLength(3);
+  });
+
+  it('retries and succeeds when an early dump yields no hierarchy', async () => {
+    stubDumps([
+      '',
+      '<hierarchy><node class="android.widget.TextView" text="ok" bounds="[0,0][10,10]" /></hierarchy>',
+    ]);
+
+    const snapshot = await withoutRetryDelay(async () => backend.snapshot());
+
+    expect(snapshot.hierarchy).toHaveLength(1);
+    expect(snapshot.hierarchy[0].value).toBe('ok');
+  });
+
+  it('surfaces the idle-state error with remediation guidance after every retry', async () => {
+    mockExecStrict.mockResolvedValue('');
+    mockExec.mockResolvedValue({
+      stdout: 'UI hierchary dumped to: /data/local/tmp/x.xml',
+      stderr: 'ERROR: could not get idle state.',
+      exitCode: 0,
+    });
+
+    await expect(
+      withoutRetryDelay(async () => backend.snapshot()),
+    ).rejects.toThrow(/could not get idle state[\s\S]*window_animation_scale/u);
+  });
+
+  it('reports an unreachable device instead of blaming animations', async () => {
+    mockExecStrict.mockRejectedValue(
+      new Error("adb: device 'emulator-5554' not found"),
+    );
+
+    await expect(
+      withoutRetryDelay(async () => backend.snapshot()),
+    ).rejects.toThrow(/device was unreachable/u);
+    await expect(
+      withoutRetryDelay(async () => backend.snapshot()),
+    ).rejects.not.toThrow(/window_animation_scale/u);
+  });
+
+  it('accepts an empty-but-valid hierarchy instead of treating it as a failure', async () => {
+    stubDumps(['<?xml version="1.0"?><hierarchy rotation="0"></hierarchy>']);
+
+    const snapshot = await backend.snapshot();
+
+    expect(snapshot.hierarchy).toStrictEqual([]);
+    expect(mockExec).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('AdbBackend.getElementText', () => {
   let backend: AdbBackend;
 
@@ -201,7 +342,9 @@ describe('AdbBackend.screenshot', () => {
       '-s',
       'emulator-5554',
       'pull',
-      '/sdcard/screenshot.png',
+      expect.stringMatching(
+        /^\/data\/local\/tmp\/device-mcp-screenshot-[0-9a-f-]{36}\.png$/u,
+      ),
       '/tmp/a.png',
     ]);
     expect(mockReadFile).toHaveBeenCalledWith('/tmp/a.png', 'base64');
