@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import {
   parseAndroidHierarchy,
@@ -132,6 +132,13 @@ describe('AdbBackend.snapshot', () => {
     mockExec.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
   });
 
+  afterEach(() => {
+    // Implementations set here would otherwise leak into later suites, which stub
+    // only execStrict and would then inherit this suite's exec behaviour.
+    mockExec.mockReset();
+    mockExecStrict.mockReset();
+  });
+
   /**
    * Drive the dump/cat sequence, returning a queued payload per `cat` call.
    *
@@ -171,9 +178,17 @@ describe('AdbBackend.snapshot', () => {
   ): Promise<Result> {
     vi.useFakeTimers();
     try {
-      const pending = run();
+      // Convert to a settled result before draining timers. Awaiting the raw
+      // promise afterwards would leave it unhandled while `runAllTimersAsync`
+      // yields, which Vitest reports as an unhandled rejection.
+      const settled = run().then(
+        (value) => () => value,
+        (error: unknown) => () => {
+          throw error;
+        },
+      );
       await vi.runAllTimersAsync();
-      return await pending;
+      return (await settled)();
     } finally {
       vi.useRealTimers();
     }
@@ -260,6 +275,62 @@ describe('AdbBackend.snapshot', () => {
 
     expect(snapshot.hierarchy).toStrictEqual([]);
     expect(mockExec).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a truncated dump that only has the opening root tag', async () => {
+    const truncated =
+      '<?xml version="1.0"?><hierarchy rotation="0"><node class="android.widget.TextView" bounds="[0,0][10,10]"';
+    stubDumps([truncated, truncated, truncated]);
+
+    await expect(
+      withoutRetryDelay(async () => backend.snapshot()),
+    ).rejects.toThrow('uiautomator failed to capture the UI hierarchy');
+  });
+
+  it('retries a truncated dump and returns the first complete payload', async () => {
+    stubDumps([
+      '<?xml version="1.0"?><hierarchy rotation="0"><node class="T" bounds="[0,0][1,1]"',
+      '<hierarchy><node class="android.widget.TextView" text="whole" bounds="[0,0][10,10]" /></hierarchy>',
+    ]);
+
+    const snapshot = await withoutRetryDelay(async () => backend.snapshot());
+
+    expect(snapshot.hierarchy[0].value).toBe('whole');
+  });
+
+  it('bounds each attempt by the remaining overall deadline', async () => {
+    stubDumps([
+      '<hierarchy><node class="T" bounds="[0,0][1,1]" /></hierarchy>',
+    ]);
+
+    await backend.snapshot();
+
+    const [, , options] = mockExec.mock.calls[0];
+    expect(options?.timeoutMs).toBeLessThanOrEqual(15_000);
+  });
+
+  it('stops attempting once the overall deadline is exhausted', async () => {
+    vi.useFakeTimers();
+    try {
+      mockExecStrict.mockResolvedValue('');
+      // Each attempt burns 20s of the 25s budget, so only one retry can start.
+      mockExec.mockImplementation(async () => {
+        vi.advanceTimersByTime(20_000);
+        return { stdout: '', stderr: '', exitCode: 0 };
+      });
+
+      const pending = backend.snapshot().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await vi.runAllTimersAsync();
+      const error = await pending;
+
+      expect(String(error)).toMatch(/budget exhausted/u);
+      expect(mockExec.mock.calls).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

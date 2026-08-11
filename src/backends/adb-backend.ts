@@ -30,36 +30,34 @@ import {
   resolveArtifactPath,
 } from '../utils/output-path.js';
 
-/**
- * `uiautomator dump` exits 0 and prints its success banner even when it fails
- * outright, and its "could not get idle state" error is not reliably delivered
- * over `adb shell`. The XML payload is therefore the only trustworthy signal, so
- * every dump is validated and retried before being surfaced as an error.
- */
+// `uiautomator dump` exits 0 and prints its success banner even when it fails, so
+// the XML payload is the only trustworthy signal.
 const DUMP_ATTEMPTS = 3;
 
 const DUMP_RETRY_DELAY_MS = 750;
 
-// uiautomator waits internally for an idle window before giving up, which can
-// exceed the default exec timeout.
-const DUMP_TIMEOUT_MS = 60_000;
+// Healthy dumps take ~150ms-2s, and even a failing one returns in ~2s.
+const DUMP_TIMEOUT_MS = 15_000;
+
+// Caps all attempts plus backoff, so worst case does not scale with retries.
+const DUMP_DEADLINE_MS = 25_000;
 
 // Writable by the shell user without scoped-storage restrictions.
 const DUMP_REMOTE_DIR = '/data/local/tmp';
 
 /**
- * Check that a dump produced real hierarchy XML rather than an error banner, a
- * truncated write, or an empty file.
+ * Check that a dump produced complete hierarchy XML.
  *
- * Only the root element is required. A screen with no dumpable nodes is a valid
- * (if unusual) result, and must stay distinguishable from a failed dump so that
- * callers report "element not found" rather than a capture failure.
+ * `<hierarchy` alone sits at the start of the file, so requiring the closing tag
+ * too is what rejects a truncated write before it reaches the tolerant regex
+ * parser. An empty screen still emits a complete root, keeping "no elements"
+ * distinguishable from a failed capture.
  *
  * @param xml - Raw stdout captured from the dumped file.
- * @returns True when the payload is hierarchy XML.
+ * @returns True when the payload is complete hierarchy XML.
  */
 function isValidHierarchyXml(xml: string): boolean {
-  return xml.includes('<hierarchy');
+  return xml.includes('<hierarchy') && xml.includes('</hierarchy>');
 }
 
 /**
@@ -300,18 +298,27 @@ export class AdbBackend implements DeviceBackend {
 
   async #dumpUiHierarchy(): Promise<string> {
     const failures: string[] = [];
+    const deadline = Date.now() + DUMP_DEADLINE_MS;
 
     for (let attempt = 1; attempt <= DUMP_ATTEMPTS; attempt++) {
-      // A unique path per attempt is required for correctness, not hygiene: on a
-      // shared path a failed dump leaves the previous attempt's file in place, so
-      // the following `cat` silently returns the hierarchy of an earlier screen.
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        failures.push(
+          `attempt ${attempt}: skipped, ${DUMP_DEADLINE_MS}ms budget exhausted`,
+        );
+        break;
+      }
+
+      // Unique per attempt: on a shared path a failed dump leaves the previous
+      // file behind, so `cat` silently returns an earlier screen's hierarchy.
       const remotePath = `${DUMP_REMOTE_DIR}/device-mcp-dump-${randomUUID()}.xml`;
 
       try {
         const dump = await exec(
           'adb',
           ['-s', this.#serial, 'shell', 'uiautomator', 'dump', remotePath],
-          { timeoutMs: DUMP_TIMEOUT_MS },
+          // Never outlive the overall deadline.
+          { timeoutMs: Math.min(DUMP_TIMEOUT_MS, remainingMs) },
         );
         const xml = await this.#adb(['shell', 'cat', remotePath]);
 
@@ -333,16 +340,17 @@ export class AdbBackend implements DeviceBackend {
         );
       }
 
-      if (attempt < DUMP_ATTEMPTS) {
+      const backoffMs = DUMP_RETRY_DELAY_MS * attempt;
+      if (attempt < DUMP_ATTEMPTS && Date.now() + backoffMs < deadline) {
         await new Promise((resolve) => {
-          setTimeout(resolve, DUMP_RETRY_DELAY_MS * attempt);
+          setTimeout(resolve, backoffMs);
         });
       }
     }
 
     const detail = failures.join('\n');
     throw new Error(
-      `uiautomator failed to capture the UI hierarchy after ${DUMP_ATTEMPTS} attempts.\n${detail}\n${describeDumpRemediation(detail)}`,
+      `uiautomator failed to capture the UI hierarchy after ${failures.length} attempts.\n${detail}\n${describeDumpRemediation(detail)}`,
     );
   }
 
