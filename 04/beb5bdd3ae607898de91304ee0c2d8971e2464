@@ -1,0 +1,47 @@
+src/backends/android-snapshot-helper/index.ts
+  s_c3b03cbdca07ac::t_c1f12c8f14f8b9 16
+src/backends/android-snapshot-helper/signer.ts
+  s_c3b03cbdca07ac::t_e1afcccc8bcd64 42-47,49-60,62,64-71
+  s_c3b03cbdca07ac::t_f61008ba9682a3 112,114-115,117,120,122
+  s_c3b03cbdca07ac::t_0ac78e64b432f0 423-436,438,440,442-456,467-468,470,472,476,482
+  s_c3b03cbdca07ac::t_6c4f2f408408af 376
+  s_c3b03cbdca07ac::t_42a8af18ecf7c2 40-41
+  s_c3b03cbdca07ac::t_f349c32b44413c 469
+  s_c3b03cbdca07ac::t_66002bf05efa2e 20-21
+  s_c3b03cbdca07ac::t_9694ee843e8e69 48
+src/backends/android-snapshot-helper/install.ts
+  s_c3b03cbdca07ac::t_3dd658130ddd46 8
+  s_c3b03cbdca07ac::t_3dcbeadd84bb46 25,31,34-35
+  s_c3b03cbdca07ac::t_fb5755a6a27b6e 78,82,84-85
+  s_c3b03cbdca07ac::t_f7ba5a2c761a24 59,63,65-66
+src/backends/android-snapshot-helper/install.test.ts
+  s_c3b03cbdca07ac::t_2c5693db2a3652 210
+  s_c3b03cbdca07ac::t_8fae3a363b22c4 53,103,170
+  s_c3b03cbdca07ac::t_64319c68e95e71 17-26
+src/backends/android-snapshot-helper/signer.test.ts
+  s_c3b03cbdca07ac::t_321a4591be3976 253-276,300-337,340-346,348-403,406-415,417-418
+  s_c3b03cbdca07ac::t_d1c8cec97a0fbe 18-21
+  s_c3b03cbdca07ac::t_c5eaae0f60a785 425-426,430
+  s_c3b03cbdca07ac::t_07539b0154fbd4 404-405,416
+  s_c3b03cbdca07ac::t_908a2dadcbb5ce 338-339,347
+  s_c3b03cbdca07ac::t_6e27c2ded8cec5 277-299
+  s_c3b03cbdca07ac::t_9905ce1625621d 1,3,5-9,22
+  s_c3b03cbdca07ac::t_9f26cb12a690f0 2,4,12
+  s_c3b03cbdca07ac::t_b9eb479be84071 419-424,427-429,431-457
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "04beb5bdd3ae607898de91304ee0c2d8971e2464",
+  "prompts": {},
+  "sessions": {
+    "s_c3b03cbdca07ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ses_fff22a7ccffe2WV17cAcGu1J02",
+        "model": "unknown"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
