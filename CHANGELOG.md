@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Added
+
+- Add an idle-independent Android snapshot strategy that captures the accessibility hierarchy through a bundled instrumentation helper APK (`am instrument`) instead of raw `uiautomator dump`, bypassing UiAutomator's fixed idle-state gate that stalls on continuously animating MetaMask UI. The helper is opt-in and stable per `AdbBackend` instance: pass `new AdbBackend(serial, { snapshotStrategy: 'helper' })` (also threaded through `createBackend`/`createLazyBackend` via `{ android: { snapshotStrategy } }`) or set `DEVICE_MCP_ANDROID_SNAPSHOT=helper`. The default remains raw `uiautomator dump`, which is required for non-instrumentable physical devices. Helper captures are serialized and there is intentionally **no silent fallback** to raw dump — a failed helper capture fails closed rather than switching snapshot backends mid-operation
+- The bundled Android snapshot-helper host code and prebuilt instrumentation APK are derived from / redistributed from [`agent-device`](https://github.com/callstackincubator/agent-device) (MIT, Copyright (c) 2026 Callstack) at `v0.14.9`; the MIT license and attribution are preserved in `dist/backends/android-snapshot-helper/vendor/` and shipped in the published tarball
+
 ## [0.3.3]
 
 ### Changed
@@ -61,7 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.device-session` file for attaching to existing Appium sessions or creating new ones
 - 16 MCP tools: `device_snapshot`, `device_screenshot`, `device_info`, `device_tap_element`, `device_tap_coordinates`, `device_type`, `device_swipe`, `device_long_press`, `device_wait_for`, `device_app_state`, `device_open_app`, `device_close_app`, `device_press_button`, `device_dismiss_keyboard`, `device_dismiss_alert`, `device_logs`
 
-[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/MetaMask/device-mcp/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/MetaMask/device-mcp/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/MetaMask/device-mcp/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/MetaMask/device-mcp/compare/v0.3.0...v0.3.1

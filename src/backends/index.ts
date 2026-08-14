@@ -1,4 +1,5 @@
 import { AdbBackend } from './adb-backend.js';
+import type { AdbBackendOptions } from './adb-backend.js';
 import { AppiumBackend } from './appium-backend.js';
 import { IdbBackend } from './idb-backend.js';
 import { readSessionFile } from './session-file.js';
@@ -28,8 +29,16 @@ import type { DetectedDevice } from '../utils/platform.js';
 
 export type { DeviceBackend } from './types.js';
 export { AdbBackend } from './adb-backend.js';
+export type {
+  AdbBackendOptions,
+  AndroidSnapshotStrategy,
+} from './adb-backend.js';
 export { AppiumBackend } from './appium-backend.js';
 export { IdbBackend } from './idb-backend.js';
+
+export type CreateBackendOptions = {
+  android?: AdbBackendOptions;
+};
 
 export type LazyDeviceBackend = DeviceBackend & {
   selectDevice(deviceId: string): void;
@@ -39,6 +48,7 @@ export type LazyDeviceBackend = DeviceBackend & {
 export async function createBackend(
   explicitDeviceId?: string,
   explicitPlatform?: Platform,
+  options: CreateBackendOptions = {},
 ): Promise<DeviceBackend> {
   const sessionConfig = await readSessionFile();
 
@@ -57,7 +67,9 @@ export async function createBackend(
   );
 
   const backend =
-    platform === 'ios' ? new IdbBackend(deviceId) : new AdbBackend(deviceId);
+    platform === 'ios'
+      ? new IdbBackend(deviceId)
+      : new AdbBackend(deviceId, options.android);
 
   await backend.ensureConnected();
   return backend;
@@ -66,6 +78,7 @@ export async function createBackend(
 export function createLazyBackend(
   explicitDeviceId?: string,
   explicitPlatform?: Platform,
+  backendOptions: CreateBackendOptions = {},
 ): LazyDeviceBackend {
   let inner: DeviceBackend | null = null;
   let connecting: Promise<DeviceBackend> | null = null;
@@ -83,7 +96,7 @@ export function createLazyBackend(
 
     if (!connecting) {
       const deviceId = selectedOverride ?? explicitDeviceId;
-      connecting = createBackend(deviceId, explicitPlatform)
+      connecting = createBackend(deviceId, explicitPlatform, backendOptions)
         .then((backend) => {
           inner = backend;
           pendingDevices = null;

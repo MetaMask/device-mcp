@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, constants as fsConstants, mkdtempSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 
 /** Kinds of on-disk device artifact and their file extension. */
 const ARTIFACT_EXTENSION = {
@@ -45,6 +45,17 @@ function getSessionTempDir(): string {
     sessionTempDir = mkdtempSync(join(tmpdir(), 'device-mcp-'));
   }
   return sessionTempDir;
+}
+
+/**
+ * Create a private, cleanupable subdirectory within the process temp directory.
+ *
+ * @param prefix - A filename-safe prefix identifying the temporary operation.
+ * @returns The absolute path to the new owner-only directory.
+ */
+export function createPrivateTempDir(prefix: string): string {
+  const safePrefix = basename(prefix).replace(/[^a-zA-Z0-9_-]/gu, '-');
+  return mkdtempSync(join(getSessionTempDir(), `${safePrefix}-`));
 }
 
 /**
