@@ -14,6 +14,16 @@ import type {
 const BUNDLED_ARTIFACT = resolveBundledAndroidSnapshotHelper();
 const REMOTE_APK_PATH = '/data/app/example/base.apk';
 
+// Skip host apksigner discovery so these install/version tests do not depend on
+// whichever Build Tools version happens to exist on the machine; the PEM-parsing
+// apksigner path is covered deterministically in signer.test.ts.
+const WITHOUT_APKSIGNER = {
+  resolveApksignerPath: () => undefined,
+  exec: async () => {
+    throw new Error('apksigner should not be invoked');
+  },
+} as const;
+
 function ok(stdout = ''): { stdout: string; stderr: string; exitCode: number } {
   return { stdout, stderr: '', exitCode: 0 };
 }
@@ -40,6 +50,7 @@ describe('ensureAndroidSnapshotHelper', () => {
     const result = await ensureAndroidSnapshotHelper({
       adb,
       artifact: BUNDLED_ARTIFACT,
+      apksigner: WITHOUT_APKSIGNER,
     });
 
     expect(result.reason).toBe('missing');
@@ -89,6 +100,7 @@ describe('ensureAndroidSnapshotHelper', () => {
     const result = await ensureAndroidSnapshotHelper({
       adb,
       artifact: BUNDLED_ARTIFACT,
+      apksigner: WITHOUT_APKSIGNER,
     });
 
     expect(result.reason).toBe('current');
@@ -155,6 +167,7 @@ describe('ensureAndroidSnapshotHelper', () => {
     const result = await ensureAndroidSnapshotHelper({
       adb,
       artifact: BUNDLED_ARTIFACT,
+      apksigner: WITHOUT_APKSIGNER,
     });
 
     expect(result.reason).toBe('outdated');
@@ -194,6 +207,7 @@ describe('ensureAndroidSnapshotHelper', () => {
       adb,
       artifact: BUNDLED_ARTIFACT,
       installPolicy: 'always',
+      apksigner: WITHOUT_APKSIGNER,
     });
 
     expect(result.reason).toBe('forced');

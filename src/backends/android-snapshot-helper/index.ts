@@ -13,6 +13,7 @@ export {
   verifyAndroidSnapshotHelperArtifact,
 } from './artifact.js';
 export { computeApkV1SignerSha256 } from './signer.js';
+export type { ApksignerDependencies } from './signer.js';
 export * from './types.js';
 
 const BUNDLED_HELPER_VERSION = '0.14.9';

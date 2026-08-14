@@ -17,8 +17,8 @@ import { exec } from '../../utils/exec.js';
 import { createPrivateTempDir } from '../../utils/output-path.js';
 
 const APK_SIGNATURE_ENTRY = /^META-INF\/[^/]+\.(?:RSA|DSA|EC)$/iu;
-const APK_SIGNER_DIGEST =
-  /Signer #\d+ certificate SHA-256 digest:\s*([0-9a-f:]+)/giu;
+const PEM_CERTIFICATE =
+  /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/gu;
 const PACKAGE_PATH_PREFIX = 'package:';
 const PKCS7_SIGNED_DATA = Buffer.from('2a864886f70d010702', 'hex');
 const ZIP_CENTRAL_DIRECTORY = 0x02014b50;
@@ -37,12 +37,38 @@ type DerElement = {
   end: number;
 };
 
+// Injected so signer verification does not depend on whichever Build Tools
+// version happens to be installed on the host; tests supply deterministic stubs.
+export type ApksignerDependencies = {
+  resolveApksignerPath: () => string | undefined;
+  exec: typeof exec;
+};
+
+const defaultApksignerDependencies: ApksignerDependencies = {
+  resolveApksignerPath,
+  exec,
+};
+
+export type VerifyInstalledSignerOptions = {
+  adb: AndroidAdbExecutor;
+  packageName: string;
+  expectedSignerSha256: string;
+  minSdk: number;
+  timeoutMs: number;
+  apksigner?: ApksignerDependencies;
+};
+
 export async function verifyInstalledAndroidSnapshotHelperSigner(
-  adb: AndroidAdbExecutor,
-  packageName: string,
-  expectedSignerSha256: string,
-  timeoutMs: number,
+  options: VerifyInstalledSignerOptions,
 ): Promise<void> {
+  const {
+    adb,
+    packageName,
+    expectedSignerSha256,
+    minSdk,
+    timeoutMs,
+    apksigner = defaultApksignerDependencies,
+  } = options;
   const pathResult = await adb(['shell', 'pm', 'path', packageName], {
     allowFailure: true,
     timeoutMs,
@@ -83,15 +109,17 @@ export async function verifyInstalledAndroidSnapshotHelperSigner(
       'v1 signing certificate',
     );
 
-    const apksignerPath = resolveApksignerPath();
+    const apksignerPath = apksigner.resolveApksignerPath();
     if (apksignerPath) {
-      await verifyWithApksigner(
+      await verifyWithApksigner({
+        exec: apksigner.exec,
         apksignerPath,
-        localApkPath,
+        apkPath: localApkPath,
         packageName,
         expectedSignerSha256,
+        minSdk,
         timeoutMs,
-      );
+      });
     }
   } catch (error: unknown) {
     if (error instanceof SnapshotHelperError) {
@@ -345,7 +373,7 @@ function readDerElement(buffer: Buffer, offset: number): DerElement {
   return { tag, start: offset, contentStart, end };
 }
 
-function resolveApksignerPath(): string | undefined {
+export function resolveApksignerPath(): string | undefined {
   const sdkRoots = new Set(
     [
       process.env.ANDROID_HOME,
@@ -392,16 +420,40 @@ function compareVersions(left: string, right: string): number {
   return left.localeCompare(right);
 }
 
+type VerifyWithApksignerOptions = {
+  exec: typeof exec;
+  apksignerPath: string;
+  apkPath: string;
+  packageName: string;
+  expectedSignerSha256: string;
+  minSdk: number;
+  timeoutMs: number;
+};
+
+// Parse the PEM certificate blocks rather than apksigner's human-readable
+// `Signer #N`/`V3.0 Signer:` labels: those labels vary across Build Tools
+// versions (36 vs 37), whereas `--print-certs-pem` is stable. `--min-sdk-version`
+// pins the verification range to the artifact's manifest minSdk.
 async function verifyWithApksigner(
-  apksignerPath: string,
-  apkPath: string,
-  packageName: string,
-  expectedSignerSha256: string,
-  timeoutMs: number,
+  options: VerifyWithApksignerOptions,
 ): Promise<void> {
-  const result = await exec(
+  const {
     apksignerPath,
-    ['verify', '--print-certs', apkPath],
+    apkPath,
+    packageName,
+    expectedSignerSha256,
+    minSdk,
+    timeoutMs,
+  } = options;
+  const result = await options.exec(
+    apksignerPath,
+    [
+      'verify',
+      '--min-sdk-version',
+      String(minSdk),
+      '--print-certs-pem',
+      apkPath,
+    ],
     { timeoutMs },
   );
   if (result.exitCode !== 0) {
@@ -412,20 +464,22 @@ async function verifyWithApksigner(
       apksignerPath,
     });
   }
-  const digests = [...result.stdout.matchAll(APK_SIGNER_DIGEST)].map((match) =>
-    match[1].replace(/:/gu, '').toLowerCase(),
+  const digests = new Set(
+    (result.stdout.match(PEM_CERTIFICATE) ?? []).map((pem) =>
+      createHash('sha256').update(new X509Certificate(pem).raw).digest('hex'),
+    ),
   );
-  if (digests.length !== 1) {
+  if (digests.size !== 1) {
     throw verificationFailed(
       packageName,
       'apksigner did not report exactly one signing certificate',
-      { apksignerPath, signerCount: digests.length },
+      { apksignerPath, signerCount: digests.size },
     );
   }
   assertSignerMatches(
     packageName,
     expectedSignerSha256,
-    digests[0],
+    [...digests][0],
     'apksigner signing certificate',
   );
 }

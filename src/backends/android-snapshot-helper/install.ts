@@ -5,6 +5,7 @@
 import { verifyAndroidSnapshotHelperArtifact } from './artifact.js';
 import { SnapshotHelperError } from './errors.js';
 import { verifyInstalledAndroidSnapshotHelperSigner } from './signer.js';
+import type { ApksignerDependencies } from './signer.js';
 import type {
   AndroidAdbExecutor,
   AndroidSnapshotHelperArtifact,
@@ -21,15 +22,17 @@ export type EnsureAndroidSnapshotHelperOptions = {
   artifact: AndroidSnapshotHelperArtifact;
   installPolicy?: AndroidSnapshotHelperInstallPolicy;
   timeoutMs?: number;
+  apksigner?: ApksignerDependencies;
 };
 
 export async function ensureAndroidSnapshotHelper(
   options: EnsureAndroidSnapshotHelperOptions,
 ): Promise<AndroidSnapshotHelperInstallResult> {
-  const { adb, artifact } = options;
+  const { adb, artifact, apksigner } = options;
   const installPolicy = options.installPolicy ?? 'missing-or-outdated';
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const { packageName, versionCode, expectedSignerSha256 } = artifact.manifest;
+  const { packageName, versionCode, expectedSignerSha256, minSdk } =
+    artifact.manifest;
 
   if (installPolicy === 'never') {
     return {
@@ -53,12 +56,14 @@ export async function ensureAndroidSnapshotHelper(
   );
 
   if (reason === 'current') {
-    await verifyInstalledAndroidSnapshotHelperSigner(
+    await verifyInstalledAndroidSnapshotHelperSigner({
       adb,
       packageName,
       expectedSignerSha256,
+      minSdk,
       timeoutMs,
-    );
+      apksigner,
+    });
     return {
       packageName,
       versionCode,
@@ -70,12 +75,14 @@ export async function ensureAndroidSnapshotHelper(
 
   await verifyAndroidSnapshotHelperArtifact(artifact);
   await installApk(adb, artifact, timeoutMs);
-  await verifyInstalledAndroidSnapshotHelperSigner(
+  await verifyInstalledAndroidSnapshotHelperSigner({
     adb,
     packageName,
     expectedSignerSha256,
+    minSdk,
     timeoutMs,
-  );
+    apksigner,
+  });
 
   return {
     packageName,
