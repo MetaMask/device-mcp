@@ -1,5 +1,14 @@
-export { createBackend, createLazyBackend } from './backends/index.js';
-export type { LazyDeviceBackend } from './backends/index.js';
+export {
+  AdbBackend,
+  createBackend,
+  createLazyBackend,
+} from './backends/index.js';
+export type {
+  AdbBackendOptions,
+  AndroidSnapshotStrategy,
+  CreateBackendOptions,
+  LazyDeviceBackend,
+} from './backends/index.js';
 export { createMcpServer } from './server.js';
 
 export { detectAllDevices, MultipleDevicesError } from './utils/platform.js';

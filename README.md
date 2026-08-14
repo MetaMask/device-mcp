@@ -46,6 +46,9 @@ DEVICE_ID=<udid-or-serial> device-mcp
 # Target a specific platform (useful in CI with one device per platform)
 DEVICE_PLATFORM=ios device-mcp
 DEVICE_PLATFORM=android device-mcp
+
+# Use the instrumentation helper for Android snapshots
+DEVICE_MCP_ANDROID_SNAPSHOT=helper device-mcp
 ```
 
 ### Backend Selection
@@ -58,6 +61,36 @@ The server selects a backend in this order:
 4. **`DEVICE_PLATFORM` only** — auto-detect first device of that platform
 5. **Nothing set, 1 device** — auto-connect
 6. **Nothing set, multiple devices** — returns device list, agent asks user to pick via `device_select_device`
+
+### Android Snapshot Strategy
+
+Android snapshots use the read-only `uiautomator dump` strategy by default. This remains the default because it is required for non-instrumentable physical devices. On continuously animating UI, UiAutomator's fixed idle-state gate can stall; use the opt-in `helper` strategy to capture the accessibility hierarchy through instrumentation instead.
+
+Configure the strategy when constructing an Android backend:
+
+```ts
+new AdbBackend(serial, { snapshotStrategy: 'helper' });
+```
+
+Or pass it to either backend factory:
+
+```ts
+createBackend(deviceId, platform, {
+  android: { snapshotStrategy: 'helper' },
+});
+
+createLazyBackend(deviceId, platform, {
+  android: { snapshotStrategy: 'helper' },
+});
+```
+
+For the MCP server, set `DEVICE_MCP_ANDROID_SNAPSHOT=helper` before launch:
+
+```bash
+DEVICE_MCP_ANDROID_SNAPSHOT=helper device-mcp
+```
+
+> **Note:** The helper strategy installs the bundled `com.callstack.agentdevice.snapshothelper` instrumentation APK on the connected device and leaves it installed after use. The APK is derived from and redistributed from Callstack's [`agent-device`](https://github.com/callstackincubator/agent-device) project (MIT) at `v0.14.9`; the package ships its MIT license and attribution. Its SHA256 checksum is verified before installation. Helper capture has no silent fallback to `uiautomator dump`: if it fails, the snapshot operation fails closed rather than switching strategies mid-operation.
 
 ### Multi-Device Selection
 

@@ -1,3 +1,4 @@
+/* eslint-disable n/no-process-env -- these tests toggle DEVICE_MCP_ANDROID_SNAPSHOT to exercise the snapshot-strategy opt-in */
 import { readFile } from 'node:fs/promises';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -8,6 +9,7 @@ import {
 } from './adb-backend.js';
 import { findElement } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
+import * as signerModule from './android-snapshot-helper/signer.js';
 
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
@@ -19,6 +21,17 @@ vi.mock('../utils/exec.js', () => ({
   isCommandAvailable: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock('./android-snapshot-helper/signer.js', async (importActual) => {
+  const actual = await importActual<typeof signerModule>();
+  return {
+    ...actual,
+    verifyInstalledAndroidSnapshotHelperSigner: vi
+      .fn()
+      .mockResolvedValue(undefined),
+  };
+});
+
+const mockExec = vi.mocked(execModule.exec);
 const mockExecStrict = vi.mocked(execModule.execStrict);
 const mockReadFile = vi.mocked(readFile);
 
@@ -247,5 +260,191 @@ describe('AdbBackend.screenshot', () => {
       /[/\\]device-mcp-[^/\\]+[/\\]screenshot-[0-9a-f]{16}\.png$/u,
     );
     expect(result.data).toBe('YmFy');
+  });
+});
+
+describe('AdbBackend snapshot strategy', () => {
+  const HELPER_XML = `<?xml version="1.0"?>
+<hierarchy rotation="0">
+  <node class="android.widget.FrameLayout" content-desc="" text="" resource-id="" enabled="true" bounds="[0,0][100,100]" />
+</hierarchy>`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.DEVICE_MCP_ANDROID_SNAPSHOT;
+  });
+
+  it('uses raw uiautomator dump by default', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('get-state')) {
+        return 'device';
+      }
+      return HELPER_XML;
+    });
+
+    const backend = new AdbBackend('emulator-5554');
+    await backend.snapshot();
+
+    expect(mockExecStrict).toHaveBeenCalledWith('adb', [
+      '-s',
+      'emulator-5554',
+      'shell',
+      'uiautomator',
+      'dump',
+      '/sdcard/window_dump.xml',
+    ]);
+    expect(mockExec).not.toHaveBeenCalled();
+  });
+
+  it('uses the instrumentation helper when opted in via constructor', async () => {
+    mockExec.mockImplementation(async (_cmd, args) => {
+      if (args.includes('list') && args.includes('packages')) {
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }
+      if (args[2] === 'install' || args[2] === 'uninstall') {
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }
+      const payload = Buffer.from(HELPER_XML, 'utf8').toString('base64');
+      const stdout = [
+        'INSTRUMENTATION_STATUS: agentDeviceProtocol=android-snapshot-helper-v1',
+        'INSTRUMENTATION_STATUS: outputFormat=uiautomator-xml',
+        'INSTRUMENTATION_STATUS: chunkIndex=0',
+        'INSTRUMENTATION_STATUS: chunkCount=1',
+        `INSTRUMENTATION_STATUS: payloadBase64=${payload}`,
+        'INSTRUMENTATION_STATUS_CODE: 1',
+        'INSTRUMENTATION_RESULT: agentDeviceProtocol=android-snapshot-helper-v1',
+        'INSTRUMENTATION_RESULT: ok=true',
+        'INSTRUMENTATION_CODE: -1',
+      ].join('\n');
+      return { stdout, stderr: '', exitCode: 0 };
+    });
+
+    const backend = new AdbBackend('emulator-5554', {
+      snapshotStrategy: 'helper',
+    });
+    const snapshot = await backend.snapshot();
+
+    expect(snapshot.hierarchy).toHaveLength(1);
+    expect(
+      mockExec.mock.calls.some(([, args]) => args.includes('instrument')),
+    ).toBe(true);
+    expect(mockExecStrict).not.toHaveBeenCalledWith(
+      'adb',
+      expect.arrayContaining(['uiautomator', 'dump']),
+    );
+  });
+
+  it('ensures the helper once before sequential captures', async () => {
+    mockExec.mockImplementation(async (_cmd, args) => {
+      if (args.includes('list') && args.includes('packages')) {
+        return {
+          stdout:
+            'package:com.callstack.agentdevice.snapshothelper versionCode:14009',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      const payload = Buffer.from(HELPER_XML, 'utf8').toString('base64');
+      const stdout = [
+        'INSTRUMENTATION_STATUS: agentDeviceProtocol=android-snapshot-helper-v1',
+        'INSTRUMENTATION_STATUS: outputFormat=uiautomator-xml',
+        'INSTRUMENTATION_STATUS: chunkIndex=0',
+        'INSTRUMENTATION_STATUS: chunkCount=1',
+        `INSTRUMENTATION_STATUS: payloadBase64=${payload}`,
+        'INSTRUMENTATION_STATUS_CODE: 1',
+        'INSTRUMENTATION_RESULT: agentDeviceProtocol=android-snapshot-helper-v1',
+        'INSTRUMENTATION_RESULT: ok=true',
+        'INSTRUMENTATION_CODE: -1',
+      ].join('\n');
+      return { stdout, stderr: '', exitCode: 0 };
+    });
+
+    const backend = new AdbBackend('emulator-5554', {
+      snapshotStrategy: 'helper',
+    });
+    await backend.snapshot();
+    await backend.snapshot();
+
+    expect(
+      mockExec.mock.calls.filter(
+        ([, args]) =>
+          args.includes('cmd') &&
+          args.includes('package') &&
+          args.includes('list'),
+      ),
+    ).toHaveLength(1);
+    expect(
+      mockExec.mock.calls.filter(([, args]) => args.includes('instrument')),
+    ).toHaveLength(2);
+  });
+
+  it('retries helper installation after an initial failure', async () => {
+    let installAttempts = 0;
+    mockExec.mockImplementation(async (_cmd, args) => {
+      if (args.includes('list') && args.includes('packages')) {
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }
+      if (args[2] === 'install') {
+        installAttempts += 1;
+        return {
+          stdout: '',
+          stderr: installAttempts === 1 ? 'install failed' : '',
+          exitCode: installAttempts === 1 ? 1 : 0,
+        };
+      }
+      const payload = Buffer.from(HELPER_XML, 'utf8').toString('base64');
+      const stdout = [
+        'INSTRUMENTATION_STATUS: agentDeviceProtocol=android-snapshot-helper-v1',
+        'INSTRUMENTATION_STATUS: outputFormat=uiautomator-xml',
+        'INSTRUMENTATION_STATUS: chunkIndex=0',
+        'INSTRUMENTATION_STATUS: chunkCount=1',
+        `INSTRUMENTATION_STATUS: payloadBase64=${payload}`,
+        'INSTRUMENTATION_STATUS_CODE: 1',
+        'INSTRUMENTATION_RESULT: agentDeviceProtocol=android-snapshot-helper-v1',
+        'INSTRUMENTATION_RESULT: ok=true',
+        'INSTRUMENTATION_CODE: -1',
+      ].join('\n');
+      return { stdout, stderr: '', exitCode: 0 };
+    });
+
+    const backend = new AdbBackend('emulator-5554', {
+      snapshotStrategy: 'helper',
+    });
+
+    await expect(backend.snapshot()).rejects.toThrow(/snapshot helper/u);
+    expect(await backend.snapshot()).toMatchObject({
+      hierarchy: expect.any(Array),
+    });
+    expect(installAttempts).toBe(2);
+  });
+
+  it('honors the DEVICE_MCP_ANDROID_SNAPSHOT=helper env opt-in', async () => {
+    process.env.DEVICE_MCP_ANDROID_SNAPSHOT = 'helper';
+    mockExec.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+
+    const backend = new AdbBackend('emulator-5554');
+    await expect(backend.snapshot()).rejects.toThrow(/snapshot helper/u);
+
+    expect(
+      mockExec.mock.calls.some(([, args]) => args.includes('instrument')),
+    ).toBe(true);
+  });
+
+  it('fails closed without falling back to raw dump when the helper fails', async () => {
+    mockExec.mockResolvedValue({
+      stdout: 'noise',
+      stderr: '',
+      exitCode: 1,
+    });
+
+    const backend = new AdbBackend('emulator-5554', {
+      snapshotStrategy: 'helper',
+    });
+
+    await expect(backend.snapshot()).rejects.toThrow(/snapshot helper/u);
+    expect(mockExecStrict).not.toHaveBeenCalledWith(
+      'adb',
+      expect.arrayContaining(['uiautomator', 'dump']),
+    );
   });
 });

@@ -2,6 +2,17 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
+import { createAndroidSnapshotAdbExecutor } from './android-snapshot-adb.js';
+import {
+  captureAndroidSnapshotWithHelper,
+  ensureAndroidSnapshotHelper,
+  resolveBundledAndroidSnapshotHelper,
+} from './android-snapshot-helper/index.js';
+import type {
+  AndroidAdbExecutor,
+  AndroidSnapshotHelperArtifact,
+  AndroidSnapshotHelperOutput,
+} from './android-snapshot-helper/index.js';
 import type {
   DeviceBackend,
   DeviceButton,
@@ -29,6 +40,12 @@ import {
   resolveArtifactPath,
 } from '../utils/output-path.js';
 
+export type AndroidSnapshotStrategy = 'uiautomator-dump' | 'helper';
+
+export type AdbBackendOptions = {
+  snapshotStrategy?: AndroidSnapshotStrategy;
+};
+
 export class AdbBackend implements DeviceBackend {
   readonly kind = 'adb' as const;
 
@@ -36,14 +53,24 @@ export class AdbBackend implements DeviceBackend {
 
   readonly #serial: string;
 
+  readonly #snapshotStrategy: AndroidSnapshotStrategy;
+
+  #snapshotAdb: AndroidAdbExecutor | null = null;
+
+  #helperCaptureQueue: Promise<unknown> = Promise.resolve();
+
+  #helperInstallEnsured: Promise<AndroidSnapshotHelperArtifact> | null = null;
+
   #recordingProcess: ChildProcess | null = null;
 
   #recordingPath: string | null = null;
 
   readonly #recordingRemotePath = '/sdcard/device-mcp-recording.mp4';
 
-  constructor(serial: string) {
+  constructor(serial: string, options: AdbBackendOptions = {}) {
     this.#serial = serial;
+    this.#snapshotStrategy =
+      options.snapshotStrategy ?? resolveSnapshotStrategyFromEnv();
   }
 
   async #adb(args: string[]): Promise<string> {
@@ -218,11 +245,64 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async #dumpUiHierarchy(): Promise<string> {
+    if (this.#snapshotStrategy === 'helper') {
+      return this.#captureWithHelper();
+    }
     const remotePath = '/sdcard/window_dump.xml';
     await this.#adb(['shell', 'uiautomator', 'dump', remotePath]);
     const xml = await this.#adb(['shell', 'cat', remotePath]);
     await this.#adb(['shell', 'rm', '-f', remotePath]);
     return xml;
+  }
+
+  // Serialize helper captures: a single instrumentation runner instance cannot
+  // service overlapping `am instrument` invocations, and element operations can
+  // trigger nested this.snapshot() calls. There is intentionally no fallback to
+  // raw uiautomator dump — a wallet must fail closed rather than silently switch
+  // snapshot backends mid-operation.
+  async #captureWithHelper(): Promise<string> {
+    const adb =
+      this.#snapshotAdb ??
+      (this.#snapshotAdb = createAndroidSnapshotAdbExecutor(this.#serial));
+    const capture = this.#helperCaptureQueue.then(
+      async () => this.#captureInstalledHelper(adb),
+      async () => this.#captureInstalledHelper(adb),
+    );
+    this.#helperCaptureQueue = capture.then(
+      () => undefined,
+      () => undefined,
+    );
+    const output = await capture;
+    return output.xml;
+  }
+
+  async #captureInstalledHelper(
+    adb: AndroidAdbExecutor,
+  ): Promise<AndroidSnapshotHelperOutput> {
+    const artifact = await this.#ensureHelperInstalled(adb);
+    return captureAndroidSnapshotWithHelper({
+      adb,
+      packageName: artifact.manifest.packageName,
+      instrumentationRunner: artifact.manifest.instrumentationRunner,
+    });
+  }
+
+  async #ensureHelperInstalled(
+    adb: AndroidAdbExecutor,
+  ): Promise<AndroidSnapshotHelperArtifact> {
+    if (!this.#helperInstallEnsured) {
+      const artifact = resolveBundledAndroidSnapshotHelper();
+      const ensure = ensureAndroidSnapshotHelper({
+        adb,
+        artifact,
+        installPolicy: 'missing-or-outdated',
+      }).then(() => artifact);
+      this.#helperInstallEnsured = ensure.catch((error: unknown) => {
+        this.#helperInstallEnsured = null;
+        throw error;
+      });
+    }
+    return await this.#helperInstallEnsured;
   }
 
   screenshot(
@@ -480,6 +560,12 @@ export class AdbBackend implements DeviceBackend {
     hardenArtifactFile(localPath);
     return localPath;
   }
+}
+
+function resolveSnapshotStrategyFromEnv(): AndroidSnapshotStrategy {
+  return process.env.DEVICE_MCP_ANDROID_SNAPSHOT === 'helper'
+    ? 'helper'
+    : 'uiautomator-dump';
 }
 
 function collectAndroidAlertTexts(elements: UIElement[]): string[] {
