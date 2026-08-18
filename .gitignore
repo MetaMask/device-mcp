@@ -7,6 +7,9 @@ dist/
 # Test coverage
 coverage/
 
+# Scratch build output (Android snapshot-helper APK staging)
+.tmp/
+
 # IDE
 .idea/
 .vscode/

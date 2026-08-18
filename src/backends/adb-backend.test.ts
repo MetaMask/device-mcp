@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+/* eslint-disable n/no-process-env -- these tests toggle DEVICE_MCP_ADB_SNAPSHOT to exercise snapshot-mode selection */
+import { readFile, readdir } from 'node:fs/promises';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import {
@@ -11,6 +12,7 @@ import * as execModule from '../utils/exec.js';
 
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
+  readdir: vi.fn(),
 }));
 
 vi.mock('../utils/exec.js', () => ({
@@ -22,6 +24,7 @@ vi.mock('../utils/exec.js', () => ({
 const mockExecStrict = vi.mocked(execModule.execStrict);
 const mockExec = vi.mocked(execModule.exec);
 const mockReadFile = vi.mocked(readFile);
+const mockReaddir = vi.mocked(readdir);
 
 const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <hierarchy rotation="0">
@@ -128,11 +131,15 @@ describe('AdbBackend.snapshot', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // These tests exercise the stock `uiautomator dump` retry loop in
+    // isolation; force that path so the instrumentation helper does not run.
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'dump';
     backend = new AdbBackend('emulator-5554');
     mockExec.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
   });
 
   afterEach(() => {
+    delete process.env.DEVICE_MCP_ADB_SNAPSHOT;
     // Implementations set here would otherwise leak into later suites, which stub
     // only execStrict and would then inherit this suite's exec behaviour.
     mockExec.mockReset();
@@ -222,7 +229,7 @@ describe('AdbBackend.snapshot', () => {
 
     await expect(
       withoutRetryDelay(async () => backend.snapshot()),
-    ).rejects.toThrow('uiautomator failed to capture the UI hierarchy');
+    ).rejects.toThrow('Failed to capture the UI hierarchy');
 
     const removed = mockExecStrict.mock.calls.filter((call) =>
       call[1]?.includes('rm'),
@@ -284,7 +291,7 @@ describe('AdbBackend.snapshot', () => {
 
     await expect(
       withoutRetryDelay(async () => backend.snapshot()),
-    ).rejects.toThrow('uiautomator failed to capture the UI hierarchy');
+    ).rejects.toThrow('Failed to capture the UI hierarchy');
   });
 
   it('retries a truncated dump and returns the first complete payload', async () => {
@@ -461,5 +468,206 @@ describe('AdbBackend.screenshot', () => {
       /[/\\]device-mcp-[^/\\]+[/\\]screenshot-[0-9a-f]{16}\.png$/u,
     );
     expect(result.data).toBe('YmFy');
+  });
+});
+
+/**
+ * Encode hierarchy XML into the chunked base64 status stream that
+ * `am instrument -w` emits, with CRLF line endings like adb shell.
+ *
+ * @param xml - The hierarchy XML the helper would stream.
+ * @returns Raw `am instrument` stdout.
+ */
+function buildInstrumentStdout(xml: string): string {
+  const bytes = Buffer.from(xml, 'utf8');
+  const chunkSize = 2048;
+  const chunkCount = Math.max(1, Math.ceil(bytes.length / chunkSize));
+  const lines: string[] = [];
+  for (let index = 0; index < chunkCount; index += 1) {
+    const slice = bytes.subarray(index * chunkSize, (index + 1) * chunkSize);
+    lines.push(`INSTRUMENTATION_STATUS: chunkCount=${chunkCount}`);
+    lines.push(`INSTRUMENTATION_STATUS: chunkIndex=${index}`);
+    lines.push(
+      `INSTRUMENTATION_STATUS: payloadBase64=${slice.toString('base64')}`,
+    );
+    lines.push('INSTRUMENTATION_STATUS_CODE: 2');
+  }
+  lines.push('INSTRUMENTATION_RESULT: ok=true');
+  lines.push('INSTRUMENTATION_CODE: -1');
+  return lines.join('\r\n');
+}
+
+const INSTRUMENT_XML =
+  `<?xml version='1.0'?><hierarchy rotation="0">` +
+  `<node index="0" bounds="[0,0][1080,2274]" class="android.view.View" ` +
+  `package="io.metamask" resource-id="tab-bar-item-Wallet" text="Wallet" />` +
+  `</hierarchy>`;
+
+describe('AdbBackend.snapshot snapshot-mode selection', () => {
+  let backend: AdbBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    backend = new AdbBackend('emulator-5554');
+    // Helper APK present in dist/android so install is never attempted.
+    mockReaddir.mockResolvedValue([
+      'device-mcp-android-snapshot-helper-0.3.3.apk',
+    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+  });
+
+  afterEach(() => {
+    delete process.env.DEVICE_MCP_ADB_SNAPSHOT;
+    mockExec.mockReset();
+    mockExecStrict.mockReset();
+    mockReaddir.mockReset();
+  });
+
+  /**
+   * Route `exec('adb', ...)` calls by their sub-command.
+   *
+   * @param overrides - Per-command stdout/exit overrides.
+   * @param overrides.dumpCat - stdout returned by `cat` of the dump file.
+   * @param overrides.helperInstalled - Whether `pm list packages` reports it.
+   * @param overrides.instrumentStdout - stdout returned by `am instrument`.
+   */
+  function routeExec(overrides: {
+    dumpCat?: string;
+    helperInstalled?: boolean;
+    instrumentStdout?: string;
+  }): void {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('cat')) {
+        return overrides.dumpCat ?? '';
+      }
+      return '';
+    });
+    mockExec.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('instrument')) {
+        return {
+          stdout: overrides.instrumentStdout ?? '',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (args?.includes('packages')) {
+        return {
+          stdout: overrides.helperInstalled
+            ? 'package:io.metamask.devicemcp.snapshothelper'
+            : '',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (args?.includes('install')) {
+        return { stdout: 'Success', stderr: '', exitCode: 0 };
+      }
+      // dump / cat / rm / other
+      return { stdout: '', stderr: '', exitCode: 0 };
+    });
+  }
+
+  it('auto: returns the quick dump when the screen is idle', async () => {
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
+    routeExec({
+      dumpCat:
+        '<hierarchy><node class="T" text="idle" bounds="[0,0][1,1]" /></hierarchy>',
+    });
+
+    const snapshot = await backend.snapshot();
+
+    expect(snapshot.hierarchy[0].value).toBe('idle');
+    // The instrumentation path must not run when the quick dump succeeds.
+    expect(
+      mockExec.mock.calls.some((call) => call[1]?.includes('instrument')),
+    ).toBe(false);
+  });
+
+  it('auto: falls back to instrumentation when the dump never idles', async () => {
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
+    routeExec({
+      dumpCat: '', // dump yields no hierarchy (churny screen)
+      helperInstalled: true,
+      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
+    });
+
+    const snapshot = await backend.snapshot();
+
+    expect(snapshot.hierarchy[0].identifier).toBe('tab-bar-item-Wallet');
+    expect(
+      mockExec.mock.calls.some((call) => call[1]?.includes('instrument')),
+    ).toBe(true);
+  });
+
+  it('auto: installs the helper when it is not yet present', async () => {
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
+    routeExec({
+      dumpCat: '',
+      helperInstalled: false,
+      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
+    });
+
+    await backend.snapshot();
+
+    expect(
+      mockExec.mock.calls.some((call) => call[1]?.includes('install')),
+    ).toBe(true);
+  });
+
+  it('instrument: uses only the helper and never dumps', async () => {
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
+    routeExec({
+      helperInstalled: true,
+      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
+    });
+
+    const snapshot = await backend.snapshot();
+
+    expect(snapshot.hierarchy[0].identifier).toBe('tab-bar-item-Wallet');
+    expect(mockExec.mock.calls.some((call) => call[1]?.includes('dump'))).toBe(
+      false,
+    );
+  });
+
+  it('instrument: surfaces a composed failure when the helper fails', async () => {
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
+    mockExecStrict.mockResolvedValue('');
+    mockExec.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('instrument')) {
+        return {
+          stdout: 'INSTRUMENTATION_RESULT: ok=false\r\nINSTRUMENTATION_CODE: 0',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (args?.includes('packages')) {
+        return {
+          stdout: 'package:io.metamask.devicemcp.snapshothelper',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      return { stdout: '', stderr: '', exitCode: 0 };
+    });
+
+    await expect(backend.snapshot()).rejects.toThrow(
+      /Failed to capture the UI hierarchy[\s\S]*instrument:/u,
+    );
+  });
+
+  it('caches the install check across snapshots within a session', async () => {
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
+    routeExec({
+      helperInstalled: true,
+      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
+    });
+
+    await backend.snapshot();
+    await backend.snapshot();
+
+    const packageChecks = mockExec.mock.calls.filter((call) =>
+      call[1]?.includes('packages'),
+    );
+    // The `pm list packages` probe runs once, then the cache short-circuits it.
+    expect(packageChecks).toHaveLength(1);
   });
 });

@@ -3,6 +3,15 @@ import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
+import {
+  installHelper,
+  isHelperInstalled,
+  INSTRUMENTATION_NOT_FOUND_SIGNATURE,
+} from './android-instrumentation-installer.js';
+import {
+  HELPER_INSTRUMENTATION,
+  reassembleInstrumentationXml,
+} from './android-instrumentation-snapshot.js';
 import type {
   DeviceBackend,
   DeviceButton,
@@ -44,6 +53,43 @@ const DUMP_DEADLINE_MS = 25_000;
 
 // Writable by the shell user without scoped-storage restrictions.
 const DUMP_REMOTE_DIR = '/data/local/tmp';
+
+// The instrumentation helper skips uiautomator's idle wait, so it must be
+// bounded by its own timeout rather than relying on "eventually idle".
+const INSTRUMENT_TIMEOUT_MS = 8_000;
+
+// `am instrument` streams the whole hierarchy as base64 status records; a deep
+// tree can produce a few hundred KB, so raise the exec buffer above the default
+// 10MB guard to keep an overflow from masquerading as a helper crash.
+const INSTRUMENT_MAX_BUFFER = 16 * 1024 * 1024;
+
+// In `auto` mode, try a single fast uiautomator dump first (it wins instantly
+// on idle screens) before paying for the instrumentation path.
+const AUTO_PROBE_DUMP_ATTEMPTS = 1;
+
+/**
+ * How `#dumpUiHierarchy` chooses between the uiautomator dump and the
+ * instrumentation helper.
+ *
+ * - `auto` (default): one quick dump, then the helper, then the remaining dump
+ *   retries as a last resort. Fast on idle screens, self-healing on churn.
+ * - `instrument`: helper only.
+ * - `dump`: stock uiautomator dump only (the original behavior).
+ */
+type AdbSnapshotMode = 'auto' | 'instrument' | 'dump';
+
+/**
+ * Resolve the snapshot mode from the environment.
+ *
+ * @returns The configured mode, defaulting to `auto` for unset/unknown values.
+ */
+function resolveSnapshotMode(): AdbSnapshotMode {
+  const raw = process.env.DEVICE_MCP_ADB_SNAPSHOT?.trim().toLowerCase();
+  if (raw === 'instrument' || raw === 'dump' || raw === 'auto') {
+    return raw;
+  }
+  return 'auto';
+}
 
 /**
  * Check that a dump produced complete hierarchy XML.
@@ -120,6 +166,12 @@ export class AdbBackend implements DeviceBackend {
   #recordingPath: string | null = null;
 
   readonly #recordingRemotePath = '/sdcard/device-mcp-recording.mp4';
+
+  // Optimistic per-process cache: once the helper is confirmed installed we
+  // skip the `pm list packages` probe on every snapshot. A mid-session
+  // uninstall/reboot is recovered reactively when `am instrument` reports the
+  // instrumentation is missing.
+  #helperInstalled = false;
 
   constructor(serial: string) {
     this.#serial = serial;
@@ -297,14 +349,199 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async #dumpUiHierarchy(): Promise<string> {
+    const mode = resolveSnapshotMode();
     const failures: string[] = [];
     const deadline = Date.now() + DUMP_DEADLINE_MS;
 
-    for (let attempt = 1; attempt <= DUMP_ATTEMPTS; attempt++) {
+    if (mode === 'dump') {
+      const xml = await this.#tryDumpViaUiautomator(
+        deadline,
+        DUMP_ATTEMPTS,
+        failures,
+      );
+      if (xml !== null) {
+        return xml;
+      }
+      throw new Error(this.#composeDumpFailure(failures));
+    }
+
+    if (mode === 'instrument') {
+      const xml = await this.#dumpViaInstrumentation(deadline, failures);
+      if (xml !== null) {
+        return xml;
+      }
+      throw new Error(this.#composeDumpFailure(failures));
+    }
+
+    // auto: a single fast dump wins instantly on idle screens; otherwise the
+    // instrumentation helper handles churn; the remaining dump retries are the
+    // last resort so a helper-side problem never leaves us worse than before.
+    const quick = await this.#tryDumpViaUiautomator(
+      deadline,
+      AUTO_PROBE_DUMP_ATTEMPTS,
+      failures,
+    );
+    if (quick !== null) {
+      return quick;
+    }
+
+    const instrumented = await this.#dumpViaInstrumentation(deadline, failures);
+    if (instrumented !== null) {
+      return instrumented;
+    }
+
+    const fallback = await this.#tryDumpViaUiautomator(
+      deadline,
+      DUMP_ATTEMPTS,
+      failures,
+    );
+    if (fallback !== null) {
+      return fallback;
+    }
+
+    throw new Error(this.#composeDumpFailure(failures));
+  }
+
+  /**
+   * Capture the hierarchy with the instrumentation helper, installing it first
+   * when needed.
+   *
+   * @param deadline - Absolute time (ms) the overall snapshot must finish by.
+   * @param failures - Accumulator for diagnostic messages across dump paths.
+   * @returns The hierarchy XML, or null when the helper path could not produce
+   * a valid capture (the caller then falls back to uiautomator dump).
+   */
+  async #dumpViaInstrumentation(
+    deadline: number,
+    failures: string[],
+  ): Promise<string | null> {
+    try {
+      const xml = await this.#runInstrumentation(deadline);
+      if (isValidHierarchyXml(xml)) {
+        return xml;
+      }
+      failures.push('instrument: output was not complete hierarchy XML');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      // A mid-session uninstall/reboot invalidates the optimistic cache. Retry
+      // once through the ensure-install path before giving up on this path.
+      if (
+        this.#helperInstalled &&
+        message.includes(INSTRUMENTATION_NOT_FOUND_SIGNATURE)
+      ) {
+        this.#helperInstalled = false;
+        try {
+          const xml = await this.#runInstrumentation(deadline);
+          if (isValidHierarchyXml(xml)) {
+            return xml;
+          }
+          failures.push(
+            'instrument: output was not complete hierarchy XML after reinstall',
+          );
+        } catch (retryError) {
+          failures.push(
+            `instrument: ${retryError instanceof Error ? retryError.message : String(retryError)}`,
+          );
+        }
+      } else {
+        failures.push(`instrument: ${message}`);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Ensure the helper is installed, then run it and reassemble its output.
+   *
+   * @param deadline - Absolute time (ms) the overall snapshot must finish by.
+   * @returns The reassembled hierarchy XML.
+   */
+  async #runInstrumentation(deadline: number): Promise<string> {
+    if (!this.#helperInstalled) {
+      if (!(await isHelperInstalled(this.#serial))) {
+        // Install runs outside the per-capture budget: it is a one-time cost.
+        await installHelper(this.#serial);
+      }
+      this.#helperInstalled = true;
+    }
+
+    const remainingMs = deadline - Date.now();
+    const timeoutMs = Math.max(
+      1_000,
+      Math.min(INSTRUMENT_TIMEOUT_MS, remainingMs),
+    );
+
+    const { stdout } = await exec(
+      'adb',
+      [
+        '-s',
+        this.#serial,
+        'shell',
+        'am',
+        'instrument',
+        '-w',
+        '-e',
+        'waitForIdleTimeoutMs',
+        '0',
+        '-e',
+        'timeoutMs',
+        String(timeoutMs),
+        HELPER_INSTRUMENTATION,
+      ],
+      // Bound the exec above the helper's own timeout, and raise the buffer so
+      // a large tree is not misreported as a crash.
+      { timeoutMs: timeoutMs + 5_000, maxBuffer: INSTRUMENT_MAX_BUFFER },
+    );
+
+    return reassembleInstrumentationXml(stdout);
+  }
+
+  /**
+   * Run the uiautomator dump retry loop, swallowing failure into null.
+   *
+   * @param deadline - Absolute time (ms) the overall snapshot must finish by.
+   * @param maxAttempts - How many dump attempts to make.
+   * @param failures - Accumulator for diagnostic messages across dump paths.
+   * @returns The hierarchy XML, or null when every attempt failed.
+   */
+  async #tryDumpViaUiautomator(
+    deadline: number,
+    maxAttempts: number,
+    failures: string[],
+  ): Promise<string | null> {
+    try {
+      return await this.#dumpViaUiautomator(deadline, maxAttempts, failures);
+    } catch {
+      // Failures are already recorded in the accumulator.
+      return null;
+    }
+  }
+
+  /**
+   * The stock `uiautomator dump` capture with bounded retries.
+   *
+   * `uiautomator dump` exits 0 and prints its success banner even when it fails,
+   * so the XML payload is the only trustworthy signal.
+   *
+   * @param deadline - Absolute time (ms) the overall snapshot must finish by.
+   * @param maxAttempts - How many dump attempts to make.
+   * @param failures - Accumulator for diagnostic messages across dump paths.
+   * @returns The hierarchy XML.
+   * @throws If every attempt failed to produce complete hierarchy XML.
+   */
+  async #dumpViaUiautomator(
+    deadline: number,
+    maxAttempts: number,
+    failures: string[],
+  ): Promise<string> {
+    const startFailures = failures.length;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) {
         failures.push(
-          `attempt ${attempt}: skipped, ${DUMP_DEADLINE_MS}ms budget exhausted`,
+          `dump attempt ${attempt}: skipped, ${DUMP_DEADLINE_MS}ms budget exhausted`,
         );
         break;
       }
@@ -327,11 +564,11 @@ export class AdbBackend implements DeviceBackend {
         }
 
         failures.push(
-          `attempt ${attempt}: ${summarizeDumpOutput(dump.stderr, dump.stdout)}`,
+          `dump attempt ${attempt}: ${summarizeDumpOutput(dump.stderr, dump.stdout)}`,
         );
       } catch (error) {
         failures.push(
-          `attempt ${attempt}: ${error instanceof Error ? error.message : String(error)}`,
+          `dump attempt ${attempt}: ${error instanceof Error ? error.message : String(error)}`,
         );
       } finally {
         // Never let cleanup mask the dump outcome.
@@ -341,17 +578,29 @@ export class AdbBackend implements DeviceBackend {
       }
 
       const backoffMs = DUMP_RETRY_DELAY_MS * attempt;
-      if (attempt < DUMP_ATTEMPTS && Date.now() + backoffMs < deadline) {
+      if (attempt < maxAttempts && Date.now() + backoffMs < deadline) {
         await new Promise((resolve) => {
           setTimeout(resolve, backoffMs);
         });
       }
     }
 
-    const detail = failures.join('\n');
+    const attemptCount = failures.length - startFailures;
     throw new Error(
-      `uiautomator failed to capture the UI hierarchy after ${failures.length} attempts.\n${detail}\n${describeDumpRemediation(detail)}`,
+      `uiautomator failed to capture the UI hierarchy after ${attemptCount} attempts.`,
     );
+  }
+
+  /**
+   * Build the final error when every snapshot path has failed.
+   *
+   * @param failures - The collected per-path failure details.
+   * @returns A single actionable error message.
+   */
+  #composeDumpFailure(failures: string[]): string {
+    const detail = failures.join('\n');
+    const remediation = describeDumpRemediation(detail);
+    return `Failed to capture the UI hierarchy.\n${detail}\n${remediation}`;
   }
 
   screenshot(

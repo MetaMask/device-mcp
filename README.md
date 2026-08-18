@@ -174,26 +174,54 @@ Elements are identified by accessibility attributes — not internal refs. Match
 
 ### Backend Implementation
 
-| Tool                      | iOS (IDB)                            | Android (ADB)        | Appium (W3C WebDriver)        |
-| ------------------------- | ------------------------------------ | -------------------- | ----------------------------- |
-| `device_snapshot`         | `idb ui describe-all`                | `uiautomator dump`   | `mobile: source`              |
-| `device_screenshot`       | `idb screenshot`                     | `screencap` + `pull` | `mobile: getScreenshot`       |
-| `device_info`             | `idb describe`                       | `getprop`            | session capabilities          |
-| `device_tap_element`      | find + `idb ui tap`                  | find + `input tap`   | find + W3C Actions            |
-| `device_tap_coordinates`  | `idb ui tap x y`                     | `input tap x y`      | W3C Actions                   |
-| `device_type`             | `idb ui text`                        | `input text`         | `findElement` + `sendKeys`    |
-| `device_swipe`            | `idb ui swipe`                       | `input swipe`        | W3C Actions                   |
-| `device_long_press`       | `idb ui tap --duration`              | `input swipe` (hold) | W3C Actions (pause)           |
-| `device_wait_for`         | poll snapshot                        | poll snapshot        | poll snapshot                 |
-| `device_list_devices`     | `xcrun simctl list`                  | `adb devices`        | N/A                           |
-| `device_select_device`    | select by UDID                       | select by serial     | N/A                           |
-| `device_app_state`        | `idb list-apps` / `simctl listapps`  | `dumpsys activity`   | `mobile: queryAppState`       |
-| `device_open_app`         | `idb launch` / `simctl launch`       | `monkey -p`          | `mobile: activateApp`         |
-| `device_close_app`        | `idb terminate` / `simctl terminate` | `am force-stop`      | `mobile: terminateApp`        |
-| `device_press_button`     | `idb ui key`                         | `input keyevent`     | `mobile: pressButton/Key`     |
-| `device_dismiss_keyboard` | `idb ui key RETURN`                  | `input keyevent 111` | `mobile: hideKeyboard`        |
-| `device_dismiss_alert`    | find button + tap                    | find button + tap    | `mobile: accept/dismissAlert` |
-| `device_logs`             | `idb log`                            | `logcat`             | `mobile: getLog`              |
+| Tool                      | iOS (IDB)                            | Android (ADB)                               | Appium (W3C WebDriver)        |
+| ------------------------- | ------------------------------------ | ------------------------------------------- | ----------------------------- |
+| `device_snapshot`         | `idb ui describe-all`                | `uiautomator dump` + instrumentation helper | `mobile: source`              |
+| `device_screenshot`       | `idb screenshot`                     | `screencap` + `pull`                        | `mobile: getScreenshot`       |
+| `device_info`             | `idb describe`                       | `getprop`                                   | session capabilities          |
+| `device_tap_element`      | find + `idb ui tap`                  | find + `input tap`                          | find + W3C Actions            |
+| `device_tap_coordinates`  | `idb ui tap x y`                     | `input tap x y`                             | W3C Actions                   |
+| `device_type`             | `idb ui text`                        | `input text`                                | `findElement` + `sendKeys`    |
+| `device_swipe`            | `idb ui swipe`                       | `input swipe`                               | W3C Actions                   |
+| `device_long_press`       | `idb ui tap --duration`              | `input swipe` (hold)                        | W3C Actions (pause)           |
+| `device_wait_for`         | poll snapshot                        | poll snapshot                               | poll snapshot                 |
+| `device_list_devices`     | `xcrun simctl list`                  | `adb devices`                               | N/A                           |
+| `device_select_device`    | select by UDID                       | select by serial                            | N/A                           |
+| `device_app_state`        | `idb list-apps` / `simctl listapps`  | `dumpsys activity`                          | `mobile: queryAppState`       |
+| `device_open_app`         | `idb launch` / `simctl launch`       | `monkey -p`                                 | `mobile: activateApp`         |
+| `device_close_app`        | `idb terminate` / `simctl terminate` | `am force-stop`                             | `mobile: terminateApp`        |
+| `device_press_button`     | `idb ui key`                         | `input keyevent`                            | `mobile: pressButton/Key`     |
+| `device_dismiss_keyboard` | `idb ui key RETURN`                  | `input keyevent 111`                        | `mobile: hideKeyboard`        |
+| `device_dismiss_alert`    | find button + tap                    | find button + tap                           | `mobile: accept/dismissAlert` |
+| `device_logs`             | `idb log`                            | `logcat`                                    | `mobile: getLog`              |
+
+#### Android snapshot on continuously-redrawing screens
+
+`uiautomator dump` calls `UiAutomation.waitForIdle` internally, which never
+returns on a screen that emits a continuous accessibility-event stream (for
+example a React Native screen with polling or an animating skeleton loader). On
+those screens the stock dump fails with `ERROR: could not get idle state.`
+
+To handle this, the ADB backend ships a small self-instrumenting helper APK
+(`dist/android/device-mcp-android-snapshot-helper-*.apk`, built during
+`prepack`). The helper captures the accessibility hierarchy **without** waiting
+for idle: it skips `waitForIdle` and instead retries a cheap capture until the
+foreground window's root is present, then streams the hierarchy back over
+`am instrument` as chunked base64. It is installed on demand the first time it
+is needed and reused across snapshots in the session.
+
+The strategy is controlled by `DEVICE_MCP_ADB_SNAPSHOT`:
+
+- **`auto`** (default) — a single fast `uiautomator dump` first (wins instantly
+  on idle screens), then the instrumentation helper if that dump does not
+  produce a hierarchy, then the remaining dump retries as a last resort.
+- **`instrument`** — use the instrumentation helper only.
+- **`dump`** — use stock `uiautomator dump` only (the original behavior; no APK
+  is installed).
+
+The helper is a `testOnly` debug-signed APK installed with `adb install -t`, so
+it only installs on developer emulators/attached devices, never on locked-down
+or managed profiles.
 
 ## Hermes CDP
 
