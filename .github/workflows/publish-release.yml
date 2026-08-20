@@ -32,20 +32,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: yarn build
-      - name: Set up JDK 17 for the Android helper
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Set up Android SDK for the Android helper
-        uses: android-actions/setup-android@v3
-      - name: Install Android platform + build-tools
+      # The org actions allowlist forbids android-actions/setup-android and
+      # untagged actions/setup-java, and the ubuntu-latest runner already ships
+      # Temurin JDK 17 plus Android platforms;android-36 and build-tools;36.0.0.
+      # So we use the preinstalled toolchain directly instead of setup actions.
+      - name: Ensure Android platform + build-tools (preinstalled on runner)
         run: |
-          for attempt in 1 2 3; do
-            yes | sdkmanager 'platforms;android-36' 'build-tools;36.0.0' && break
-            echo "sdkmanager attempt $attempt failed; retrying..." >&2
-            sleep 15
-          done
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" 'platforms;android-36' 'build-tools;36.0.0' > /dev/null
       - name: Decode the helper signing keystore
         env:
           ANDROID_HELPER_KEYSTORE_B64: ${{ secrets.ANDROID_HELPER_KEYSTORE_B64 }}
@@ -57,6 +52,7 @@ jobs:
           printf '%s' "$ANDROID_HELPER_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/helper.keystore"
       - name: Build the Android snapshot helper APK
         env:
+          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
           DEVICE_MCP_HELPER_KEYSTORE: ${{ runner.temp }}/helper.keystore
           DEVICE_MCP_HELPER_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_HELPER_KEYSTORE_PASSWORD }}
           DEVICE_MCP_HELPER_KEY_ALIAS: ${{ secrets.ANDROID_HELPER_KEY_ALIAS }}
