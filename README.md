@@ -219,9 +219,70 @@ The strategy is controlled by `DEVICE_MCP_ADB_SNAPSHOT`:
 - **`dump`** — use stock `uiautomator dump` only (the original behavior; no APK
   is installed).
 
-The helper is a `testOnly` debug-signed APK installed with `adb install -t`, so
-it only installs on developer emulators/attached devices, never on locked-down
-or managed profiles.
+The helper is a `testOnly` APK installed with `adb install -t`, so it only
+installs on developer emulators/attached devices, never on locked-down or
+managed profiles.
+
+##### Trust: the helper's signing certificate is verified before use
+
+Package names and version codes are attacker-controlled metadata, so before the
+backend runs `am instrument` it verifies that the installed helper is actually
+**ours**. It pulls the installed APK(s) and cryptographically verifies their APK
+Signature Scheme v2/v3 signature (a pure-JS check — no Android SDK required at
+runtime), then compares the signer certificate SHA-256 against the value pinned
+in the bundled build manifest. If a different app is squatting the helper's
+package name, the signer will not match: the snapshot **fails closed** with a
+trust error and does **not** silently fall back to `uiautomator dump`. Generic,
+non-trust failures (a churny screen, an `am` hiccup) still fall back to dump in
+`auto` mode. Use `DEVICE_MCP_ADB_SNAPSHOT=instrument` for a fully fail-closed
+mode, or `DEVICE_MCP_ADB_SNAPSHOT=dump` to skip the helper entirely.
+
+##### Building the Android snapshot helper locally
+
+The helper APK is normally built for you by `prepack` and (for releases) in CI.
+You only need this if you are developing the helper or want the helper-based
+snapshot path to work against a local build.
+
+Requirements: JDK 17, Android SDK with `platforms/android-36` and
+`build-tools;36.0.0` (auto-discovered from `$ANDROID_HOME` / `$ANDROID_SDK_ROOT`
+/ `~/Library/Android/sdk`).
+
+The helper is signed with a shared key so the on-device trust check accepts your
+local build. Obtain the keystore from the team vault, place it **outside** the
+repo, point the build at it, and build:
+
+```bash
+export DEVICE_MCP_HELPER_KEYSTORE=~/.device-mcp/helper.keystore
+export DEVICE_MCP_HELPER_KEYSTORE_PASSWORD=<from vault>
+export DEVICE_MCP_HELPER_KEY_ALIAS=device-mcp-helper
+yarn build:android-helper
+```
+
+The APK and its `.manifest.json` land in `dist/android/`. The MCP server
+installs the APK on demand and verifies its signing certificate before use.
+
+**Don't have the keystore?** You can still develop everything except the
+helper-signed path: the build script auto-generates a throwaway key when
+`DEVICE_MCP_HELPER_KEYSTORE` is unset. A throwaway-signed APK will **not** match
+the pinned signer, so the helper path rejects it by design — run snapshots via
+`DEVICE_MCP_ADB_SNAPSHOT=dump`.
+
+> Never commit a keystore. `*.keystore`, `*.jks`, `*.p12`, and `~/.device-mcp/`
+> are gitignored.
+
+##### Maintainers: one-time signing key generation
+
+```bash
+keytool -genkeypair -v -keystore device-mcp-helper.keystore \
+  -alias device-mcp-helper -keyalg RSA -keysize 2048 -validity 10000 \
+  -dname "CN=Device MCP Snapshot Helper, OU=device-mcp, O=MetaMask, C=US"
+```
+
+Store the keystore in the team vault for developers. For CI, add repository
+secrets `ANDROID_HELPER_KEYSTORE_B64` (`base64 -i device-mcp-helper.keystore`),
+`ANDROID_HELPER_KEYSTORE_PASSWORD`, and `ANDROID_HELPER_KEY_ALIAS`. Then pin the
+certificate SHA-256 that the build emits (`signerSha256` in the manifest) as the
+runtime trust anchor.
 
 ## Hermes CDP
 

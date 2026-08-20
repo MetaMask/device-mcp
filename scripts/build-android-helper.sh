@@ -114,13 +114,86 @@ CLASS_FILES="$(find "$CLASSES_DIR" -name '*.class')"
 "$ZIPALIGN" -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
 
 # --- 6. Sign -------------------------------------------------------------------
-"$APKSIGNER" sign \
-  --ks "$HELPER_DIR/debug.keystore" \
-  --ks-pass pass:android \
-  --key-pass pass:android \
-  --out "$FINAL_APK" \
-  "$ALIGNED_APK"
+# Key resolution (D1/D5):
+#   1. DEVICE_MCP_HELPER_KEYSTORE (+ _PASSWORD / _KEY_ALIAS) -> the real shared
+#      key (CI secret decode, or a dev's vault copy). APKs signed with it match
+#      the pinned signerSha256, so the on-device trust check accepts them.
+#   2. Otherwise -> generate a throwaway per-build key. The resulting APK will
+#      NOT match the pin; the helper path rejects it by design (use
+#      DEVICE_MCP_ADB_SNAPSHOT=dump for local iteration without the real key).
+if [[ -n "${DEVICE_MCP_HELPER_KEYSTORE:-}" ]]; then
+  KEYSTORE="$DEVICE_MCP_HELPER_KEYSTORE"
+  KS_PASS="${DEVICE_MCP_HELPER_KEYSTORE_PASSWORD:-}"
+  KEY_ALIAS="${DEVICE_MCP_HELPER_KEY_ALIAS:-device-mcp-helper}"
+  if [[ ! -f "$KEYSTORE" ]]; then
+    echo "Error: DEVICE_MCP_HELPER_KEYSTORE set but not found: $KEYSTORE" >&2
+    exit 1
+  fi
+  if [[ -z "$KS_PASS" ]]; then
+    echo "Error: DEVICE_MCP_HELPER_KEYSTORE set but DEVICE_MCP_HELPER_KEYSTORE_PASSWORD is empty." >&2
+    exit 1
+  fi
+  echo "  signing:     shared helper key ($KEY_ALIAS)"
+  "$APKSIGNER" sign \
+    --ks "$KEYSTORE" \
+    --ks-pass "pass:$KS_PASS" \
+    --key-pass "pass:$KS_PASS" \
+    --ks-key-alias "$KEY_ALIAS" \
+    --out "$FINAL_APK" \
+    "$ALIGNED_APK"
+else
+  echo "  signing:     THROWAWAY per-build key (APK will NOT match the pinned signer)" >&2
+  THROWAWAY_KS="$WORK_DIR/throwaway.keystore"
+  keytool -genkeypair -v \
+    -keystore "$THROWAWAY_KS" \
+    -alias throwaway -keyalg RSA -keysize 2048 -validity 30 \
+    -storepass throwaway -keypass throwaway \
+    -dname "CN=Device MCP Helper Throwaway, OU=device-mcp, O=MetaMask, C=US" >/dev/null 2>&1
+  "$APKSIGNER" sign \
+    --ks "$THROWAWAY_KS" \
+    --ks-pass pass:throwaway \
+    --key-pass pass:throwaway \
+    --ks-key-alias throwaway \
+    --out "$FINAL_APK" \
+    "$ALIGNED_APK"
+fi
 
 "$APKSIGNER" verify --min-sdk-version 23 "$FINAL_APK"
 
-echo "Built: $FINAL_APK"
+# --- 7. Provenance manifest ----------------------------------------------------
+# Emit <apk>.manifest.json alongside the APK: the single source of truth for
+# package/runner/versionCode + the apk sha256 (dist tamper check) + the
+# apksigner-verified signer cert SHA-256 (the runtime trust pin).
+APK_SHA256="$(openssl dgst -sha256 "$FINAL_APK" | awk '{print $NF}')"
+SIGNER_SHA256="$("$APKSIGNER" verify --print-certs "$FINAL_APK" \
+  | awk -F': ' '/certificate SHA-256 digest:/ { gsub(/[^0-9a-fA-F]/, "", $2); print tolower($2); exit }')"
+if [[ -z "$SIGNER_SHA256" ]]; then
+  echo "Error: could not extract signer SHA-256 from apksigner output." >&2
+  exit 1
+fi
+MANIFEST="$OUTPUT_DIR/device-mcp-android-snapshot-helper-$VERSION.manifest.json"
+cat > "$MANIFEST" <<JSON
+{
+  "version": "$VERSION",
+  "versionCode": $VERSION_CODE,
+  "packageName": "io.metamask.devicemcp.snapshothelper",
+  "instrumentationRunner": "io.metamask.devicemcp.snapshothelper/.SnapshotInstrumentation",
+  "assetName": "device-mcp-android-snapshot-helper-$VERSION.apk",
+  "sha256": "$APK_SHA256",
+  "signerSha256": "$SIGNER_SHA256",
+  "minSdk": 23
+}
+JSON
+
+# Ship the third-party attribution alongside the APK it covers. The package's
+# `files` field is constrained to `["dist"]`, and npm does not auto-include
+# NOTICE.md, so copy it into dist/android so it is redistributed with the APK.
+NOTICE_SRC="$HELPER_DIR/../../NOTICE.md"
+if [[ -f "$NOTICE_SRC" ]]; then
+  cp "$NOTICE_SRC" "$OUTPUT_DIR/NOTICE.md"
+fi
+
+echo "Built:    $FINAL_APK"
+echo "Manifest: $MANIFEST"
+echo "  apk sha256:    $APK_SHA256"
+echo "  signer sha256: $SIGNER_SHA256"

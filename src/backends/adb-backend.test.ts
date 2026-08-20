@@ -7,6 +7,8 @@ import {
   parseNodeAttributes,
   AdbBackend,
 } from './adb-backend.js';
+import { UntrustedHelperError } from './android-instrumentation/errors.js';
+import { ensureHelperTrusted } from './android-instrumentation/installer.js';
 import { findElement } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
 
@@ -21,9 +23,15 @@ vi.mock('../utils/exec.js', () => ({
   isCommandAvailable: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock('./android-instrumentation/installer.js', () => ({
+  ensureHelperTrusted: vi.fn().mockResolvedValue(undefined),
+  INSTRUMENTATION_NOT_FOUND_SIGNATURE: 'INSTRUMENTATION_FAILED',
+}));
+
 const mockExecStrict = vi.mocked(execModule.execStrict);
 const mockExec = vi.mocked(execModule.exec);
 const mockReadFile = vi.mocked(readFile);
+const mockEnsureHelperTrusted = vi.mocked(ensureHelperTrusted);
 const mockReaddir = vi.mocked(readdir);
 
 const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -509,10 +517,9 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     backend = new AdbBackend('emulator-5554');
-    // Helper APK present in dist/android so install is never attempted.
-    mockReaddir.mockResolvedValue([
-      'device-mcp-android-snapshot-helper-0.3.3.apk',
-    ] as unknown as Awaited<ReturnType<typeof readdir>>);
+    // ensureHelperTrusted encapsulates install + signer verification; the
+    // installer has its own tests, so here it is a resolved stub by default.
+    mockEnsureHelperTrusted.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -598,19 +605,16 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
     ).toBe(true);
   });
 
-  it('auto: installs the helper when it is not yet present', async () => {
+  it('auto: ensures a trusted helper before instrumenting', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
     routeExec({
       dumpCat: '',
-      helperInstalled: false,
       instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
     });
 
     await backend.snapshot();
 
-    expect(
-      mockExec.mock.calls.some((call) => call[1]?.includes('install')),
-    ).toBe(true);
+    expect(mockEnsureHelperTrusted).toHaveBeenCalledWith('emulator-5554');
   });
 
   it('instrument: uses only the helper and never dumps', async () => {
@@ -654,20 +658,54 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
     );
   });
 
-  it('caches the install check across snapshots within a session', async () => {
+  it('caches the trusted-helper check across snapshots within a session', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
     routeExec({
-      helperInstalled: true,
       instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
     });
 
     await backend.snapshot();
     await backend.snapshot();
 
-    const packageChecks = mockExec.mock.calls.filter((call) =>
-      call[1]?.includes('packages'),
+    // ensureHelperTrusted runs once, then the optimistic cache short-circuits it.
+    expect(mockEnsureHelperTrusted).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto: fails closed on a trust error and never falls back to dump', async () => {
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
+    routeExec({
+      dumpCat: '',
+      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
+    });
+    mockEnsureHelperTrusted.mockRejectedValue(
+      new UntrustedHelperError('signer mismatch', {
+        expectedSignerSha256: 'aaaa',
+        actualSignerSha256: 'bbbb',
+      }),
     );
-    // The `pm list packages` probe runs once, then the cache short-circuits it.
-    expect(packageChecks).toHaveLength(1);
+
+    await expect(backend.snapshot()).rejects.toBeInstanceOf(
+      UntrustedHelperError,
+    );
+    // The single quick probe may run first, but the trust error must abort
+    // BEFORE the multi-attempt dump fallback: only one uiautomator dump total.
+    const dumpCalls = mockExec.mock.calls.filter((call) =>
+      call[1]?.includes('uiautomator'),
+    );
+    expect(dumpCalls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('instrument: propagates a trust error unchanged', async () => {
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
+    routeExec({ instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML) });
+    mockEnsureHelperTrusted.mockRejectedValue(
+      new UntrustedHelperError('signer mismatch', {
+        expectedSignerSha256: 'aaaa',
+      }),
+    );
+
+    await expect(backend.snapshot()).rejects.toBeInstanceOf(
+      UntrustedHelperError,
+    );
   });
 });

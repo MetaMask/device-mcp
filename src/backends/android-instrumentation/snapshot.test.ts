@@ -6,7 +6,7 @@ import {
   HELPER_PROTOCOL,
   parseInstrumentationOutput,
   reassembleInstrumentationXml,
-} from './android-instrumentation-snapshot.js';
+} from './snapshot.js';
 
 /**
  * Encode a raw string into the chunked base64 the helper emits, then render it
@@ -82,7 +82,7 @@ const SAMPLE_XML =
   `<node index="0" bounds="[0,0][1080,140]" class="android.view.View" ` +
   `resource-id="tab-bar-item-Wallet" text="Wallet" /></node></hierarchy>`;
 
-describe('android-instrumentation-snapshot', () => {
+describe('android-instrumentation/snapshot', () => {
   describe('constants', () => {
     it('targets the self-instrumenting helper component', () => {
       expect(HELPER_PACKAGE).toBe('io.metamask.devicemcp.snapshothelper');

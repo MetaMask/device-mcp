@@ -13,6 +13,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 
 import {
+  createPrivateTempDir,
   hardenArtifactFile,
   resolveArtifactPath,
   writeArtifactFile,
@@ -184,5 +185,47 @@ describe('hardenArtifactFile', () => {
 
   it('does not throw when the file is absent', () => {
     expect(() => hardenArtifactFile(join(dir, 'missing.png'))).not.toThrow();
+  });
+});
+
+describe('createPrivateTempDir', () => {
+  const created: string[] = [];
+
+  afterEach(() => {
+    while (created.length > 0) {
+      const dir = created.pop();
+      if (dir) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('creates a directory inside the system temp dir', () => {
+    const dir = createPrivateTempDir('signer');
+    created.push(dir);
+
+    expect(isAbsolute(dir)).toBe(true);
+    expect(dir.startsWith(resolve(tmpdir()))).toBe(true);
+    expect(statSync(dir).isDirectory()).toBe(true);
+  });
+
+  it.skipIf(isWindows)('creates it owner-only (0700)', () => {
+    const dir = createPrivateTempDir('signer');
+    created.push(dir);
+    expect(permsOf(dir)).toBe('700');
+  });
+
+  it('folds the prefix into the directory name', () => {
+    const dir = createPrivateTempDir('signer');
+    created.push(dir);
+    expect(dir).toContain('device-mcp-signer-');
+  });
+
+  it('returns a distinct directory on each call', () => {
+    const first = createPrivateTempDir('signer');
+    created.push(first);
+    const second = createPrivateTempDir('signer');
+    created.push(second);
+    expect(first).not.toBe(second);
   });
 });

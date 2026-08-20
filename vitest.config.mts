@@ -12,10 +12,10 @@ export default defineConfig({
       exclude: ['src/**/*.test.ts', 'src/**/*.test-d.ts'],
       thresholds: {
         autoUpdate: !process.env.CI,
-        branches: 60,
-        functions: 60.11,
-        lines: 60.41,
-        statements: 60.22,
+        branches: 60.11,
+        functions: 63.01,
+        lines: 63.58,
+        statements: 63.44,
       },
     },
 

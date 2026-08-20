@@ -60,6 +60,70 @@ jobs:
     name: Build, lint, and test
     uses: ./.github/workflows/build-lint-test.yml
 
+  # TEMPORARY (remove before merge): build the Android snapshot-helper APK on
+  # every PR so we can download it as an artifact and confirm the packaging /
+  # signing path works without cutting a release. Does not publish anything.
+  android-helper-apk:
+    name: Build Android snapshot helper APK (PR check)
+    if: github.event_name == 'pull_request'
+    needs: check-workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout and setup environment
+        uses: MetaMask/action-checkout-and-setup@v2
+        with:
+          is-high-risk-environment: false
+      - run: yarn build
+      - name: Set up JDK 17 for the Android helper
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK for the Android helper
+        uses: android-actions/setup-android@v3
+      - name: Install Android platform + build-tools
+        run: |
+          for attempt in 1 2 3; do
+            yes | sdkmanager 'platforms;android-36' 'build-tools;36.0.0' && break
+            echo "sdkmanager attempt $attempt failed; retrying..." >&2
+            sleep 15
+          done
+      - name: Decode the helper signing keystore (falls back to throwaway key)
+        id: keystore
+        env:
+          ANDROID_HELPER_KEYSTORE_B64: ${{ secrets.ANDROID_HELPER_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$ANDROID_HELPER_KEYSTORE_B64" ]; then
+            printf '%s' "$ANDROID_HELPER_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/helper.keystore"
+            echo 'trusted=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'No ANDROID_HELPER_KEYSTORE_B64 secret; the build script will mint a throwaway key (APK will NOT match the pinned signer, which is fine for an artifact-creation check).'
+            echo 'trusted=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build the Android snapshot helper APK
+        env:
+          DEVICE_MCP_HELPER_KEYSTORE: ${{ steps.keystore.outputs.trusted == 'true' && format('{0}/helper.keystore', runner.temp) || '' }}
+          DEVICE_MCP_HELPER_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_HELPER_KEYSTORE_PASSWORD }}
+          DEVICE_MCP_HELPER_KEY_ALIAS: ${{ secrets.ANDROID_HELPER_KEY_ALIAS }}
+        run: ./scripts/build-android-helper.sh "$(node -p "require('./package.json').version")" dist/android
+      - name: Show the built artifacts
+        run: |
+          echo '--- dist/android ---'
+          ls -la dist/android
+          echo '--- manifest ---'
+          cat dist/android/*.manifest.json
+      - name: Upload the Android helper APK artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: android-snapshot-helper-apk-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            dist/android/*.apk
+            dist/android/*.apk.idsig
+            dist/android/*.manifest.json
+            dist/android/NOTICE.md
+
   all-jobs-completed:
     name: All jobs completed
     runs-on: ubuntu-latest
@@ -108,3 +172,6 @@ jobs:
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      ANDROID_HELPER_KEYSTORE_B64: ${{ secrets.ANDROID_HELPER_KEYSTORE_B64 }}
+      ANDROID_HELPER_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_HELPER_KEYSTORE_PASSWORD }}
+      ANDROID_HELPER_KEY_ALIAS: ${{ secrets.ANDROID_HELPER_KEY_ALIAS }}

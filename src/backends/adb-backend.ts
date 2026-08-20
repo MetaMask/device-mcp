@@ -3,15 +3,15 @@ import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
+import { isUntrustedHelperError } from './android-instrumentation/errors.js';
 import {
-  installHelper,
-  isHelperInstalled,
+  ensureHelperTrusted,
   INSTRUMENTATION_NOT_FOUND_SIGNATURE,
-} from './android-instrumentation-installer.js';
+} from './android-instrumentation/installer.js';
 import {
   HELPER_INSTRUMENTATION,
   reassembleInstrumentationXml,
-} from './android-instrumentation-snapshot.js';
+} from './android-instrumentation/snapshot.js';
 import type {
   DeviceBackend,
   DeviceButton,
@@ -173,6 +173,10 @@ export class AdbBackend implements DeviceBackend {
   // instrumentation is missing.
   #helperInstalled = false;
 
+  // Serializes snapshot captures so overlapping `am instrument` runs (e.g. a
+  // tap that triggers a nested snapshot) do not race on the single helper.
+  #captureQueue: Promise<unknown> = Promise.resolve();
+
   constructor(serial: string) {
     this.#serial = serial;
   }
@@ -211,7 +215,9 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async snapshot(): Promise<SnapshotResult> {
-    const raw = await this.#dumpUiHierarchy();
+    const raw = await this.#serializeCapture(async () =>
+      this.#dumpUiHierarchy(),
+    );
     const hierarchy = parseAndroidHierarchy(raw);
     return {
       platform: 'android',
@@ -348,6 +354,24 @@ export class AdbBackend implements DeviceBackend {
     return { bundleId, state: 'Not Installed' };
   }
 
+  /**
+   * Run a capture after any in-flight capture completes, so concurrent
+   * snapshots never overlap an `am instrument` run on the shared helper.
+   *
+   * @param capture - The capture operation to serialize.
+   * @returns The capture result.
+   */
+  async #serializeCapture<Result>(
+    capture: () => Promise<Result>,
+  ): Promise<Result> {
+    const run = this.#captureQueue.then(capture, capture);
+    this.#captureQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   async #dumpUiHierarchy(): Promise<string> {
     const mode = resolveSnapshotMode();
     const failures: string[] = [];
@@ -422,6 +446,11 @@ export class AdbBackend implements DeviceBackend {
       }
       failures.push('instrument: output was not complete hierarchy XML');
     } catch (error) {
+      // A signer-trust failure means a possibly-malicious app squats the
+      // helper's package name. Fail closed: propagate, never fall back to dump.
+      if (isUntrustedHelperError(error)) {
+        throw error;
+      }
       const message = error instanceof Error ? error.message : String(error);
 
       // A mid-session uninstall/reboot invalidates the optimistic cache. Retry
@@ -440,6 +469,9 @@ export class AdbBackend implements DeviceBackend {
             'instrument: output was not complete hierarchy XML after reinstall',
           );
         } catch (retryError) {
+          if (isUntrustedHelperError(retryError)) {
+            throw retryError;
+          }
           failures.push(
             `instrument: ${retryError instanceof Error ? retryError.message : String(retryError)}`,
           );
@@ -459,10 +491,10 @@ export class AdbBackend implements DeviceBackend {
    */
   async #runInstrumentation(deadline: number): Promise<string> {
     if (!this.#helperInstalled) {
-      if (!(await isHelperInstalled(this.#serial))) {
-        // Install runs outside the per-capture budget: it is a one-time cost.
-        await installHelper(this.#serial);
-      }
+      // Ensure a TRUSTED helper: install/upgrade by version, then verify the
+      // installed signer. Runs outside the per-capture budget (one-time cost).
+      // Throws UntrustedHelperError on a signer mismatch (caller fails closed).
+      await ensureHelperTrusted(this.#serial);
       this.#helperInstalled = true;
     }
 

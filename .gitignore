@@ -48,3 +48,13 @@ yalc.lock
 
 # Docs
 docs/
+
+# Planning scratch
+.sisyphus/
+
+# Signing keystores — NEVER commit a keystore. The helper signing key lives
+# outside the repo (~/.device-mcp/helper.keystore) or is injected via the
+# DEVICE_MCP_HELPER_KEYSTORE env / CI secret. See scripts/build-android-helper.sh.
+*.keystore
+*.jks
+*.p12
