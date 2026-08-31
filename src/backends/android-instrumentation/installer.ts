@@ -93,18 +93,48 @@ async function readInstalledVersionCode(
 }
 
 /**
+ * Android install-result tokens that specifically indicate the already-
+ * installed same-package app was signed by a DIFFERENT certificate, so the
+ * reinstall was refused on trust grounds (not a generic install failure). These
+ * constant names are stable across API 23-35 and are printed by PackageManager
+ * in the `Failure [<TOKEN>: ...]` line (on stdout; we scan both streams).
+ *
+ * Deliberately excludes generic failures like INSTALL_FAILED_TEST_ONLY,
+ * INSTALL_FAILED_VERSION_DOWNGRADE, INSTALL_FAILED_DUPLICATE_PERMISSION, and
+ * the parse-time no/inconsistent-certificate codes: none of those mean a
+ * squatter is signed by a different key on a normal reinstall.
+ */
+const SIGNER_CONFLICT_TOKENS = [
+  'INSTALL_FAILED_UPDATE_INCOMPATIBLE',
+  'INSTALL_FAILED_SHARED_USER_INCOMPATIBLE',
+];
+
+/**
  * Install the bundled helper APK onto the device.
  *
  * `-r` reinstalls over an existing copy signed by the SAME key and `-t` allows
- * the `testOnly` APK. It CANNOT overwrite a package signed by a different key
- * (Android returns `INSTALL_FAILED_UPDATE_INCOMPATIBLE`); that case is handled
- * by `ensureHelperTrusted` failing closed.
+ * the `testOnly` APK. It CANNOT overwrite a package signed by a different key:
+ * Android refuses with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` (or
+ * `INSTALL_FAILED_SHARED_USER_INCOMPATIBLE`). That is a squatter signed by a
+ * foreign certificate, so it is a TRUST failure, not a generic one — we throw
+ * {@link UntrustedHelperError} to make the caller fail closed, consistent with
+ * the equal/higher-versionCode squatter path (which fails closed via the signer
+ * verification). Without this, a lower-versionCode squatter would surface as a
+ * generic Error and `auto` mode would silently fall back to `uiautomator dump`.
  *
  * @param serial - The target device serial.
- * @throws When the install command fails.
+ * @param artifact - The bundled artifact carrying the pinned signer SHA-256,
+ * used both to locate the APK and to describe a trust failure.
+ * @throws {@link UntrustedHelperError} when the install is refused because the
+ * installed package is signed by a different certificate.
+ * @throws When the install command fails for a generic reason.
  */
-export async function installHelper(serial: string): Promise<void> {
-  const apkPath = await resolveHelperApkPath();
+export async function installHelper(
+  serial: string,
+  artifact?: HelperArtifact,
+): Promise<void> {
+  const resolved = artifact ?? (await loadHelperArtifact());
+  const { apkPath } = resolved;
   const result = await exec(
     'adb',
     ['-s', serial, 'install', '-r', '-t', apkPath],
@@ -112,6 +142,13 @@ export async function installHelper(serial: string): Promise<void> {
   );
   if (result.exitCode !== 0 || !result.stdout.includes('Success')) {
     const output = `${result.stdout.trim()} ${result.stderr.trim()}`.trim();
+    if (SIGNER_CONFLICT_TOKENS.some((token) => output.includes(token))) {
+      throw new UntrustedHelperError(
+        `Snapshot helper install was refused because the installed package is ` +
+          `signed by a different certificate (a squatter). ${output}`,
+        { expectedSignerSha256: resolved.signerSha256 },
+      );
+    }
     throw new Error(
       `Failed to install snapshot helper APK (${apkPath}).\n${output}`,
     );
@@ -127,7 +164,7 @@ export async function installHelper(serial: string): Promise<void> {
  * @throws {@link UntrustedHelperError} when the installed signer does not match
  * the pin.
  */
-async function verifyInstalledSigner(
+export async function verifyInstalledSigner(
   serial: string,
   artifact: HelperArtifact,
 ): Promise<void> {
@@ -170,9 +207,60 @@ async function verifyInstalledSigner(
 }
 
 /**
+ * Install/upgrade the bundled helper by versionCode (freshness only).
+ *
+ * versionCode is attacker-controlled metadata, so this is NOT a trust decision:
+ * it only decides whether a fresher build should be pushed. It performs NO
+ * signer verification. Callers MUST separately call
+ * {@link assertInstalledHelperTrusted} before every use of the helper.
+ *
+ * This is safe to gate behind a per-process "installed" cache because a stale
+ * cache at worst skips a redundant (idempotent) install; it never skips a trust
+ * check.
+ *
+ * @param serial - The target device serial.
+ * @throws When install fails for a generic reason.
+ */
+export async function ensureHelperInstalled(serial: string): Promise<void> {
+  const artifact = await loadHelperArtifact();
+  const installedVersion = await readInstalledVersionCode(serial);
+
+  if (installedVersion === null || installedVersion < artifact.versionCode) {
+    await installHelper(serial, artifact);
+  }
+}
+
+/**
+ * Verify that the helper currently installed on the device is signed by the
+ * pinned certificate. This is the trust invariant and MUST run before EVERY
+ * `am instrument`, never cached: package name and versionCode are
+ * attacker-controlled, so an actor who can install packages could replace a
+ * previously-trusted helper with a malicious same-package instrumentation
+ * between snapshots. Re-verifying the installed signer on every use (pm path +
+ * pull + hash — cheap relative to the instrumentation run) is what keeps the
+ * signature pin a per-use invariant instead of a one-time check.
+ *
+ * @param serial - The target device serial.
+ * @throws {@link UntrustedHelperError} when the installed helper is signed by
+ * an unexpected certificate (a squatter). The caller MUST NOT fall back to
+ * `uiautomator dump` in that case.
+ */
+export async function assertInstalledHelperTrusted(
+  serial: string,
+): Promise<void> {
+  const artifact = await loadHelperArtifact();
+  await verifyInstalledSigner(serial, artifact);
+}
+
+/**
  * Ensure a TRUSTED helper is installed: install/upgrade by versionCode
  * (freshness), then unconditionally verify the installed signer against the
  * pinned certificate. Fails closed on a signer mismatch.
+ *
+ * Convenience wrapper over {@link ensureHelperInstalled} +
+ * {@link assertInstalledHelperTrusted}. Callers that cache the install step
+ * MUST still call {@link assertInstalledHelperTrusted} on every use rather than
+ * caching this whole call.
  *
  * @param serial - The target device serial.
  * @throws {@link UntrustedHelperError} when the installed helper is signed by
@@ -181,12 +269,6 @@ async function verifyInstalledSigner(
  * @throws When install fails for a generic reason.
  */
 export async function ensureHelperTrusted(serial: string): Promise<void> {
-  const artifact = await loadHelperArtifact();
-  const installedVersion = await readInstalledVersionCode(serial);
-
-  if (installedVersion === null || installedVersion < artifact.versionCode) {
-    await installHelper(serial);
-  }
-
-  await verifyInstalledSigner(serial, artifact);
+  await ensureHelperInstalled(serial);
+  await assertInstalledHelperTrusted(serial);
 }

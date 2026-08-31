@@ -6,6 +6,8 @@ import * as artifactModule from './artifact.js';
 import { UntrustedHelperError } from './errors.js';
 import {
   INSTRUMENTATION_NOT_FOUND_SIGNATURE,
+  assertInstalledHelperTrusted,
+  ensureHelperInstalled,
   ensureHelperTrusted,
   installHelper,
   isHelperInstalled,
@@ -126,6 +128,45 @@ describe('android-instrumentation/installer', () => {
         /Failed to install snapshot helper APK[\s\S]*INSTALL_FAILED_TEST_ONLY/u,
       );
     });
+
+    it('fails closed when the install is refused on a signer conflict', async () => {
+      mockExec.mockResolvedValue({
+        stdout:
+          'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package ' +
+          'io.metamask.devicemcp.snapshothelper signatures do not match ' +
+          'newer version; ignoring!]',
+        stderr: '',
+        exitCode: 1,
+      });
+
+      await expect(installHelper('emulator-5554')).rejects.toBeInstanceOf(
+        UntrustedHelperError,
+      );
+    });
+
+    it('fails closed on a shared-user signer conflict', async () => {
+      mockExec.mockResolvedValue({
+        stdout: 'Failure [INSTALL_FAILED_SHARED_USER_INCOMPATIBLE]',
+        stderr: '',
+        exitCode: 1,
+      });
+
+      await expect(installHelper('emulator-5554')).rejects.toBeInstanceOf(
+        UntrustedHelperError,
+      );
+    });
+
+    it('carries the pinned signer digest on a conflict failure', async () => {
+      mockExec.mockResolvedValue({
+        stdout: 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]',
+        stderr: '',
+        exitCode: 1,
+      });
+
+      await expect(installHelper('emulator-5554')).rejects.toMatchObject({
+        expectedSignerSha256: ARTIFACT.signerSha256,
+      });
+    });
   });
 
   describe('ensureHelperTrusted', () => {
@@ -226,6 +267,93 @@ describe('android-instrumentation/installer', () => {
       await expect(ensureHelperTrusted('emulator-5554')).rejects.toBeInstanceOf(
         UntrustedHelperError,
       );
+    });
+  });
+
+  describe('ensureHelperInstalled', () => {
+    it('installs when the helper is absent and never verifies the signer', async () => {
+      mockExec.mockResolvedValue({
+        stdout: 'Success\n',
+        stderr: '',
+        exitCode: 0,
+      });
+
+      await ensureHelperInstalled('emulator-5554');
+
+      const installCall = mockExec.mock.calls.find((call) =>
+        call[1]?.includes('install'),
+      );
+      expect(installCall).toBeDefined();
+      // Install is a freshness decision, not a trust decision: it must not
+      // touch the signer verifier. The caller verifies trust separately.
+      expect(mockAssertSigner).not.toHaveBeenCalled();
+    });
+
+    it('skips install when a same/newer version is present', async () => {
+      mockExec.mockResolvedValue({
+        stdout: 'versionCode=3003\n',
+        stderr: '',
+        exitCode: 0,
+      });
+
+      await ensureHelperInstalled('emulator-5554');
+
+      const installCall = mockExec.mock.calls.find((call) =>
+        call[1]?.includes('install'),
+      );
+      expect(installCall).toBeUndefined();
+      expect(mockAssertSigner).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assertInstalledHelperTrusted', () => {
+    const wireExecutor = (pmPathStdout: string, pullExit = 0): void => {
+      const run = vi.fn(async (args: string[]) => {
+        if (args.includes('path')) {
+          return { stdout: pmPathStdout, stderr: '', exitCode: 0 };
+        }
+        return { stdout: '', stderr: '', exitCode: pullExit };
+      });
+      mockCreateExecutor.mockReturnValue(run);
+    };
+
+    it('verifies the installed signer without installing', async () => {
+      wireExecutor('package:/data/app/pkg/base.apk');
+
+      await assertInstalledHelperTrusted('emulator-5554');
+
+      // The per-use trust check must never install/upgrade — only verify.
+      const installCall = mockExec.mock.calls.find((call) =>
+        call[1]?.includes('install'),
+      );
+      expect(installCall).toBeUndefined();
+      expect(mockAssertSigner).toHaveBeenCalledWith(
+        expect.stringContaining('apk-0.apk'),
+        ARTIFACT.signerSha256,
+      );
+    });
+
+    it('propagates UntrustedHelperError from the signer check', async () => {
+      wireExecutor('package:/data/app/pkg/base.apk');
+      mockAssertSigner.mockRejectedValue(
+        new UntrustedHelperError('mismatch', {
+          expectedSignerSha256: ARTIFACT.signerSha256,
+          actualSignerSha256: 'bbbb',
+        }),
+      );
+
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554'),
+      ).rejects.toBeInstanceOf(UntrustedHelperError);
+      expect(mockRmSync).toHaveBeenCalled();
+    });
+
+    it('fails closed when the installed APK path cannot be resolved', async () => {
+      wireExecutor('');
+
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554'),
+      ).rejects.toBeInstanceOf(UntrustedHelperError);
     });
   });
 });

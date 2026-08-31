@@ -5,7 +5,8 @@ import { readFile } from 'node:fs/promises';
 
 import { isUntrustedHelperError } from './android-instrumentation/errors.js';
 import {
-  ensureHelperTrusted,
+  assertInstalledHelperTrusted,
+  ensureHelperInstalled,
   INSTRUMENTATION_NOT_FOUND_SIGNATURE,
 } from './android-instrumentation/installer.js';
 import {
@@ -491,12 +492,20 @@ export class AdbBackend implements DeviceBackend {
    */
   async #runInstrumentation(deadline: number): Promise<string> {
     if (!this.#helperInstalled) {
-      // Ensure a TRUSTED helper: install/upgrade by version, then verify the
-      // installed signer. Runs outside the per-capture budget (one-time cost).
-      // Throws UntrustedHelperError on a signer mismatch (caller fails closed).
-      await ensureHelperTrusted(this.#serial);
+      // Install/upgrade the helper by versionCode. Safe to cache per process:
+      // the install is idempotent and NOT a trust decision.
+      await ensureHelperInstalled(this.#serial);
       this.#helperInstalled = true;
     }
+
+    // Trust invariant: re-verify the installed signer BEFORE EVERY am instrument,
+    // never cached. Package name / versionCode are attacker-controlled, so an
+    // actor who can install packages could swap a previously-trusted helper for
+    // a malicious same-package instrumentation between snapshots. Caching this as
+    // a boolean would degrade the signature pin to a one-time check; verifying
+    // per use (pm path + pull + hash) keeps it a per-use invariant. Throws
+    // UntrustedHelperError on a signer mismatch (caller fails closed).
+    await assertInstalledHelperTrusted(this.#serial);
 
     const remainingMs = deadline - Date.now();
     const timeoutMs = Math.max(

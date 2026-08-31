@@ -8,7 +8,10 @@ import {
   AdbBackend,
 } from './adb-backend.js';
 import { UntrustedHelperError } from './android-instrumentation/errors.js';
-import { ensureHelperTrusted } from './android-instrumentation/installer.js';
+import {
+  assertInstalledHelperTrusted,
+  ensureHelperInstalled,
+} from './android-instrumentation/installer.js';
 import { findElement } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
 
@@ -24,14 +27,18 @@ vi.mock('../utils/exec.js', () => ({
 }));
 
 vi.mock('./android-instrumentation/installer.js', () => ({
-  ensureHelperTrusted: vi.fn().mockResolvedValue(undefined),
+  ensureHelperInstalled: vi.fn().mockResolvedValue(undefined),
+  assertInstalledHelperTrusted: vi.fn().mockResolvedValue(undefined),
   INSTRUMENTATION_NOT_FOUND_SIGNATURE: 'INSTRUMENTATION_FAILED',
 }));
 
 const mockExecStrict = vi.mocked(execModule.execStrict);
 const mockExec = vi.mocked(execModule.exec);
 const mockReadFile = vi.mocked(readFile);
-const mockEnsureHelperTrusted = vi.mocked(ensureHelperTrusted);
+const mockEnsureHelperInstalled = vi.mocked(ensureHelperInstalled);
+const mockAssertInstalledHelperTrusted = vi.mocked(
+  assertInstalledHelperTrusted,
+);
 const mockReaddir = vi.mocked(readdir);
 
 const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -517,9 +524,11 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     backend = new AdbBackend('emulator-5554');
-    // ensureHelperTrusted encapsulates install + signer verification; the
-    // installer has its own tests, so here it is a resolved stub by default.
-    mockEnsureHelperTrusted.mockResolvedValue(undefined);
+    // Install and signer-verify are separate concerns: install is version-gated
+    // and cacheable, while the signer check must run on every snapshot. Both are
+    // resolved stubs by default; the installer has its own tests.
+    mockEnsureHelperInstalled.mockResolvedValue(undefined);
+    mockAssertInstalledHelperTrusted.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -614,7 +623,10 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
 
     await backend.snapshot();
 
-    expect(mockEnsureHelperTrusted).toHaveBeenCalledWith('emulator-5554');
+    expect(mockEnsureHelperInstalled).toHaveBeenCalledWith('emulator-5554');
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledWith(
+      'emulator-5554',
+    );
   });
 
   it('instrument: uses only the helper and never dumps', async () => {
@@ -658,7 +670,7 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
     );
   });
 
-  it('caches the trusted-helper check across snapshots within a session', async () => {
+  it('caches the install but re-verifies the signer on every snapshot', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
     routeExec({
       instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
@@ -667,8 +679,43 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
     await backend.snapshot();
     await backend.snapshot();
 
-    // ensureHelperTrusted runs once, then the optimistic cache short-circuits it.
-    expect(mockEnsureHelperTrusted).toHaveBeenCalledTimes(1);
+    // The install is version-gated and cached: it runs once per session.
+    expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(1);
+    // The signer trust check is a per-use invariant: it must run on EVERY
+    // am instrument, never cached, so a mid-session same-package swap is caught.
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed when the installed signer changes after an earlier trusted snapshot', async () => {
+    process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
+    routeExec({
+      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
+    });
+
+    // Snapshot 1: the installed helper is trusted and the capture succeeds.
+    const first = await backend.snapshot();
+    expect(first.hierarchy[0].identifier).toBe('tab-bar-item-Wallet');
+
+    // Between snapshots an attacker uninstalls the real helper and installs a
+    // malicious same-package instrumentation. The install stays cached, so only
+    // the per-use signer verification can catch the swap. It must fail closed
+    // and never fall back to a uiautomator dump — this is the exact exploit the
+    // per-use trust invariant closes.
+    mockAssertInstalledHelperTrusted.mockRejectedValueOnce(
+      new UntrustedHelperError('signer mismatch', {
+        expectedSignerSha256: 'aaaa',
+        actualSignerSha256: 'bbbb',
+      }),
+    );
+
+    await expect(backend.snapshot()).rejects.toBeInstanceOf(
+      UntrustedHelperError,
+    );
+    expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(1);
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(2);
+    expect(
+      mockExec.mock.calls.some((call) => call[1]?.includes('uiautomator')),
+    ).toBe(false);
   });
 
   it('auto: fails closed on a trust error and never falls back to dump', async () => {
@@ -677,7 +724,7 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
       dumpCat: '',
       instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
     });
-    mockEnsureHelperTrusted.mockRejectedValue(
+    mockAssertInstalledHelperTrusted.mockRejectedValue(
       new UntrustedHelperError('signer mismatch', {
         expectedSignerSha256: 'aaaa',
         actualSignerSha256: 'bbbb',
@@ -698,7 +745,7 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
   it('instrument: propagates a trust error unchanged', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
     routeExec({ instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML) });
-    mockEnsureHelperTrusted.mockRejectedValue(
+    mockAssertInstalledHelperTrusted.mockRejectedValue(
       new UntrustedHelperError('signer mismatch', {
         expectedSignerSha256: 'aaaa',
       }),
