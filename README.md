@@ -15,7 +15,7 @@ Provides device interaction tools for LLM agents to inspect UI state, interact w
 ## Requirements
 
 - **Node.js** `^20 || ^22 || >=24`
-- **iOS local**: Xcode Command Line Tools (for `xcrun simctl`) + [IDB](https://fbidb.io/) for UI interaction (`brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb`)
+- **iOS local**: Xcode Command Line Tools (for `xcrun simctl`) + [IDB](https://fbidb.io/) for UI interaction. Install the unified client (`brew tap facebook/fb && brew install idb`), which bundles the CLI and simulator companion. On iOS 17+ simulators, element extraction requires this modern `idb` (it uses `idb ui describe-all --api axbridge`); the legacy python `fb-idb` client does not support `--api` and will not read the UI hierarchy on newer runtimes.
 - **Android local**: ADB (Android SDK platform-tools) — auto-discovered from `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or `~/Library/Android/sdk`
 - **Remote/BrowserStack**: No local tools needed — connects via Appium W3C WebDriver HTTP
 - **Hermes CDP** (debugging the React Native JS runtime): uses the global `WebSocket` API. Node 22+ works out of the box; **Node 20 requires launching with `NODE_OPTIONS="--experimental-websocket"`**.

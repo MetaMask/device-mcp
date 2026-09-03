@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import * as execModule from './exec.js';
 import {
+  chooseAxApi,
   detectAllDevices,
   detectPlatform,
+  idbSupportsApiSelection,
   resolveIdbPath,
   MultipleDevicesError,
 } from './platform.js';
@@ -643,8 +645,105 @@ describe('resolveIdbPath', () => {
     });
 
     await expect(resolveIdbPath()).rejects.toThrow(
-      'Install: brew tap facebook/fb',
+      'brew tap facebook/fb && brew install idb',
     );
+  });
+
+  it('prefers an idb that supports --api over a merely-working one', async () => {
+    const { readdirSync } = await import('node:fs');
+    vi.mocked(readdirSync).mockReturnValue(
+      [] as ReturnType<typeof readdirSync>,
+    );
+    // Bare `idb` works but lacks --api; the homebrew one supports it.
+    mockExec.mockImplementation(async (cmd: string, args?: string[]) => {
+      const isHelp = args?.includes('describe-all') && args?.includes('--help');
+      if (cmd === 'idb') {
+        return {
+          exitCode: 0,
+          stdout: isHelp ? 'usage: [--udid] [--nested]' : '',
+          stderr: '',
+        };
+      }
+      if (cmd === '/opt/homebrew/bin/idb') {
+        return {
+          exitCode: 0,
+          stdout: isHelp ? 'usage: [--udid] [--api {ax,axbridge}]' : '',
+          stderr: '',
+        };
+      }
+      throw new Error('ENOENT');
+    });
+
+    expect(await resolveIdbPath()).toBe('/opt/homebrew/bin/idb');
+  });
+
+  it('falls back to the first working idb when none support --api', async () => {
+    const { readdirSync } = await import('node:fs');
+    vi.mocked(readdirSync).mockReturnValue(
+      [] as ReturnType<typeof readdirSync>,
+    );
+    mockExec.mockImplementation(async (cmd: string) => {
+      if (cmd === 'idb') {
+        return { exitCode: 0, stdout: 'usage: [--udid]', stderr: '' };
+      }
+      throw new Error('ENOENT');
+    });
+
+    expect(await resolveIdbPath()).toBe('idb');
+  });
+});
+
+describe('idbSupportsApiSelection', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('is true when describe-all help lists --api', async () => {
+    mockExec.mockResolvedValue({
+      exitCode: 0,
+      stdout: '  --api {ax,axbridge,axbridge-persistent}',
+      stderr: '',
+    });
+
+    expect(await idbSupportsApiSelection('idb')).toBe(true);
+  });
+
+  it('is false when help lacks --api', async () => {
+    mockExec.mockResolvedValue({
+      exitCode: 0,
+      stdout: '  --udid UDID\n  --nested',
+      stderr: '',
+    });
+
+    expect(await idbSupportsApiSelection('idb')).toBe(false);
+  });
+
+  it('is false when the help probe fails', async () => {
+    mockExec.mockRejectedValue(new Error('ENOENT'));
+
+    expect(await idbSupportsApiSelection('/bad/idb')).toBe(false);
+  });
+});
+
+describe('chooseAxApi', () => {
+  it('returns null when the CLI does not support --api', () => {
+    expect(chooseAxApi('26.1', false)).toBeNull();
+    expect(chooseAxApi('15.0', false)).toBeNull();
+  });
+
+  it('picks axbridge for iOS >= 18', () => {
+    expect(chooseAxApi('18.0', true)).toBe('axbridge');
+    expect(chooseAxApi('18.6', true)).toBe('axbridge');
+    expect(chooseAxApi('26.1', true)).toBe('axbridge');
+  });
+
+  it('picks ax for iOS <= 17', () => {
+    expect(chooseAxApi('17.4', true)).toBe('ax');
+    expect(chooseAxApi('15.0', true)).toBe('ax');
+  });
+
+  it('defaults to axbridge for an unparseable version', () => {
+    expect(chooseAxApi('unknown', true)).toBe('axbridge');
   });
 });
 

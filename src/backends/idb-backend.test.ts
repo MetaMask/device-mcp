@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { parseIdbHierarchy, mapIdbElement, IdbBackend } from './idb-backend.js';
 import * as execModule from '../utils/exec.js';
+import * as platformModule from '../utils/platform.js';
 
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
@@ -16,6 +17,8 @@ vi.mock('../utils/exec.js', () => ({
 
 vi.mock('../utils/platform.js', () => ({
   resolveIdbPath: vi.fn().mockResolvedValue('/usr/local/bin/idb'),
+  idbSupportsApiSelection: vi.fn().mockResolvedValue(false),
+  chooseAxApi: vi.fn().mockReturnValue(null),
   detectPlatform: vi.fn(),
   detectAllDevices: vi.fn(),
   MultipleDevicesError: class extends Error {},
@@ -24,6 +27,8 @@ vi.mock('../utils/platform.js', () => ({
 const mockExec = vi.mocked(execModule.exec);
 const mockExecStrict = vi.mocked(execModule.execStrict);
 const mockReadFile = vi.mocked(readFile);
+const mockSupportsApi = vi.mocked(platformModule.idbSupportsApiSelection);
+const mockChooseAxApi = vi.mocked(platformModule.chooseAxApi);
 
 describe('parseIdbHierarchy', () => {
   it('parses a JSON array of elements', () => {
@@ -469,5 +474,152 @@ describe('IdbBackend.ensureConnected', () => {
       'connect',
       udid,
     ]);
+  });
+});
+
+describe('IdbBackend.snapshot accessibility backend selection', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  const describeArgs = (extra: string[] = []): string[] => [
+    'ui',
+    'describe-all',
+    '--udid',
+    udid,
+    ...extra,
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    backend = new IdbBackend(udid);
+  });
+
+  it('omits --api when the CLI does not support it', async () => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockExecStrict.mockResolvedValue(JSON.stringify([]));
+
+    await backend.snapshot();
+
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      describeArgs(),
+    );
+    expect(mockExecStrict).not.toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      expect.arrayContaining(['--api']),
+    );
+  });
+
+  it('uses the version-chosen --api backend when supported', async () => {
+    mockSupportsApi.mockResolvedValue(true);
+    mockChooseAxApi.mockReturnValue('axbridge');
+    // getDeviceInfo() -> describe --json, then describe-all --api axbridge
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify({ os_version: '26.1', name: 'iPhone' });
+      }
+      return JSON.stringify([]);
+    });
+
+    await backend.snapshot();
+
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      describeArgs(['--api', 'axbridge']),
+    );
+  });
+
+  it('falls back to the complementary backend when the preferred errors', async () => {
+    mockSupportsApi.mockResolvedValue(true);
+    mockChooseAxApi.mockReturnValue('axbridge');
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify({ os_version: '17.4', name: 'iPhone' });
+      }
+      if (args?.includes('axbridge')) {
+        throw new Error('axbridge backend requested accessibility failed');
+      }
+      return JSON.stringify([]);
+    });
+
+    await backend.snapshot();
+
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      describeArgs(['--api', 'axbridge']),
+    );
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      describeArgs(['--api', 'ax']),
+    );
+  });
+
+  it('throws when every backend fails', async () => {
+    mockSupportsApi.mockResolvedValue(true);
+    mockChooseAxApi.mockReturnValue('axbridge');
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify({ os_version: '26.1', name: 'iPhone' });
+      }
+      throw new Error('No translation object returned for simulator');
+    });
+
+    await expect(backend.snapshot()).rejects.toThrow(
+      'No translation object returned for simulator',
+    );
+  });
+
+  it('orders ax first then axbridge on iOS <= 17', async () => {
+    mockSupportsApi.mockResolvedValue(true);
+    mockChooseAxApi.mockReturnValue('ax');
+    const seen: string[] = [];
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify({ os_version: '17.4', name: 'iPhone' });
+      }
+      const apiIndex = args?.indexOf('--api') ?? -1;
+      if (apiIndex >= 0 && args) {
+        seen.push(args[apiIndex + 1]);
+      }
+      // ax succeeds immediately on the older runtime.
+      return JSON.stringify([]);
+    });
+
+    await backend.snapshot();
+
+    // Only the preferred (ax) should have run; complement not needed.
+    expect(seen).toStrictEqual(['ax']);
+  });
+
+  it('tries ax then axbridge when ax errors on an unknown-order device', async () => {
+    mockSupportsApi.mockResolvedValue(true);
+    mockChooseAxApi.mockReturnValue('ax');
+    const seen: string[] = [];
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify({ os_version: '17.4', name: 'iPhone' });
+      }
+      const apiIndex = args?.indexOf('--api') ?? -1;
+      const api = apiIndex >= 0 && args ? args[apiIndex + 1] : 'none';
+      seen.push(api);
+      if (api === 'ax') {
+        throw new Error('ax backend unavailable');
+      }
+      return JSON.stringify([]);
+    });
+
+    await backend.snapshot();
+
+    expect(seen).toStrictEqual(['ax', 'axbridge']);
+  });
+
+  it('rethrows a non-Error rejection as a descriptive Error', async () => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockExecStrict.mockRejectedValue('boom');
+
+    await expect(backend.snapshot()).rejects.toThrow(
+      'idb ui describe-all failed for all accessibility backends',
+    );
   });
 });
