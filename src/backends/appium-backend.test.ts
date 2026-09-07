@@ -11,11 +11,15 @@ import type { AttachSessionConfig } from './session-file.js';
 
 const mockGetStatus = vi.fn();
 const mockExecute = vi.fn();
+const mockGetPageSource = vi.fn();
+const mockUpdateSettings = vi.fn();
 
 vi.mock('./webdriver-client.js', () => ({
   WebDriverClient: vi.fn().mockImplementation(() => ({
     getStatus: mockGetStatus,
     execute: mockExecute,
+    getPageSource: mockGetPageSource,
+    updateSettings: mockUpdateSettings,
   })),
   createSession: vi.fn(),
 }));
@@ -223,6 +227,71 @@ describe('AppiumBackend.screenshot', () => {
       data: undefined,
       format: 'png',
       path: resolvePath('/tmp/appium-shot.png'),
+    });
+  });
+});
+
+describe('AppiumBackend.snapshot (Android idle bypass)', () => {
+  const config: AttachSessionConfig = {
+    mode: 'attach',
+    appiumUrl: 'http://localhost:4723',
+    sessionId: 'session-1',
+    platform: 'android',
+  };
+
+  let backend: AppiumBackend;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGetStatus.mockResolvedValue({});
+    mockGetPageSource.mockResolvedValue(SAMPLE_ANDROID_XML);
+    mockUpdateSettings.mockResolvedValue(undefined);
+    backend = new AppiumBackend(config);
+    await backend.ensureConnected();
+  });
+
+  it('disables waitForIdle before dumping the Android hierarchy', async () => {
+    await backend.snapshot();
+
+    expect(mockUpdateSettings).toHaveBeenCalledWith({ waitForIdleTimeout: 0 });
+    expect(mockGetPageSource).toHaveBeenCalledOnce();
+  });
+
+  it('sets waitForIdleTimeout before reading the page source', async () => {
+    const callOrder: string[] = [];
+    mockUpdateSettings.mockImplementation(async () => {
+      callOrder.push('updateSettings');
+    });
+    mockGetPageSource.mockImplementation(async () => {
+      callOrder.push('getPageSource');
+      return SAMPLE_ANDROID_XML;
+    });
+
+    await backend.snapshot();
+
+    expect(callOrder).toStrictEqual(['updateSettings', 'getPageSource']);
+  });
+
+  it('still returns the hierarchy when waitForIdleTimeout is unsupported', async () => {
+    mockUpdateSettings.mockRejectedValue(new Error('unknown setting'));
+
+    const result = await backend.snapshot();
+
+    // The failed setting must not abort the dump.
+    expect(mockGetPageSource).toHaveBeenCalledOnce();
+    expect(result.platform).toBe('android');
+    expect(result.hierarchy.length).toBeGreaterThan(0);
+  });
+
+  it('does not touch waitForIdleTimeout on iOS', async () => {
+    const iosBackend = new AppiumBackend({ ...config, platform: 'ios' });
+    await iosBackend.ensureConnected();
+    mockExecute.mockResolvedValue(SAMPLE_IOS_XML);
+
+    await iosBackend.snapshot();
+
+    expect(mockUpdateSettings).not.toHaveBeenCalledWith({
+      waitForIdleTimeout: 0,
     });
   });
 });

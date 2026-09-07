@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Self-instrumenting helper APK for capturing the Android accessibility
+  hierarchy without the stock `uiautomator dump` idle-wait behavior.
+
+  `targetPackage` is the helper's OWN package: the helper does not attach to
+  the app under test. It captures via UiAutomation / the accessibility APIs,
+  which work cross-process against whatever app is in the foreground.
+
+  `testOnly` means it can only be installed with `adb install -t`.
+  `functionalTest` marks the instrumentation as a UI/functional run.
+-->
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.metamask.devicemcp.snapshothelper">
+
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="36" />
+
+    <!-- Backs the optional persistent-session loopback socket. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:debuggable="false"
+        android:label="Device MCP Snapshot Helper"
+        android:testOnly="true"
+        android:theme="@android:style/Theme.NoDisplay" />
+
+    <instrumentation
+        android:name=".SnapshotInstrumentation"
+        android:targetPackage="io.metamask.devicemcp.snapshothelper"
+        android:label="Device MCP Snapshot Helper"
+        android:functionalTest="true" />
+</manifest>

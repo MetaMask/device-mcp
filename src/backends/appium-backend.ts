@@ -234,6 +234,24 @@ export class AppiumBackend implements DeviceBackend {
     if (this.platform === 'ios') {
       return this.#getIosHierarchy(client);
     }
+    return this.#getAndroidHierarchy(client);
+  }
+
+  async #getAndroidHierarchy(client: WebDriverClient): Promise<string> {
+    // Stock `uiautomator dump` blocks on UiAutomation.waitForIdle before it
+    // will read the tree, so a screen with a continuous AccessibilityEvent
+    // stream (e.g. a React Native polling loop redrawing off-screen state)
+    // never goes idle and the dump fails with "could not get idle state".
+    // The UiAutomator2 server exposes `waitForIdleTimeout` as a setting;
+    // setting it to 0 disables the wait entirely so getPageSource returns the
+    // current hierarchy immediately regardless of event churn. This is the
+    // deterministic equivalent of the ADB backend's best-effort retry loop.
+    try {
+      await client.updateSettings({ waitForIdleTimeout: 0 });
+    } catch {
+      // `waitForIdleTimeout` is unsupported on non-UiAutomator2 drivers (or
+      // very old ones); fall through and let getPageSource wait for idle.
+    }
     return client.getPageSource();
   }
 

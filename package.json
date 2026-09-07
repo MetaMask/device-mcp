@@ -34,6 +34,7 @@
   ],
   "scripts": {
     "build": "ts-bridge --project tsconfig.build.json --clean",
+    "build:android-helper": "./scripts/build-android-helper.sh \"$(node -p \"require('./package.json').version\")\" dist/android",
     "build:docs": "typedoc",
     "clean": "rm -rf dist",
     "dev": "tsc --watch",

@@ -7,6 +7,12 @@ on:
         required: false
       SLACK_WEBHOOK_URL:
         required: true
+      ANDROID_HELPER_KEYSTORE_B64:
+        required: false
+      ANDROID_HELPER_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_HELPER_KEY_ALIAS:
+        required: false
 
 permissions:
   contents: read
@@ -26,6 +32,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: yarn build
+      # The org actions allowlist forbids android-actions/setup-android and
+      # untagged actions/setup-java, and the ubuntu-latest runner already ships
+      # Temurin JDK 17 plus Android platforms;android-36 and build-tools;36.0.0.
+      # So we use the preinstalled toolchain directly instead of setup actions.
+      - name: Ensure Android platform + build-tools (preinstalled on runner)
+        run: |
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" 'platforms;android-36' 'build-tools;36.0.0' > /dev/null
+      - name: Decode the helper signing keystore
+        env:
+          ANDROID_HELPER_KEYSTORE_B64: ${{ secrets.ANDROID_HELPER_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$ANDROID_HELPER_KEYSTORE_B64" ]; then
+            echo 'ANDROID_HELPER_KEYSTORE_B64 secret is not set; cannot build a trusted helper APK.' >&2
+            exit 1
+          fi
+          printf '%s' "$ANDROID_HELPER_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/helper.keystore"
+      - name: Build the Android snapshot helper APK
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
+          DEVICE_MCP_HELPER_KEYSTORE: ${{ runner.temp }}/helper.keystore
+          DEVICE_MCP_HELPER_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_HELPER_KEYSTORE_PASSWORD }}
+          DEVICE_MCP_HELPER_KEY_ALIAS: ${{ secrets.ANDROID_HELPER_KEY_ALIAS }}
+        run: ./scripts/build-android-helper.sh "$(node -p "require('./package.json').version")" dist/android
       - name: Upload build artifacts
         uses: actions/upload-artifact@v5
         with:

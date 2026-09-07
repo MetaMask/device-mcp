@@ -7,6 +7,9 @@ dist/
 # Test coverage
 coverage/
 
+# Scratch build output (Android snapshot-helper APK staging)
+.tmp/
+
 # IDE
 .idea/
 .vscode/
@@ -45,3 +48,13 @@ yalc.lock
 
 # Docs
 docs/
+
+# Planning scratch
+.sisyphus/
+
+# Signing keystores — NEVER commit a keystore. The helper signing key lives
+# outside the repo (~/.device-mcp/helper.keystore) or is injected via the
+# DEVICE_MCP_HELPER_KEYSTORE env / CI secret. See scripts/build-android-helper.sh.
+*.keystore
+*.jks
+*.p12

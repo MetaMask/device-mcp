@@ -48,6 +48,19 @@ function getSessionTempDir(): string {
 }
 
 /**
+ * Create a fresh private temporary directory (`0700`, unpredictable name) and
+ * return its absolute path. Unlike {@link getSessionTempDir} this is NOT
+ * memoized: each call yields a new directory, so callers can pull and inspect
+ * device files in isolation and remove the directory when done.
+ *
+ * @param prefix - A short label folded into the directory name.
+ * @returns The absolute path to the newly created directory.
+ */
+export function createPrivateTempDir(prefix: string): string {
+  return mkdtempSync(join(tmpdir(), `device-mcp-${prefix}-`));
+}
+
+/**
  * Resolve the optional output-directory allowlist from the environment.
  *
  * @returns The absolute allowed base directory, or `null` when unrestricted.
