@@ -43,8 +43,15 @@ jobs:
         **/test*/**
         **/e2e/**
         **/tests/**
+      # Helper Java is built ad-hoc with javac; compile it so CodeQL can scan it.
+      # version/distribution omitted to avoid the forbidden actions/setup-java.
       languages-config: |
         [
+          {
+            "language": "java-kotlin",
+            "build_mode": "manual",
+            "build_command": "export ANDROID_HOME=\"$ANDROID_SDK_ROOT\"; yes | \"$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager\" 'platforms;android-36' >/dev/null; javac --release 11 -classpath \"$ANDROID_SDK_ROOT/platforms/android-36/android.jar\" -d \"$RUNNER_TEMP/helper-classes\" $(find android/snapshot-helper/src/main/java -name '*.java')"
+          }
         ]
     secrets:
       project-metrics-token: ${{ secrets.SECURITY_SCAN_METRICS_TOKEN }}
