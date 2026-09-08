@@ -28,7 +28,11 @@ import {
   hardenArtifactFile,
   resolveArtifactPath,
 } from '../utils/output-path.js';
-import { resolveIdbPath } from '../utils/platform.js';
+import {
+  chooseAxApi,
+  idbSupportsApiSelection,
+  resolveIdbPath,
+} from '../utils/platform.js';
 
 export class IdbBackend implements DeviceBackend {
   readonly kind = 'idb' as const;
@@ -40,6 +44,8 @@ export class IdbBackend implements DeviceBackend {
   readonly #udid: string;
 
   #idbPath = 'idb';
+
+  #idbSupportsApi = false;
 
   #recordingProcess: ChildProcess | null = null;
 
@@ -55,6 +61,7 @@ export class IdbBackend implements DeviceBackend {
     }
 
     this.#idbPath = await resolveIdbPath();
+    this.#idbSupportsApi = await idbSupportsApiSelection(this.#idbPath);
     await exec(this.#idbPath, ['connect', this.#udid]);
     await this.#enableSimulatorAccessibility();
     this.#connected = true;
@@ -116,12 +123,7 @@ export class IdbBackend implements DeviceBackend {
 
   async snapshot(): Promise<SnapshotResult> {
     await this.ensureConnected();
-    const raw = await execStrict(this.#idbPath, [
-      'ui',
-      'describe-all',
-      '--udid',
-      this.#udid,
-    ]);
+    const raw = await this.#describeAll();
     const hierarchy = parseIdbHierarchy(raw);
     return {
       platform: 'ios',
@@ -129,6 +131,49 @@ export class IdbBackend implements DeviceBackend {
       raw,
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Run `idb ui describe-all`, trying the version-appropriate accessibility
+   * backend first and falling back to the others if it errors. This keeps
+   * snapshots working across iOS 17-26 regardless of the user's idb client.
+   *
+   * @returns The raw JSON hierarchy from the first backend that succeeds.
+   * @throws When every attempted backend fails.
+   */
+  async #describeAll(): Promise<string> {
+    const apis = await this.#describeAllApiOrder();
+    let lastError: unknown;
+    for (const api of apis) {
+      const args = ['ui', 'describe-all', '--udid', this.#udid];
+      if (api !== null) {
+        args.push('--api', api);
+      }
+      try {
+        return await execStrict(this.#idbPath, args);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('idb ui describe-all failed for all accessibility backends');
+  }
+
+  /**
+   * Ordered `--api` values to attempt: the version preference, then the
+   * complement; or a single `null` (omit `--api`) when the CLI lacks support.
+   *
+   * @returns The ordered `--api` attempts.
+   */
+  async #describeAllApiOrder(): Promise<('ax' | 'axbridge' | null)[]> {
+    if (!this.#idbSupportsApi) {
+      return [null];
+    }
+    const { osVersion } = await this.getDeviceInfo();
+    const preferred = chooseAxApi(osVersion, true);
+    const complement = preferred === 'axbridge' ? 'ax' : 'axbridge';
+    return [preferred, complement];
   }
 
   async tapElement(query: ElementQuery): Promise<TapResult> {
