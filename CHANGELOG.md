@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- fix: make idb gestures scroll and report correct device geometry
+
 ## [0.3.3]
 
 ### Changed

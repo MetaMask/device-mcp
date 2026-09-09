@@ -14,7 +14,9 @@ export function registerSwipeTool(
       title: 'Swipe',
       description:
         'Swipe on the device screen. Use natural scrolling: swipe "up" to scroll down. ' +
-        'Optionally specify start coordinates and distance.',
+        'Optionally specify start coordinates and distance. Coordinates are logical points, ' +
+        'not screenshot pixels. The gesture runs with a fixed 0.3s duration; command ' +
+        'completion does not verify that content moved — confirm with a screenshot or snapshot.',
       inputSchema: {
         direction: z
           .enum(['up', 'down', 'left', 'right'])
