@@ -561,6 +561,34 @@ describe('IdbBackend.swipe and getWindowSize', () => {
       expect.arrayContaining(['201', '437', '40', '437']),
     );
   });
+
+  it('reuses the window size while scrolling to an element', async () => {
+    let snapshotCount = 0;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify(screenInfo);
+      }
+      if (args?.includes('describe-all')) {
+        snapshotCount += 1;
+        return JSON.stringify([
+          {
+            type: snapshotCount === 3 ? 'Button' : 'StaticText',
+            AXLabel: snapshotCount === 3 ? 'Settings' : `Page ${snapshotCount}`,
+            frame: { x: 10, y: 20, width: 100, height: 44 },
+            enabled: true,
+          },
+        ]);
+      }
+      return '';
+    });
+
+    await backend.scrollToElement({ label: 'Settings' });
+
+    const describeCalls = mockExecStrict.mock.calls.filter(([, args]) =>
+      args?.includes('describe'),
+    );
+    expect(describeCalls).toHaveLength(1);
+  });
 });
 
 describe('IdbBackend.tapElement and longPress viewport handling', () => {

@@ -277,7 +277,17 @@ export class IdbBackend implements DeviceBackend {
     distance?: number,
   ): Promise<void> {
     await this.ensureConnected();
-    const { width, height } = await this.getWindowSize();
+    const windowSize = await this.getWindowSize();
+    await this.#swipe(direction, windowSize, startX, startY, distance);
+  }
+
+  async #swipe(
+    direction: 'up' | 'down' | 'left' | 'right',
+    { width, height }: WindowSize,
+    startX?: number,
+    startY?: number,
+    distance?: number,
+  ): Promise<void> {
     const sx = startX ?? Math.round(width / 2);
     const sy = startY ?? Math.round(height / 2);
     // Without an explicit duration the idb client sends duration=0 and the
@@ -546,6 +556,7 @@ export class IdbBackend implements DeviceBackend {
     maxAttempts = 10,
   ): Promise<UIElement> {
     await this.ensureConnected();
+    const windowSize = await this.getWindowSize();
     let previousRaw = '';
 
     for (let i = 0; i < maxAttempts; i++) {
@@ -558,7 +569,7 @@ export class IdbBackend implements DeviceBackend {
         break;
       }
       previousRaw = snap.raw;
-      await this.swipe(direction);
+      await this.#swipe(direction, windowSize);
     }
     throw new Error(
       `Element not found after scrolling: ${JSON.stringify(query)}\n` +
