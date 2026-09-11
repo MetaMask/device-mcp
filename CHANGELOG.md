@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0]
 
-### Uncategorized
+### Fixed
 
 - fix: make idb gestures scroll and report correct device geometry ([#27](https://github.com/MetaMask/device-mcp/pull/27))
 - fix: make simulator element extraction work across iOS 17-26 ([#25](https://github.com/MetaMask/device-mcp/pull/25))
