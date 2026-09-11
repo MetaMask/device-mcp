@@ -187,8 +187,7 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const x = Math.round(element.frame.x + element.frame.width / 2);
-    const y = Math.round(element.frame.y + element.frame.height / 2);
+    const { x, y } = await this.#visibleTapPoint(element);
     await this.tapCoordinates(x, y);
 
     return {
@@ -196,6 +195,39 @@ export class IdbBackend implements DeviceBackend {
       x,
       y,
       targetDescription: describeElement(element),
+    };
+  }
+
+  /**
+   * Returns the center of the part of the element's frame that lies inside
+   * the device viewport, in logical points. Tapping there is safer than
+   * tapping the raw frame center, which can fall outside the screen for
+   * off-screen or partially scrolled elements and either hit nothing or an
+   * unrelated on-screen control.
+   *
+   * @param element - The element to tap.
+   * @returns The tap point in logical points.
+   * @throws When the element's frame does not intersect the viewport at all.
+   */
+  async #visibleTapPoint(
+    element: UIElement,
+  ): Promise<{ x: number; y: number }> {
+    const { width, height } = await this.getWindowSize();
+    const x0 = Math.max(element.frame.x, 0);
+    const y0 = Math.max(element.frame.y, 0);
+    const x1 = Math.min(element.frame.x + element.frame.width, width);
+    const y1 = Math.min(element.frame.y + element.frame.height, height);
+    if (x1 <= x0 || y1 <= y0) {
+      throw new Error(
+        `Element is outside the ${width}x${height} viewport: ` +
+          `${describeElement(element)} at (${element.frame.x}, ${element.frame.y} ` +
+          `${element.frame.width}x${element.frame.height}). ` +
+          'Scroll it into view first (device_swipe or scroll_to_element).',
+      );
+    }
+    return {
+      x: Math.round((x0 + x1) / 2),
+      y: Math.round((y0 + y1) / 2),
     };
   }
 
@@ -245,10 +277,41 @@ export class IdbBackend implements DeviceBackend {
     distance?: number,
   ): Promise<void> {
     await this.ensureConnected();
-    const d = distance ?? 500;
-    const sx = startX ?? 200;
-    const sy = startY ?? 400;
-    const [endX, endY] = computeSwipeEnd(sx, sy, direction, d);
+    const windowSize = await this.getWindowSize();
+    await this.#swipe(direction, windowSize, startX, startY, distance);
+  }
+
+  async #swipe(
+    direction: 'up' | 'down' | 'left' | 'right',
+    { width, height }: WindowSize,
+    startX?: number,
+    startY?: number,
+    distance?: number,
+  ): Promise<void> {
+    const sx = startX ?? Math.round(width / 2);
+    const sy = startY ?? Math.round(height / 2);
+    // Without an explicit duration the idb client sends duration=0 and the
+    // companion delivers the interpolated touch sequence as a zero-delay
+    // burst, which iOS does not process as a scroll (it reads as a tap at the
+    // start point). 0.3s mirrors the Android backend's `input swipe` duration.
+    const durationSeconds = 0.3;
+    // Default to 40% of the swipe-axis dimension so the default endpoint
+    // stays clear of the screen edges on any supported device size.
+    const d =
+      distance ??
+      Math.max(
+        1,
+        Math.round(
+          (direction === 'up' || direction === 'down' ? height : width) * 0.4,
+        ),
+      );
+    let [endX, endY] = computeSwipeEnd(sx, sy, direction, d);
+    if (distance === undefined) {
+      // The caller did not pin the endpoint; keep the computed one inside the
+      // viewport even when explicit start coordinates leave little room.
+      endX = Math.min(Math.max(endX, 1), width - 2);
+      endY = Math.min(Math.max(endY, 1), height - 2);
+    }
 
     await execStrict(this.#idbPath, [
       'ui',
@@ -257,6 +320,8 @@ export class IdbBackend implements DeviceBackend {
       String(sy),
       String(endX),
       String(endY),
+      '--duration',
+      String(durationSeconds),
       '--udid',
       this.#udid,
     ]);
@@ -292,11 +357,20 @@ export class IdbBackend implements DeviceBackend {
 
       for (const line of raw.trim().split('\n')) {
         if (line.includes(bundleId)) {
+          // `idb list-apps` rows are:
+          // bundle_id | name | install_type | architectures |
+          // process_state | debuggable | pid=<pid>
+          // (the pid column is `pid=<n>` only when the app is running,
+          // `pid=None` otherwise).
           const parts = line.split('|').map((s) => s.trim());
+          const pidField = parts[6] ?? '';
+          const pid = pidField.startsWith('pid=')
+            ? Number.parseInt(pidField.slice(4), 10)
+            : Number.NaN;
           return {
             bundleId,
-            state: parts[2] ?? 'Unknown',
-            pid: parts[3] ? parseInt(parts[3], 10) : undefined,
+            state: parts[4] ?? 'Unknown',
+            pid: Number.isNaN(pid) ? undefined : pid,
           };
         }
       }
@@ -456,8 +530,7 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const cx = Math.round(element.frame.x + element.frame.width / 2);
-    const cy = Math.round(element.frame.y + element.frame.height / 2);
+    const { x: cx, y: cy } = await this.#visibleTapPoint(element);
     await execStrict(this.#idbPath, [
       'ui',
       'tap',
@@ -483,6 +556,7 @@ export class IdbBackend implements DeviceBackend {
     maxAttempts = 10,
   ): Promise<UIElement> {
     await this.ensureConnected();
+    const windowSize = await this.getWindowSize();
     let previousRaw = '';
 
     for (let i = 0; i < maxAttempts; i++) {
@@ -495,7 +569,7 @@ export class IdbBackend implements DeviceBackend {
         break;
       }
       previousRaw = snap.raw;
-      await this.swipe(direction);
+      await this.#swipe(direction, windowSize);
     }
     throw new Error(
       `Element not found after scrolling: ${JSON.stringify(query)}\n` +
@@ -527,10 +601,19 @@ export class IdbBackend implements DeviceBackend {
     try {
       const info = JSON.parse(raw) as Record<string, unknown>;
       const dims = info.screen_dimensions as
-        | { width: number; height: number }
+        | {
+            width?: number;
+            height?: number;
+            // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
+            width_points?: number;
+            // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
+            height_points?: number;
+          }
         | undefined;
-      if (dims?.width && dims?.height) {
-        return { width: dims.width, height: dims.height };
+      // Gestures and accessibility frames are in logical points, while
+      // `width`/`height` are hardware pixels; prefer the point dimensions.
+      if (dims?.width_points && dims?.height_points) {
+        return { width: dims.width_points, height: dims.height_points };
       }
     } catch {
       // fall through to snapshot-based approach

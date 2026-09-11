@@ -256,9 +256,9 @@ describe('IdbBackend simctl fallback', () => {
   });
 
   describe('getAppState', () => {
-    it('uses idb list-apps when it succeeds', async () => {
+    it('parses real idb list-apps output when the app is running', async () => {
       mockExecStrict.mockResolvedValue(
-        'io.metamask | MetaMask | Running | 12345\n',
+        'io.metamask.MetaMask | MetaMask | user | x86_64, arm64 | Running | Not Debuggable | pid=33355\n',
       );
 
       const result = await backend.getAppState('io.metamask');
@@ -266,7 +266,21 @@ describe('IdbBackend simctl fallback', () => {
       expect(result).toStrictEqual({
         bundleId: 'io.metamask',
         state: 'Running',
-        pid: 12345,
+        pid: 33355,
+      });
+    });
+
+    it('omits pid and reports the process state for a stopped app', async () => {
+      mockExecStrict.mockResolvedValue(
+        'io.metamask.MetaMask | MetaMask | user | x86_64, arm64 | Not running | Not Debuggable | pid=None\n',
+      );
+
+      const result = await backend.getAppState('io.metamask');
+
+      expect(result).toStrictEqual({
+        bundleId: 'io.metamask',
+        state: 'Not running',
+        pid: undefined,
       });
     });
 
@@ -417,6 +431,267 @@ describe('IdbBackend.screenshot', () => {
       /[/\\]device-mcp-[^/\\]+[/\\]screenshot-[0-9a-f]{16}\.png$/u,
     );
     expect(result.data).toBe('YmFy');
+  });
+});
+
+describe('IdbBackend.swipe and getWindowSize', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  /** iPhone 16 Pro geometry: pixels 1206x2622, logical points 402x874. */
+  const screenInfo = {
+    os_version: '26.5',
+    screen_dimensions: {
+      width: 1206,
+      height: 2622,
+      density: 3.0,
+      width_points: 402,
+      height_points: 874,
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    backend = new IdbBackend(udid);
+  });
+
+  it('prefers logical point dimensions over hardware pixels', async () => {
+    mockExecStrict.mockResolvedValue(JSON.stringify(screenInfo));
+
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 402,
+      height: 874,
+    });
+  });
+
+  it('falls back to the snapshot root frame when describe lacks dimensions', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify({ os_version: '26.5' });
+      }
+      return JSON.stringify([
+        {
+          type: 'Application',
+          frame: { x: 0, y: 0, width: 402, height: 874 },
+          enabled: true,
+        },
+      ]);
+    });
+
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 402,
+      height: 874,
+    });
+  });
+
+  it('sends a centered default swipe with an explicit duration', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify(screenInfo);
+      }
+      return JSON.stringify([]);
+    });
+
+    await backend.swipe('up');
+
+    // start: (round(402/2), round(874/2)) = (201, 437);
+    // distance: round(874 * 0.4) = 350 -> end y = 87.
+    expect(mockExecStrict).toHaveBeenCalledWith('/usr/local/bin/idb', [
+      'ui',
+      'swipe',
+      '201',
+      '437',
+      '201',
+      '87',
+      '--duration',
+      '0.3',
+      '--udid',
+      udid,
+    ]);
+  });
+
+  it('keeps a computed default endpoint inside the viewport', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify(screenInfo);
+      }
+      return JSON.stringify([]);
+    });
+
+    // An explicit start near the top edge leaves little room for an up swipe.
+    await backend.swipe('up', 201, 100);
+
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      expect.arrayContaining(['201', '100', '201', '1']),
+    );
+  });
+
+  it('leaves explicitly provided endpoints untouched', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify(screenInfo);
+      }
+      return JSON.stringify([]);
+    });
+
+    await backend.swipe('up', 200, 400, 500);
+
+    // The shipped 0.3.3 geometry, preserved when the caller pins it.
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      expect.arrayContaining(['200', '400', '200', '-100']),
+    );
+  });
+
+  it('centers horizontal default swipes on the width axis', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify(screenInfo);
+      }
+      return JSON.stringify([]);
+    });
+
+    await backend.swipe('left');
+
+    // distance: round(402 * 0.4) = 161 -> end x = 201 - 161 = 40.
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      expect.arrayContaining(['201', '437', '40', '437']),
+    );
+  });
+
+  it('reuses the window size while scrolling to an element', async () => {
+    let snapshotCount = 0;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify(screenInfo);
+      }
+      if (args?.includes('describe-all')) {
+        snapshotCount += 1;
+        return JSON.stringify([
+          {
+            type: snapshotCount === 3 ? 'Button' : 'StaticText',
+            AXLabel: snapshotCount === 3 ? 'Settings' : `Page ${snapshotCount}`,
+            frame: { x: 10, y: 20, width: 100, height: 44 },
+            enabled: true,
+          },
+        ]);
+      }
+      return '';
+    });
+
+    await backend.scrollToElement({ label: 'Settings' });
+
+    const describeCalls = mockExecStrict.mock.calls.filter(([, args]) =>
+      args?.includes('describe'),
+    );
+    expect(describeCalls).toHaveLength(1);
+  });
+});
+
+describe('IdbBackend.tapElement and longPress viewport handling', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  const screenInfo = {
+    os_version: '26.5',
+    screen_dimensions: {
+      width: 1206,
+      height: 2622,
+      density: 3.0,
+      width_points: 402,
+      height_points: 874,
+    },
+  };
+
+  const mockScreen = (hierarchy: Record<string, unknown>[]): void => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify(screenInfo);
+      }
+      return JSON.stringify(hierarchy);
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    backend = new IdbBackend(udid);
+  });
+
+  it('taps the frame center when the element is fully visible', async () => {
+    mockScreen([
+      {
+        type: 'Button',
+        AXLabel: 'Submit',
+        identifier: 'submit-btn',
+        frame: { x: 10, y: 20, width: 100, height: 44 },
+        enabled: true,
+      },
+    ]);
+
+    const result = await backend.tapElement({ identifier: 'submit-btn' });
+
+    expect(result).toMatchObject({ x: 60, y: 42 });
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      expect.arrayContaining(['ui', 'tap', '60', '42']),
+    );
+  });
+
+  it('taps the center of the visible part of a partially scrolled element', async () => {
+    mockScreen([
+      {
+        type: 'Button',
+        AXLabel: 'Peek',
+        identifier: 'peek-btn',
+        frame: { x: 0, y: 800, width: 402, height: 150 },
+        enabled: true,
+      },
+    ]);
+
+    const result = await backend.tapElement({ identifier: 'peek-btn' });
+
+    // Visible intersection is y 800..874 -> center y = 837.
+    expect(result).toMatchObject({ x: 201, y: 837 });
+  });
+
+  it('throws a viewport diagnostic instead of tapping off-screen', async () => {
+    mockScreen([
+      {
+        type: 'Button',
+        AXLabel: 'Hidden',
+        identifier: 'hidden-btn',
+        frame: { x: 0, y: 1000, width: 402, height: 100 },
+        enabled: true,
+      },
+    ]);
+
+    await expect(
+      backend.tapElement({ identifier: 'hidden-btn' }),
+    ).rejects.toThrow('outside the 402x874 viewport');
+    expect(mockExecStrict).not.toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      expect.arrayContaining(['ui', 'tap']),
+    );
+  });
+
+  it('applies the same viewport check to longPress', async () => {
+    mockScreen([
+      {
+        type: 'Button',
+        AXLabel: 'Hidden',
+        identifier: 'hidden-btn',
+        frame: { x: 0, y: 1000, width: 402, height: 100 },
+        enabled: true,
+      },
+    ]);
+
+    await expect(
+      backend.longPress({ identifier: 'hidden-btn' }),
+    ).rejects.toThrow('outside the 402x874 viewport');
   });
 });
 
