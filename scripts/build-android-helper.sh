@@ -46,9 +46,19 @@ if [[ ! -f "$ANDROID_JAR" ]]; then
   exit 1
 fi
 
-# Newest build-tools directory (version-sorted).
-BUILD_TOOLS_DIR="$(find "$SDK/build-tools" -maxdepth 1 -mindepth 1 -type d \
-  | sort -V | tail -n 1)"
+# Build-tools selection. We PIN a known-good version because apksigner's
+# `--print-certs` output format has changed across releases (37.0.0 relabels the
+# signer line, which broke naive signer-SHA extraction). Pinning keeps the
+# provenance parsing deterministic. Falls back to the newest available with a
+# warning if the pinned version is not installed.
+PINNED_BUILD_TOOLS_VERSION="36.0.0"
+if [[ -d "$SDK/build-tools/$PINNED_BUILD_TOOLS_VERSION" ]]; then
+  BUILD_TOOLS_DIR="$SDK/build-tools/$PINNED_BUILD_TOOLS_VERSION"
+else
+  BUILD_TOOLS_DIR="$(find "$SDK/build-tools" -maxdepth 1 -mindepth 1 -type d \
+    | sort -V | tail -n 1)"
+  echo "Warning: build-tools $PINNED_BUILD_TOOLS_VERSION not found; using $BUILD_TOOLS_DIR." >&2
+fi
 if [[ -z "$BUILD_TOOLS_DIR" ]]; then
   echo "Error: no build-tools found under '$SDK/build-tools'." >&2
   exit 1
@@ -165,10 +175,23 @@ fi
 # package/runner/versionCode + the apk sha256 (dist tamper check) + the
 # apksigner-verified signer cert SHA-256 (the runtime trust pin).
 APK_SHA256="$(openssl dgst -sha256 "$FINAL_APK" | awk '{print $NF}')"
+# Extract the signer cert SHA-256 in a format-INDEPENDENT way: grab the 64-char
+# hex run directly rather than relying on field positions. apksigner's
+# `--print-certs` line label has changed across build-tools versions (e.g. 37.0.0
+# prints `V3.0 Signer: certificate SHA-256 digest: <hex>` instead of
+# `Signer #1 certificate SHA-256 digest: <hex>`); splitting on ': ' by field put
+# the label text where the hex was expected and silently produced a corrupt pin.
+# Collect all matching scheme lines (v2/v3/v3.1 carry the same cert) and dedupe.
 SIGNER_SHA256="$("$APKSIGNER" verify --print-certs "$FINAL_APK" \
-  | awk -F': ' '/certificate SHA-256 digest:/ { gsub(/[^0-9a-fA-F]/, "", $2); print tolower($2); exit }')"
-if [[ -z "$SIGNER_SHA256" ]]; then
-  echo "Error: could not extract signer SHA-256 from apksigner output." >&2
+  | awk '/certificate SHA-256 digest:/ { if (match($0, /[0-9a-fA-F]{64}/)) print tolower(substr($0, RSTART, RLENGTH)) }' \
+  | sort -u)"
+# Must be exactly one well-formed 64-char hex digest. This guard fails the build
+# loudly on any future parser regression, in every environment, instead of
+# emitting a corrupt manifest pin that breaks the on-device trust check.
+SIGNER_LINE_COUNT="$(printf '%s\n' "$SIGNER_SHA256" | grep -c .)"
+if [[ "$SIGNER_LINE_COUNT" -ne 1 || ! "$SIGNER_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Error: could not extract a single valid signer SHA-256 from apksigner" >&2
+  echo "       output (got: '${SIGNER_SHA256//$'\n'/, }')." >&2
   exit 1
 fi
 MANIFEST="$OUTPUT_DIR/device-mcp-android-snapshot-helper-$VERSION.manifest.json"

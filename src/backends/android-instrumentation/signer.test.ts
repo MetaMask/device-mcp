@@ -14,10 +14,21 @@ const home = process.env.HOME ?? '';
 const sharedKeystore = join(home, '.device-mcp', 'helper.keystore');
 const sharedPassFile = join(home, '.device-mcp', 'helper.pass');
 
-const sdkAvailable =
+const sdkRoot =
+  process.env.ANDROID_HOME ??
+  process.env.ANDROID_SDK_ROOT ??
+  join(home, 'Library', 'Android', 'sdk');
+
+// The build script only needs the Android SDK (it self-generates a throwaway
+// signing key when the shared keystore is absent). This gate lets the
+// provenance-integrity test run in CI, where the SDK is present but the shared
+// keystore secret is not.
+const sdkOnlyAvailable =
   existsSync(buildScript) &&
-  existsSync(sharedKeystore) &&
-  existsSync(sharedPassFile);
+  existsSync(join(sdkRoot, 'platforms', 'android-36', 'android.jar'));
+
+const sdkAvailable =
+  sdkOnlyAvailable && existsSync(sharedKeystore) && existsSync(sharedPassFile);
 
 const PINNED_SIGNER_SHA256 =
   '0554218930d76c296dc6099049cb1659180acdd64ad59ee6e4b0548bcdd7641f';
@@ -135,4 +146,45 @@ describe('android snapshot-helper signer verification', () => {
       },
     );
   });
+});
+
+// Provenance-integrity: runs whenever the Android SDK is present (including CI,
+// via a throwaway key), NOT gated on the shared keystore. This is the guard that
+// would have caught the 0.4.0 bug where a build-tools apksigner format change
+// produced a corrupt `signerSha256` ('cefcaea256de') in the manifest.
+describe('build-android-helper manifest provenance', () => {
+  let workDir: string | undefined;
+  let built: BuiltApk | undefined;
+
+  beforeAll(() => {
+    if (!sdkOnlyAvailable) {
+      return;
+    }
+    workDir = mkdtempSync(join(tmpdir(), 'provenance-test-'));
+    built = buildApk(join(workDir, 'throwaway'), false);
+  }, 180_000);
+
+  afterAll(() => {
+    if (workDir) {
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!sdkOnlyAvailable)(
+    'emits a well-formed 64-char hex signerSha256 in the manifest',
+    () => {
+      const { expectedSignerSha256 } = built as BuiltApk;
+      expect(expectedSignerSha256).toMatch(/^[0-9a-f]{64}$/u);
+    },
+  );
+
+  it.skipIf(!sdkOnlyAvailable)(
+    'manifest signerSha256 matches the APK actual signer (producer == consumer)',
+    async () => {
+      const artifact = built as BuiltApk;
+      const result = await verifyApkSignerSha256(artifact.apkPath);
+      expect(result.verified).toBe(true);
+      expect(result.signerSha256).toBe(artifact.expectedSignerSha256);
+    },
+  );
 });
