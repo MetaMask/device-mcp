@@ -59,6 +59,27 @@ function requireString(value: unknown, field: string): string {
 }
 
 /**
+ * Assert a manifest field is a well-formed lowercase SHA-256 hex digest.
+ *
+ * Guards against a corrupt provenance value (e.g. a build-side extraction bug
+ * emitting a truncated/garbled pin), which would otherwise fail the on-device
+ * trust check against a syntactically-valid-looking but wrong string.
+ *
+ * @param value - The parsed field value.
+ * @param field - The field name, for error messages.
+ * @returns The value, lowercased and narrowed to a 64-char hex string.
+ */
+function requireSha256(value: unknown, field: string): string {
+  const asString = requireString(value, field).toLowerCase();
+  if (!/^[0-9a-f]{64}$/u.test(asString)) {
+    invalid(
+      `Helper manifest field "${field}" is not a valid SHA-256 hex digest`,
+    );
+  }
+  return asString;
+}
+
+/**
  * Assert a manifest field is a finite non-negative integer.
  *
  * @param value - The parsed field value.
@@ -148,13 +169,13 @@ export async function loadHelperArtifact(): Promise<HelperArtifact> {
   }
 
   const assetName = requireString(manifest.assetName, 'assetName');
-  const sha256 = requireString(manifest.sha256, 'sha256');
+  const sha256 = requireSha256(manifest.sha256, 'sha256');
   const apkPath = join(HELPER_APK_DIR, assetName);
 
   const actualSha256 = await sha256File(apkPath).catch(() =>
     invalid(`Helper APK is missing or unreadable (${apkPath})`),
   );
-  if (actualSha256 !== sha256.toLowerCase()) {
+  if (actualSha256 !== sha256) {
     invalid(
       `Helper APK digest does not match its manifest (${apkPath}). ` +
         'The bundled artifact may be corrupt or tampered with.',
@@ -170,11 +191,8 @@ export async function loadHelperArtifact(): Promise<HelperArtifact> {
       'instrumentationRunner',
     ),
     apkPath,
-    sha256: sha256.toLowerCase(),
-    signerSha256: requireString(
-      manifest.signerSha256,
-      'signerSha256',
-    ).toLowerCase(),
+    sha256,
+    signerSha256: requireSha256(manifest.signerSha256, 'signerSha256'),
     minSdk: requireInt(manifest.minSdk, 'minSdk'),
   };
 }

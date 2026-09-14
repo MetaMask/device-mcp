@@ -126,6 +126,31 @@ describe('loadHelperArtifact', () => {
     );
   });
 
+  it('rejects a corrupt (non-64-hex) signer digest', async () => {
+    // Reproduces the 0.4.0 build bug: a truncated/garbled pin that is a
+    // non-empty string but not a valid SHA-256.
+    wireFs(validManifest({ signerSha256: 'cefcaea256de' }));
+
+    await expect(loadHelperArtifact()).rejects.toThrow(
+      /signerSha256.*not a valid SHA-256/u,
+    );
+  });
+
+  it('rejects an uppercase-but-otherwise-valid signer digest gracefully', async () => {
+    // Uppercase is normalized, not rejected.
+    wireFs(
+      validManifest({
+        signerSha256:
+          '0554218930D76C296DC6099049CB1659180ACDD64AD59EE6E4B0548BCDD7641F',
+      }),
+    );
+
+    const artifact = await loadHelperArtifact();
+    expect(artifact.signerSha256).toBe(
+      '0554218930d76c296dc6099049cb1659180acdd64ad59ee6e4b0548bcdd7641f',
+    );
+  });
+
   it('rejects malformed JSON', async () => {
     mockReaddir.mockResolvedValue(asDirEntries([MANIFEST_NAME, APK_NAME]));
     mockReadFile.mockResolvedValue('{ not json');
