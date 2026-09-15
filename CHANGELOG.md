@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.1]
 
-### Uncategorized
+### Fixed
 
 - fix: emit valid signerSha256 in helper manifest across apksigner vers… ([#29](https://github.com/MetaMask/device-mcp/pull/29))
 
