@@ -862,6 +862,32 @@ describe('AdbBackend.webviewCdp', () => {
     expect(removeCall).toBeDefined();
   });
 
+  it('surfaces the sole-unowned-socket warning via stderr', async () => {
+    routeAdb({
+      sockets: '0000: x @webview_devtools_remote_999',
+      pids: '111 222',
+    });
+    mockRunWebViewCdp.mockResolvedValue({ ok: true, result: { value: 1 } });
+    const warnSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    const outcome = await backend.webviewCdp({
+      method: 'Runtime.evaluate',
+      timeoutMs: 5000,
+    });
+
+    expect(outcome).toStrictEqual({ ok: true, result: { value: 1 } });
+    const warned = warnSpy.mock.calls.some(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('webview_cdp:') &&
+        call[0].includes('111, 222'),
+    );
+    expect(warned).toBe(true);
+    warnSpy.mockRestore();
+  });
+
   it('removes the forward even when the CDP command throws', async () => {
     routeAdb({
       sockets: '0000: x @webview_devtools_remote_12595',

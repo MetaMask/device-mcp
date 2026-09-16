@@ -897,6 +897,9 @@ export class AdbBackend implements DeviceBackend {
         message: selection.message,
       };
     }
+    if (selection.warning) {
+      console.error(`webview_cdp: ${selection.warning}`);
+    }
 
     const localPort = await this.#allocateLocalPort();
     try {
