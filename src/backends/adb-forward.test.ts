@@ -119,6 +119,36 @@ describe('selectWebViewSocket', () => {
     expect((result as { warning?: string }).warning).toContain('111, 222');
   });
 
+  it('collapses duplicate socket names (listener + connection) to one', () => {
+    // /proc/net/unix lists the same abstract socket once per endpoint, so an
+    // active adb-forward connection makes the sole socket appear twice.
+    const result = selectWebViewSocket(
+      [
+        { name: 'webview_devtools_remote_12595', pid: 12595 },
+        { name: 'webview_devtools_remote_12595', pid: 12595 },
+      ],
+      [12595],
+    );
+    expect(result).toStrictEqual({
+      ok: true,
+      name: 'webview_devtools_remote_12595',
+    });
+  });
+
+  it('keeps the pid-bearing entry when a duplicate name lacks a pid', () => {
+    const result = selectWebViewSocket(
+      [
+        { name: 'webview_devtools_remote_777' },
+        { name: 'webview_devtools_remote_777', pid: 777 },
+      ],
+      [777],
+    );
+    expect(result).toStrictEqual({
+      ok: true,
+      name: 'webview_devtools_remote_777',
+    });
+  });
+
   it('is ambiguous when multiple sockets and none are owned', () => {
     const result = selectWebViewSocket(
       [

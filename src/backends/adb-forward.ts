@@ -128,14 +128,27 @@ export function selectWebViewSocket(
     };
   }
 
-  const owned = sockets.filter(
+  // /proc/net/unix lists a socket once per endpoint (the listener plus any
+  // active connection, e.g. our own adb forward), so the same name can appear
+  // multiple times. Collapse by name — keeping any entry that carries a pid —
+  // so duplicates are not mistaken for distinct, ambiguous candidates.
+  const byName = new Map<string, WebViewSocket>();
+  for (const socket of sockets) {
+    const existing = byName.get(socket.name);
+    if (!existing || (existing.pid === undefined && socket.pid !== undefined)) {
+      byName.set(socket.name, socket);
+    }
+  }
+  const unique = [...byName.values()];
+
+  const owned = unique.filter(
     (socket) => socket.pid !== undefined && appPids.includes(socket.pid),
   );
   if (owned.length === 1) {
     return { ok: true, name: owned[0].name };
   }
-  if (owned.length === 0 && sockets.length === 1) {
-    const sole = sockets[0];
+  if (owned.length === 0 && unique.length === 1) {
+    const sole = unique[0];
     // pidof did not tie this socket to the target app (the WebView renderer
     // runs in a child process that `pidof <package>` often does not list). We
     // still use the only socket, but surface the mismatch so a caller can audit
@@ -153,7 +166,7 @@ export function selectWebViewSocket(
     return { ok: true, name: sole.name };
   }
 
-  const candidates = (owned.length > 0 ? owned : sockets)
+  const candidates = (owned.length > 0 ? owned : unique)
     .map((socket) => socket.name)
     .join(', ');
   return {
