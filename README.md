@@ -160,10 +160,10 @@ The `.device-session` file is typically written by the test runner when it creat
 
 ### CDP (Hermes & WebView)
 
-| Tool             | Description                                                                                  |
-| ---------------- | -------------------------------------------------------------------------------------------- |
-| `hermes_cdp`     | Speak raw Chrome DevTools Protocol to the React Native Hermes JS runtime (no DOM).            |
-| `hermes_targets` | List and diagnose the debuggable Hermes targets exposed by Metro.                             |
+| Tool             | Description                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------- |
+| `hermes_cdp`     | Speak raw Chrome DevTools Protocol to the React Native Hermes JS runtime (no DOM).              |
+| `hermes_targets` | List and diagnose the debuggable Hermes targets exposed by Metro.                               |
 | `webview_cdp`    | Speak raw CDP to a debuggable in-app **Android WebView** — the DOM of the app's in-app browser. |
 
 ### Element Identification
@@ -335,9 +335,9 @@ Use it to click buttons, fill inputs, or read values on a web page rendered insi
 
 ### Tool
 
-| Tool          | Description                                                                                  |
-| ------------- | -------------------------------------------------------------------------------------------- |
-| `webview_cdp` | Speak raw CDP to a debuggable in-app Android WebView — the DOM of the app's in-app browser.   |
+| Tool          | Description                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| `webview_cdp` | Speak raw CDP to a debuggable in-app Android WebView — the DOM of the app's in-app browser. |
 
 Example: method `Runtime.evaluate` with params `{"expression":"document.querySelector('#submit').click()","returnByValue":true}`. Pass `urlFilter` to select a specific page when several WebViews are open.
 

@@ -194,9 +194,14 @@ export async function runWebViewCdp(
     return await executeCdpCommand(selection.target, input);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // Discovery aborts surface as AbortError; map them to the timeout code so
+    // callers can key retry logic off WEBVIEW_TIMEOUT on both paths.
+    const isTimeout =
+      (error instanceof Error && error.name === 'AbortError') ||
+      message.includes('timed out');
     return {
       ok: false,
-      code: WEBVIEW_CONNECTION_FAILED,
+      code: isTimeout ? WEBVIEW_TIMEOUT : WEBVIEW_CONNECTION_FAILED,
       message: `WebView CDP connection failed: ${message}`,
     };
   }
@@ -223,7 +228,9 @@ export async function fetchWebViewTargets(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(`http://localhost:${localPort}${path}`, {
+      // adb forward binds the host adb server's IPv4 loopback; use 127.0.0.1 so
+      // discovery does not resolve to ::1 first on IPv6-preferring hosts.
+      const response = await fetch(`http://127.0.0.1:${localPort}${path}`, {
         signal: controller.signal,
       });
       if (!response.ok) {

@@ -9,6 +9,12 @@ import {
   selectWebViewSocket,
 } from './adb-forward.js';
 
+function assertErr<Res extends { ok: boolean }>(
+  value: Res,
+): asserts value is Extract<Res, { ok: false }> {
+  expect(value.ok).toBe(false);
+}
+
 const PROC_NET_UNIX = `Num       RefCount Protocol Flags    Type St Inode Path
 0000000000000000: 00000002 00000000 00010000 0001 01 82669 @webview_devtools_remote_12595
 0000000000000000: 00000002 00000000 00010000 0001 01 12345 @some_other_socket
@@ -71,10 +77,8 @@ describe('resolvePackagePids', () => {
 describe('selectWebViewSocket', () => {
   it('fails with none when there are no sockets', () => {
     const result = selectWebViewSocket([], []);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe('none');
-    }
+    assertErr(result);
+    expect(result.reason).toBe('none');
   });
 
   it('uses the single socket when only one exists', () => {
@@ -102,6 +106,19 @@ describe('selectWebViewSocket', () => {
     });
   });
 
+  it('warns when the sole socket is not owned by known app pids', () => {
+    const result = selectWebViewSocket(
+      [{ name: 'webview_devtools_remote_999', pid: 999 }],
+      [111, 222],
+    );
+    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({
+      ok: true,
+      name: 'webview_devtools_remote_999',
+    });
+    expect((result as { warning?: string }).warning).toContain('111, 222');
+  });
+
   it('is ambiguous when multiple sockets and none are owned', () => {
     const result = selectWebViewSocket(
       [
@@ -110,11 +127,9 @@ describe('selectWebViewSocket', () => {
       ],
       [],
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe('ambiguous');
-      expect(result.message).toContain('webview_devtools_remote_111');
-    }
+    assertErr(result);
+    expect(result.reason).toBe('ambiguous');
+    expect(result.message).toContain('webview_devtools_remote_111');
   });
 
   it('is ambiguous when multiple app-owned sockets exist', () => {
@@ -125,10 +140,8 @@ describe('selectWebViewSocket', () => {
       ],
       [111, 222],
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe('ambiguous');
-    }
+    assertErr(result);
+    expect(result.reason).toBe('ambiguous');
   });
 });
 
@@ -151,6 +164,6 @@ describe('forwardWebViewSocket / removeWebViewForward', () => {
 
   it('swallows errors when removing the forward', async () => {
     const adb = vi.fn().mockRejectedValue(new Error('not found'));
-    await expect(removeWebViewForward(adb, 9333)).resolves.toBeUndefined();
+    expect(await removeWebViewForward(adb, 9333)).toBeUndefined();
   });
 });

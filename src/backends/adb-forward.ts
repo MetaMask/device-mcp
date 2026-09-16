@@ -47,12 +47,17 @@ export function parseWebViewSockets(procNetUnix: string): WebViewSocket[] {
     if (!token) {
       continue;
     }
-    const name = token.replace(/^[@\u0000]/u, '');
+    // Abstract-socket names appear prefixed with `@` (display form) or a NUL
+    // byte (raw form); strip either leading marker without a control-char regex.
+    const firstChar = token.charCodeAt(0);
+    const name =
+      firstChar === 0x40 || firstChar === 0x00 ? token.slice(1) : token;
     const match = name.match(SOCKET_NAME_PATTERN);
     if (!match) {
       continue;
     }
-    const pid = match[1] === undefined ? undefined : Number.parseInt(match[1], 10);
+    const pid =
+      match[1] === undefined ? undefined : Number.parseInt(match[1], 10);
     sockets.push(pid === undefined ? { name } : { name, pid });
   }
   return sockets;
@@ -111,7 +116,7 @@ export function selectWebViewSocket(
   sockets: WebViewSocket[],
   appPids: number[],
 ):
-  | { ok: true; name: string }
+  | { ok: true; name: string; warning?: string }
   | { ok: false; reason: 'none' | 'ambiguous'; message: string } {
   if (sockets.length === 0) {
     return {
@@ -130,7 +135,22 @@ export function selectWebViewSocket(
     return { ok: true, name: owned[0].name };
   }
   if (owned.length === 0 && sockets.length === 1) {
-    return { ok: true, name: sockets[0].name };
+    const sole = sockets[0];
+    // pidof did not tie this socket to the target app (the WebView renderer
+    // runs in a child process that `pidof <package>` often does not list). We
+    // still use the only socket, but surface the mismatch so a caller can audit
+    // that it belongs to the intended app rather than a different one.
+    if (appPids.length > 0) {
+      return {
+        ok: true,
+        name: sole.name,
+        warning:
+          `Using the only WebView socket (${sole.name}) but it is not owned by ` +
+          `the target app PIDs (${appPids.join(', ')}). Pass a urlFilter to ` +
+          `confirm the page belongs to the intended app.`,
+      };
+    }
+    return { ok: true, name: sole.name };
   }
 
   const candidates = (owned.length > 0 ? owned : sockets)

@@ -245,7 +245,13 @@ On **Android (adb)**, `WEBVIEW` appears in the list whenever a debuggable in-app
 Speak raw Chrome DevTools Protocol to the **web page inside an in-app Android WebView** — the DOM of the app's in-app browser. This is the tool for clicking buttons, filling inputs, or reading values on a web page rendered inside the app.
 
 ```json
-{ "method": "Runtime.evaluate", "params": { "expression": "document.querySelector('#personalSign').click()", "returnByValue": true } }
+{
+  "method": "Runtime.evaluate",
+  "params": {
+    "expression": "document.querySelector('#personalSign').click()",
+    "returnByValue": true
+  }
+}
 ```
 
 **vs. `hermes_cdp`:** `hermes_cdp` targets the React Native JS engine (no DOM). `webview_cdp` targets the Chromium page and exposes the full Chrome surface — `Runtime`, `DOM`, `Page`, `Network`, `Input`. Use `webview_cdp` for anything on the web page; use native `device_tap_element` for the app's native chrome (e.g. the MetaMask signature confirmation sheet).
@@ -259,6 +265,7 @@ Speak raw Chrome DevTools Protocol to the **web page inside an in-app Android We
 **Options:** pass `urlFilter` to disambiguate when several WebView pages are open (selects the page whose URL contains the substring). Blocked methods (for safety): `Browser.close`, `Target.closeTarget`, `Target.disposeBrowserContext`, `Browser.crashGpuProcess`.
 
 The result nests the evaluated value at `result.result.value` (standard CDP `Runtime.evaluate` shape).
+
 ## Element Identification — Platform Differences
 
 | Attribute      | iOS                                                 | Android                                    |

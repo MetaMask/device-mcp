@@ -264,9 +264,7 @@ export function createLazyBackend(
       return (await resolve()).getElementText(query);
     },
 
-    async webviewCdp(
-      input: WebViewCdpInput,
-    ): Promise<WebViewCdpOutcome> {
+    async webviewCdp(input: WebViewCdpInput): Promise<WebViewCdpOutcome> {
       const backend = await resolve();
       if (!backend.webviewCdp) {
         return {

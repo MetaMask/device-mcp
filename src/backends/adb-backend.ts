@@ -190,10 +190,8 @@ export class AdbBackend implements DeviceBackend {
   // tap that triggers a nested snapshot) do not race on the single helper.
   #captureQueue: Promise<unknown> = Promise.resolve();
 
-  // The context the caller last switched to via setContext. WebView contexts
-  // are named WEBVIEW_<package>; NATIVE_APP is the default.
-  #activeContext = 'NATIVE_APP';
-
+  // No stored WebView "active context": webviewCdp re-enumerates the live
+  // devtools sockets on every call, so there is no per-context state to keep.
   constructor(serial: string) {
     this.#serial = serial;
   }
@@ -856,9 +854,9 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async getContexts(): Promise<string[]> {
-    const sockets = await listWebViewSockets((args) => this.#adb(args)).catch(
-      () => [],
-    );
+    const sockets = await listWebViewSockets(async (args) =>
+      this.#adb(args),
+    ).catch(() => []);
     if (sockets.length === 0) {
       return ['NATIVE_APP'];
     }
@@ -867,7 +865,6 @@ export class AdbBackend implements DeviceBackend {
 
   async setContext(context: string): Promise<void> {
     if (context === 'NATIVE_APP' || context.startsWith('WEBVIEW')) {
-      this.#activeContext = context;
       return;
     }
     throw new Error(
@@ -886,7 +883,7 @@ export class AdbBackend implements DeviceBackend {
    * @returns The discriminated WebView CDP outcome.
    */
   async webviewCdp(input: WebViewCdpInput): Promise<WebViewCdpOutcome> {
-    const adb = (args: string[]): Promise<string> => this.#adb(args);
+    const adb = async (args: string[]): Promise<string> => this.#adb(args);
     const sockets = await listWebViewSockets(adb);
     const appPids = await resolvePackagePids(adb, this.#webviewPackage());
     const selection = selectWebViewSocket(sockets, appPids);
@@ -902,8 +899,8 @@ export class AdbBackend implements DeviceBackend {
     }
 
     const localPort = await this.#allocateLocalPort();
-    await forwardWebViewSocket(adb, localPort, selection.name);
     try {
+      await forwardWebViewSocket(adb, localPort, selection.name);
       return await runWebViewCdp({
         method: input.method,
         params: input.params,

@@ -12,8 +12,8 @@ import {
   assertInstalledHelperTrusted,
   ensureHelperInstalled,
 } from './android-instrumentation/installer.js';
-import { findElement } from '../utils/element.js';
 import * as webviewCdpModule from './webview-cdp.js';
+import { findElement } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
 
 vi.mock('node:fs/promises', () => ({
@@ -55,6 +55,12 @@ const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <node index="2" text="$0.00" resource-id="io.metamask:id/balance" class="android.widget.TextView" package="io.metamask" content-desc="" checkable="false" checked="false" clickable="false" enabled="false" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[200,300][600,360]" />
   </node>
 </hierarchy>`;
+
+function assertErr<Res extends { ok: boolean }>(
+  value: Res,
+): asserts value is Extract<Res, { ok: false }> {
+  expect(value.ok).toBe(false);
+}
 
 describe('parseAndroidHierarchy', () => {
   it('builds a tree with parent-child relationships', () => {
@@ -792,8 +798,8 @@ describe('AdbBackend WebView contexts', () => {
   });
 
   it('setContext accepts NATIVE_APP and WEBVIEW, rejects unknown', async () => {
-    await expect(backend.setContext('NATIVE_APP')).resolves.toBeUndefined();
-    await expect(backend.setContext('WEBVIEW')).resolves.toBeUndefined();
+    expect(await backend.setContext('NATIVE_APP')).toBeUndefined();
+    expect(await backend.setContext('WEBVIEW')).toBeUndefined();
     await expect(backend.setContext('bogus')).rejects.toThrow(
       'Unknown context',
     );
@@ -879,10 +885,8 @@ describe('AdbBackend.webviewCdp', () => {
       timeoutMs: 5000,
     });
 
-    expect(outcome.ok).toBe(false);
-    if (!outcome.ok) {
-      expect(outcome.code).toBe('WEBVIEW_SOCKET_NOT_FOUND');
-    }
+    assertErr(outcome);
+    expect(outcome.code).toBe('WEBVIEW_SOCKET_NOT_FOUND');
     expect(mockRunWebViewCdp).not.toHaveBeenCalled();
   });
 
@@ -898,9 +902,7 @@ describe('AdbBackend.webviewCdp', () => {
       timeoutMs: 5000,
     });
 
-    expect(outcome.ok).toBe(false);
-    if (!outcome.ok) {
-      expect(outcome.code).toBe('WEBVIEW_SOCKET_AMBIGUOUS');
-    }
+    assertErr(outcome);
+    expect(outcome.code).toBe('WEBVIEW_SOCKET_AMBIGUOUS');
   });
 });

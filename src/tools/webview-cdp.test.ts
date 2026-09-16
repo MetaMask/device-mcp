@@ -67,7 +67,10 @@ describe('registerWebViewCdpTool', () => {
     const server = createMockServer();
     registerWebViewCdpTool(server, createBackend({ webviewCdp }));
 
-    await getHandler(server)({ method: 'Runtime.evaluate', timeoutMs: 999_999 });
+    await getHandler(server)({
+      method: 'Runtime.evaluate',
+      timeoutMs: 999_999,
+    });
 
     expect(webviewCdp).toHaveBeenCalledWith(
       expect.objectContaining({ timeoutMs: 120_000 }),
