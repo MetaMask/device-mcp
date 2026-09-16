@@ -1,6 +1,6 @@
 # @metamask/device-mcp — Agent Reference
 
-You interact with a mobile device (iOS simulator, Android emulator, or BrowserStack remote device) through the `device-mcp` MCP server. It exposes 25 tools for device management, inspecting UI state, interacting with elements, capturing evidence, and controlling app lifecycle.
+You interact with a mobile device (iOS simulator, Android emulator, or BrowserStack remote device) through the `device-mcp` MCP server. It exposes tools for device management, inspecting UI state, interacting with elements, capturing evidence, and controlling app lifecycle. Two CDP escape hatches go beyond native UI automation: `hermes_cdp` (the React Native JS runtime) and `webview_cdp` (the DOM of a debuggable in-app Android WebView).
 
 ## When to Use This
 
@@ -227,6 +227,44 @@ Capture recent device logs with optional text filter.
 ```
 
 **When:** Investigating crashes, errors, or unexpected behavior. Collecting debugging evidence.
+**When:** Investigating crashes, errors, or unexpected behavior. Collecting debugging evidence.
+
+### device_context
+
+List or switch between app contexts. `action: "list"` returns the available contexts; `action: "switch"` changes the active one.
+
+```json
+{ "action": "list" }
+{ "action": "switch", "context": "WEBVIEW" }
+```
+
+On **Android (adb)**, `WEBVIEW` appears in the list whenever a debuggable in-app WebView is open. On iOS, WebView contexts require the Appium backend.
+
+### webview_cdp (Android only)
+
+Speak raw Chrome DevTools Protocol to the **web page inside an in-app Android WebView** — the DOM of the app's in-app browser. This is the tool for clicking buttons, filling inputs, or reading values on a web page rendered inside the app.
+
+```json
+{
+  "method": "Runtime.evaluate",
+  "params": {
+    "expression": "document.querySelector('#personalSign').click()",
+    "returnByValue": true
+  }
+}
+```
+
+**vs. `hermes_cdp`:** `hermes_cdp` targets the React Native JS engine (no DOM). `webview_cdp` targets the Chromium page and exposes the full Chrome surface — `Runtime`, `DOM`, `Page`, `Network`, `Input`. Use `webview_cdp` for anything on the web page; use native `device_tap_element` for the app's native chrome (e.g. the MetaMask signature confirmation sheet).
+
+**Prerequisites:**
+
+- **Android only.** The app must have called `WebView.setWebContentsDebuggingEnabled(true)` (debug builds usually do).
+- Node 20 must be launched with `NODE_OPTIONS="--experimental-websocket"` (Node 22+ works out of the box).
+- The tool forwards the WebView's debug socket over adb and cleans up the forward automatically after each call.
+
+**Options:** pass `urlFilter` to disambiguate when several WebView pages are open (selects the page whose URL contains the substring). Blocked methods (for safety): `Browser.close`, `Target.closeTarget`, `Target.disposeBrowserContext`, `Browser.crashGpuProcess`.
+
+The result nests the evaluated value at `result.result.value` (standard CDP `Runtime.evaluate` shape).
 
 ## Element Identification — Platform Differences
 
@@ -304,6 +342,22 @@ device_close_app { "bundleId": "io.metamask" }           # stop app
 device_press_button { "button": "home" }                 # go to home screen
 device_press_button { "button": "back" }                 # go back (Android)
 ```
+
+### Drive an in-app browser (Android WebView) + native confirm
+
+A dapp flow crosses two runtimes: the **web page** (WebView CDP) and the app's **native** confirmation UI (native tools). Example — a `personal_sign` on the MetaMask test dapp:
+
+```
+# 1. Web: click the dapp button (DOM)
+webview_cdp { "method": "Runtime.evaluate", "params": { "expression": "document.querySelector('#personalSign').click()" } }
+# 2. Native: the MetaMask signature sheet is a native RN screen, not web
+device_snapshot                                          # see the native sheet
+device_tap_element { "identifier": "confirm-button" }    # confirm the signature
+# 3. Web: read the result back off the page (DOM)
+webview_cdp { "method": "Runtime.evaluate", "params": { "expression": "document.querySelector('#personalSignResult').textContent", "returnByValue": true } }
+```
+
+Rule of thumb: **web page = `webview_cdp`; native app chrome = `device_*` tools.**
 
 ## Error Handling
 

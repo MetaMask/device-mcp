@@ -2,7 +2,16 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
 
+import {
+  forwardWebViewSocket,
+  listWebViewSockets,
+  removeWebViewForward,
+  resolvePackagePids,
+  selectWebViewSocket,
+} from './adb-forward.js';
 import { isUntrustedHelperError } from './android-instrumentation/errors.js';
 import {
   assertInstalledHelperTrusted,
@@ -27,7 +36,10 @@ import type {
   ElementQuery,
   UIElement,
   WindowSize,
+  WebViewCdpInput,
+  WebViewCdpOutcome,
 } from './types.js';
+import { runWebViewCdp } from './webview-cdp.js';
 import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
 import {
   findElement,
@@ -178,6 +190,8 @@ export class AdbBackend implements DeviceBackend {
   // tap that triggers a nested snapshot) do not race on the single helper.
   #captureQueue: Promise<unknown> = Promise.resolve();
 
+  // No stored WebView "active context": webviewCdp re-enumerates the live
+  // devtools sockets on every call, so there is no per-context state to keep.
   constructor(serial: string) {
     this.#serial = serial;
   }
@@ -840,16 +854,91 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async getContexts(): Promise<string[]> {
-    return ['NATIVE_APP'];
+    const sockets = await listWebViewSockets(async (args) =>
+      this.#adb(args),
+    ).catch(() => []);
+    if (sockets.length === 0) {
+      return ['NATIVE_APP'];
+    }
+    return ['NATIVE_APP', 'WEBVIEW'];
   }
 
   async setContext(context: string): Promise<void> {
-    if (context === 'NATIVE_APP') {
+    if (context === 'NATIVE_APP' || context.startsWith('WEBVIEW')) {
       return;
     }
     throw new Error(
-      'Context switching requires Appium backend. ADB only supports NATIVE_APP.',
+      `Unknown context "${context}". ADB supports NATIVE_APP and WEBVIEW.`,
     );
+  }
+
+  /**
+   * Runs a Chrome DevTools Protocol command against a debuggable in-app
+   * WebView. Enumerates the WebView devtools socket, forwards it to an
+   * ephemeral local TCP port, runs the command, and always removes the forward
+   * afterwards. Independent of the Hermes/Metro CDP path.
+   *
+   * @param input - The CDP method, params, timeout, and optional page url
+   * filter.
+   * @returns The discriminated WebView CDP outcome.
+   */
+  async webviewCdp(input: WebViewCdpInput): Promise<WebViewCdpOutcome> {
+    const adb = async (args: string[]): Promise<string> => this.#adb(args);
+    const sockets = await listWebViewSockets(adb);
+    const appPids = await resolvePackagePids(adb, this.#webviewPackage());
+    const selection = selectWebViewSocket(sockets, appPids);
+    if (!selection.ok) {
+      return {
+        ok: false,
+        code:
+          selection.reason === 'none'
+            ? 'WEBVIEW_SOCKET_NOT_FOUND'
+            : 'WEBVIEW_SOCKET_AMBIGUOUS',
+        message: selection.message,
+      };
+    }
+    if (selection.warning) {
+      console.error(`webview_cdp: ${selection.warning}`);
+    }
+
+    const localPort = await this.#allocateLocalPort();
+    try {
+      await forwardWebViewSocket(adb, localPort, selection.name);
+      return await runWebViewCdp({
+        method: input.method,
+        params: input.params,
+        timeoutMs: input.timeoutMs,
+        localPort,
+        urlFilter: input.urlFilter,
+      });
+    } finally {
+      await removeWebViewForward(adb, localPort);
+    }
+  }
+
+  /**
+   * Resolves the app package used to disambiguate WebView renderer sockets.
+   *
+   * @returns The configured WebView package name.
+   */
+  #webviewPackage(): string {
+    return process.env.DEVICE_MCP_WEBVIEW_PACKAGE?.trim() || 'io.metamask';
+  }
+
+  /**
+   * Reserves a free ephemeral local TCP port for an `adb forward`.
+   *
+   * @returns A currently-free local port number.
+   */
+  async #allocateLocalPort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const server = createServer();
+      server.on('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        const { port } = server.address() as AddressInfo;
+        server.close(() => resolve(port));
+      });
+    });
   }
 
   async getClipboard(): Promise<string> {

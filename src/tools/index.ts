@@ -26,3 +26,4 @@ export { registerListDevicesTool } from './list-devices.js';
 export { registerSelectDeviceTool } from './select-device.js';
 export { registerHermesCdpTool } from './hermes-cdp.js';
 export { registerHermesTargetsTool } from './hermes-targets.js';
+export { registerWebViewCdpTool } from './webview-cdp.js';

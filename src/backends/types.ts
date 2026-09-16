@@ -89,6 +89,17 @@ export type WindowSize = {
   height: number;
 };
 
+export type WebViewCdpInput = {
+  method: string;
+  params?: Record<string, unknown>;
+  timeoutMs: number;
+  urlFilter?: string;
+};
+
+export type WebViewCdpOutcome =
+  | { ok: true; result: unknown }
+  | { ok: false; code: string; message: string };
+
 export type DeviceBackend = {
   readonly kind: BackendKind;
 
@@ -159,6 +170,8 @@ export type DeviceBackend = {
   getContexts(): Promise<string[]>;
 
   setContext(context: string): Promise<void>;
+
+  webviewCdp?(input: WebViewCdpInput): Promise<WebViewCdpOutcome>;
 
   getClipboard(): Promise<string>;
 

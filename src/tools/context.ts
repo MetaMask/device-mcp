@@ -13,9 +13,11 @@ export function registerContextTool(
     {
       title: 'Context',
       description:
-        'List or switch between app contexts (NATIVE_APP, WEBVIEW_*, etc.). ' +
+        'List or switch between app contexts (NATIVE_APP, WEBVIEW, etc.). ' +
         'Use action=list to see available contexts, action=switch to change. ' +
-        'WebView context switching requires the Appium backend.',
+        'On Android (adb), WEBVIEW appears when a debuggable in-app WebView is ' +
+        'open; use webview_cdp to drive its DOM. On iOS, WebView contexts ' +
+        'require the Appium backend.',
       inputSchema: {
         action: z
           .enum(['list', 'switch'])

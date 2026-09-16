@@ -158,12 +158,13 @@ The `.device-session` file is typically written by the test runner when it creat
 | `device_dismiss_keyboard` | Hide the on-screen keyboard after typing.              |
 | `device_dismiss_alert`    | Accept or dismiss a system alert or permission dialog. |
 
-### Hermes CDP
+### CDP (Hermes & WebView)
 
-| Tool             | Description                                                               |
-| ---------------- | ------------------------------------------------------------------------- |
-| `hermes_cdp`     | Speak raw Chrome DevTools Protocol to the React Native Hermes JS runtime. |
-| `hermes_targets` | List and diagnose the debuggable Hermes targets exposed by Metro.         |
+| Tool             | Description                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------- |
+| `hermes_cdp`     | Speak raw Chrome DevTools Protocol to the React Native Hermes JS runtime (no DOM).              |
+| `hermes_targets` | List and diagnose the debuggable Hermes targets exposed by Metro.                               |
+| `webview_cdp`    | Speak raw CDP to a debuggable in-app **Android WebView** — the DOM of the app's in-app browser. |
 
 ### Element Identification
 
@@ -288,7 +289,7 @@ runtime trust anchor.
 
 Beyond native UI automation (idb/adb), the server can speak [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/) (CDP) directly to the **React Native Hermes** JS runtime of a running app via Metro's inspector proxy. This lets an agent evaluate JavaScript, inspect runtime state, and diagnose the app's JS layer — complementing the native tools. Works on **both iOS and Android** (the transport is identical HTTP/WebSocket to Metro; only the default `appId` differs).
 
-This is _React Native Hermes CDP via Metro's inspector proxy_ — not WebView/browser CDP, and not the iOS WebKit Inspector Protocol. The app's Hermes runtime connects out to Metro; Metro exposes debuggable targets over `http://localhost:<metroPort>/json` and a per-target `webSocketDebuggerUrl`, and the server speaks real CDP over that WebSocket.
+This is _React Native Hermes CDP via Metro's inspector proxy_ — the app's Hermes runtime connects out to Metro; Metro exposes debuggable targets over `http://localhost:<metroPort>/json` and a per-target `webSocketDebuggerUrl`, and the server speaks real CDP over that WebSocket. It targets the **React Native JS engine** (no DOM). To drive the DOM of a web page inside an in-app WebView, use the separate [`webview_cdp`](#webview-cdp-android) tool instead — and note this is not the iOS WebKit Inspector Protocol.
 
 ### Prerequisites
 
@@ -320,6 +321,35 @@ The synthetic legacy page (`React Native Experimental (Improved Chrome Reloads)`
 
 - **appId** defaults to `io.metamask.MetaMask` (iOS) / `io.metamask` (Android). Override globally via the `HERMES_APP_ID` env var or per-call via the tool's `appId` param. Android users not on the default must pass `appId` or set `HERMES_APP_ID`; `hermes_targets` with `all: true` aids discovery of the real appId.
 - **Metro port** defaults to `8081`. Override via the `HERMES_METRO_PORT` env var or per-call via the tool's `metroPort` param.
+
+## WebView CDP (Android)
+
+Separately from Hermes, the server can speak CDP to a **debuggable in-app Android `WebView`** — the Chromium web page inside an app's in-app browser. Where `hermes_cdp` reaches the React Native JS engine (no DOM), `webview_cdp` reaches the page's DOM and exposes the full Chrome surface: `Runtime`, `DOM`, `Page`, `Network`, `Input`.
+
+Use it to click buttons, fill inputs, or read values on a web page rendered inside the app. For the app's **native** UI (e.g. a MetaMask signature confirmation sheet), use the native `device_*` tools — a typical dapp flow alternates between the two.
+
+### Prerequisites
+
+- **Android only.** The app must have called `WebView.setWebContentsDebuggingEnabled(true)` (debug builds usually do). The socket appears as `webview_devtools_remote_<pid>`.
+- The global `WebSocket` API: **Node 22+ works out of the box**; **Node 20 requires `NODE_OPTIONS="--experimental-websocket"`**.
+
+### Tool
+
+| Tool          | Description                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| `webview_cdp` | Speak raw CDP to a debuggable in-app Android WebView — the DOM of the app's in-app browser. |
+
+Example: method `Runtime.evaluate` with params `{"expression":"document.querySelector('#submit').click()","returnByValue":true}`. Pass `urlFilter` to select a specific page when several WebViews are open.
+
+### How it works
+
+The server enumerates the WebView's abstract debug socket from `/proc/net/unix`, forwards it to an ephemeral local TCP port with `adb forward`, discovers the page target via `http://localhost:<port>/json/list`, speaks CDP over the page's `webSocketDebuggerUrl`, and **removes the forward automatically** after the call. When a debuggable WebView is open, `device_context` also lists a `WEBVIEW` context.
+
+### Safety model
+
+- **Loopback-only WebSocket** — protocol must be `ws:`, hostname must be loopback, port must equal the forwarded local port.
+- **Blocked destructive methods** — `Browser.close`, `Target.closeTarget`, `Target.disposeBrowserContext`, `Browser.crashGpuProcess`.
+- **Socket disambiguation** — when multiple WebView sockets exist, the app's PID selects the right one; a genuinely ambiguous match fails closed rather than guessing.
 
 ## File Output & Safety
 
@@ -402,7 +432,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 @metamask/device-mcp
 ├── src/
 │   ├── index.ts                # Entry point — lazy backend, stdio MCP server
-│   ├── server.ts               # MCP server — registers 28 tools
+│   ├── server.ts               # MCP server — registers 29 tools
 │   ├── backends/
 │   │   ├── types.ts            # DeviceBackend interface
 │   │   ├── idb-backend.ts      # iOS local — IDB commands + simctl fallback
