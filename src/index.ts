@@ -21,6 +21,8 @@ export type {
   AppStateResult,
   Platform,
   WindowSize,
+  WebViewCdpInput,
+  WebViewCdpOutcome,
 } from './backends/types.js';
 
 export type { SessionConfig } from './backends/session-file.js';
@@ -38,6 +40,18 @@ export type {
   HermesCdpResult,
   RunHermesCdpInput,
 } from './hermes/hermes-cdp.js';
+
+export {
+  runWebViewCdp,
+  fetchWebViewTargets,
+  selectWebViewTarget,
+  validateWebViewWebSocketUrl,
+} from './backends/webview-cdp.js';
+export type {
+  WebViewTarget,
+  WebViewCdpResult,
+  RunWebViewCdpInput,
+} from './backends/webview-cdp.js';
 
 export {
   HermesSession,

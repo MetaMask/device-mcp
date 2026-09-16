@@ -30,6 +30,7 @@ import {
   registerSelectDeviceTool,
   registerHermesCdpTool,
   registerHermesTargetsTool,
+  registerWebViewCdpTool,
 } from './tools/index.js';
 
 export function createMcpServer(backend: LazyDeviceBackend): McpServer {
@@ -79,6 +80,7 @@ export function createMcpServer(backend: LazyDeviceBackend): McpServer {
   registerSelectDeviceTool(server, backend);
   registerHermesCdpTool(server, backend);
   registerHermesTargetsTool(server, backend);
+  registerWebViewCdpTool(server, backend);
 
   return server;
 }

@@ -13,6 +13,7 @@ import {
   ensureHelperInstalled,
 } from './android-instrumentation/installer.js';
 import { findElement } from '../utils/element.js';
+import * as webviewCdpModule from './webview-cdp.js';
 import * as execModule from '../utils/exec.js';
 
 vi.mock('node:fs/promises', () => ({
@@ -32,6 +33,10 @@ vi.mock('./android-instrumentation/installer.js', () => ({
   INSTRUMENTATION_NOT_FOUND_SIGNATURE: 'INSTRUMENTATION_FAILED',
 }));
 
+vi.mock('./webview-cdp.js', () => ({
+  runWebViewCdp: vi.fn(),
+}));
+
 const mockExecStrict = vi.mocked(execModule.execStrict);
 const mockExec = vi.mocked(execModule.exec);
 const mockReadFile = vi.mocked(readFile);
@@ -40,6 +45,7 @@ const mockAssertInstalledHelperTrusted = vi.mocked(
   assertInstalledHelperTrusted,
 );
 const mockReaddir = vi.mocked(readdir);
+const mockRunWebViewCdp = vi.mocked(webviewCdpModule.runWebViewCdp);
 
 const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <hierarchy rotation="0">
@@ -754,5 +760,147 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
     await expect(backend.snapshot()).rejects.toBeInstanceOf(
       UntrustedHelperError,
     );
+  });
+});
+
+describe('AdbBackend WebView contexts', () => {
+  let backend: AdbBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    backend = new AdbBackend('emulator-5554');
+  });
+
+  afterEach(() => {
+    mockExecStrict.mockReset();
+    mockRunWebViewCdp.mockReset();
+  });
+
+  it('getContexts reports only NATIVE_APP when no webview socket exists', async () => {
+    mockExecStrict.mockResolvedValue('Num RefCount ... @some_other_socket');
+    expect(await backend.getContexts()).toStrictEqual(['NATIVE_APP']);
+  });
+
+  it('getContexts reports WEBVIEW when a webview socket exists', async () => {
+    mockExecStrict.mockResolvedValue(
+      '0000: 00 00 00 0001 01 1 @webview_devtools_remote_12595',
+    );
+    expect(await backend.getContexts()).toStrictEqual([
+      'NATIVE_APP',
+      'WEBVIEW',
+    ]);
+  });
+
+  it('setContext accepts NATIVE_APP and WEBVIEW, rejects unknown', async () => {
+    await expect(backend.setContext('NATIVE_APP')).resolves.toBeUndefined();
+    await expect(backend.setContext('WEBVIEW')).resolves.toBeUndefined();
+    await expect(backend.setContext('bogus')).rejects.toThrow(
+      'Unknown context',
+    );
+  });
+});
+
+describe('AdbBackend.webviewCdp', () => {
+  let backend: AdbBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    backend = new AdbBackend('emulator-5554');
+  });
+
+  afterEach(() => {
+    mockExecStrict.mockReset();
+    mockRunWebViewCdp.mockReset();
+  });
+
+  /**
+   * Route the adb runner: return the socket dump for cat /proc/net/unix,
+   * pids for pidof, and empty for forward create/remove.
+   *
+   * @param options - Stub configuration.
+   * @param options.sockets - The /proc/net/unix payload to return.
+   * @param options.pids - The pidof output to return.
+   */
+  function routeAdb(options: { sockets: string; pids: string }): void {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('/proc/net/unix')) {
+        return options.sockets;
+      }
+      if (args?.includes('pidof')) {
+        return options.pids;
+      }
+      return '';
+    });
+  }
+
+  it('forwards, runs the CDP command, and removes the forward', async () => {
+    routeAdb({
+      sockets: '0000: x @webview_devtools_remote_12595',
+      pids: '12595',
+    });
+    mockRunWebViewCdp.mockResolvedValue({ ok: true, result: { value: 1 } });
+
+    const outcome = await backend.webviewCdp({
+      method: 'Runtime.evaluate',
+      timeoutMs: 5000,
+    });
+
+    expect(outcome).toStrictEqual({ ok: true, result: { value: 1 } });
+    const forwardCall = mockExecStrict.mock.calls.find((call) =>
+      call[1]?.includes('localabstract:webview_devtools_remote_12595'),
+    );
+    expect(forwardCall).toBeDefined();
+    const removeCall = mockExecStrict.mock.calls.find((call) =>
+      call[1]?.includes('--remove'),
+    );
+    expect(removeCall).toBeDefined();
+  });
+
+  it('removes the forward even when the CDP command throws', async () => {
+    routeAdb({
+      sockets: '0000: x @webview_devtools_remote_12595',
+      pids: '12595',
+    });
+    mockRunWebViewCdp.mockRejectedValue(new Error('ws boom'));
+
+    await expect(
+      backend.webviewCdp({ method: 'Runtime.evaluate', timeoutMs: 5000 }),
+    ).rejects.toThrow('ws boom');
+    expect(
+      mockExecStrict.mock.calls.some((call) => call[1]?.includes('--remove')),
+    ).toBe(true);
+  });
+
+  it('returns WEBVIEW_SOCKET_NOT_FOUND when no socket is published', async () => {
+    routeAdb({ sockets: '0000: x @other_socket', pids: '' });
+
+    const outcome = await backend.webviewCdp({
+      method: 'Runtime.evaluate',
+      timeoutMs: 5000,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.code).toBe('WEBVIEW_SOCKET_NOT_FOUND');
+    }
+    expect(mockRunWebViewCdp).not.toHaveBeenCalled();
+  });
+
+  it('returns WEBVIEW_SOCKET_AMBIGUOUS for multiple unowned sockets', async () => {
+    routeAdb({
+      sockets:
+        '0000: x @webview_devtools_remote_111\n0001: y @webview_devtools_remote_222',
+      pids: '',
+    });
+
+    const outcome = await backend.webviewCdp({
+      method: 'Runtime.evaluate',
+      timeoutMs: 5000,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.code).toBe('WEBVIEW_SOCKET_AMBIGUOUS');
+    }
   });
 });

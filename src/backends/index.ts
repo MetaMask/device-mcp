@@ -18,6 +18,8 @@ import type {
   UIElement,
   Platform,
   WindowSize,
+  WebViewCdpInput,
+  WebViewCdpOutcome,
 } from './types.js';
 import {
   detectPlatform,
@@ -260,6 +262,20 @@ export function createLazyBackend(
 
     async getElementText(query: ElementQuery): Promise<string> {
       return (await resolve()).getElementText(query);
+    },
+
+    async webviewCdp(
+      input: WebViewCdpInput,
+    ): Promise<WebViewCdpOutcome> {
+      const backend = await resolve();
+      if (!backend.webviewCdp) {
+        return {
+          ok: false,
+          code: 'WEBVIEW_NOT_SUPPORTED',
+          message: `WebView CDP is not supported on the ${backend.kind} backend.`,
+        };
+      }
+      return backend.webviewCdp(input);
     },
   };
 }
