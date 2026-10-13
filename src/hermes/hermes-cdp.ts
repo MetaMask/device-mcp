@@ -11,9 +11,10 @@
  * Mechanism: the React Native Hermes runtime connects out to Metro's inspector
  * proxy; Metro exposes debuggable targets over `http://localhost:<metroPort>/json`
  * and a per-target `webSocketDebuggerUrl`. We speak real CDP over that WebSocket
- * using the GLOBAL `WebSocket` (no library) and the global `fetch` for discovery.
+ * using Node's global `WebSocket` with an Origin header and the global `fetch`
+ * for discovery.
  *
- * Five fail-closed safety checks are preserved VERBATIM from the reference:
+ * Five fail-closed safety checks are preserved from the reference:
  *   1. Strict `appId` match (`===`, no substring, no `targets[0]` fallback).
  *   2. `HermesInternal.getRuntimeProperties()` identity probe before the user method.
  *   3. Device pin on `reactNative.logicalDeviceId` (set on first success).
@@ -85,6 +86,8 @@ export type RunHermesCdpInput = {
   timeoutMs: number;
   /** The resolved Metro inspector proxy port. */
   metroPort: number;
+  /** Override the HTTP(S) Origin for Metro's debugger WebSocket handshake. */
+  origin?: string;
   /** The expected app bundle identifier (strict-matched against targets). */
   appId: string;
   /** The pinned `logicalDeviceId` for this session, if one has been set. */
@@ -447,8 +450,8 @@ export function hasAmbiguousTarget(candidates: HermesTarget[]): boolean {
 /**
  * Validates a target's `webSocketDebuggerUrl` before connecting. The protocol
  * must be `ws:`, the hostname must be loopback (`localhost`, `127.0.0.1`, `::1`,
- * or `[::1]`), and the port must equal the resolved Metro port. Ported VERBATIM
- * from the reference.
+ * or `[::1]`), and the port must equal the resolved Metro port (including the
+ * default ws port 80 when the URL omits it).
  *
  * @param rawUrl - The candidate `webSocketDebuggerUrl`.
  * @param expectedPort - The resolved Metro port the URL must point at.
@@ -478,14 +481,59 @@ export function validateWebSocketUrl(
   if (!ALLOWED_HOSTNAMES.has(parsed.hostname)) {
     return { ok: false, message: `Unexpected hostname '${parsed.hostname}'` };
   }
-  if (Number(parsed.port) !== expectedPort) {
+  const targetPort = Number(parsed.port || 80);
+  if (targetPort !== expectedPort) {
     return {
       ok: false,
-      message: `Port mismatch: target=${parsed.port} expected=${expectedPort}`,
+      message: `Port mismatch: target=${targetPort} expected=${expectedPort}`,
     };
   }
 
   return { ok: true };
+}
+
+/**
+ * Resolves the debugger Origin independently of the connection address. Expo
+ * normalizes its default localhost server base URL to 127.0.0.1 and requires
+ * the Origin host (including port) to match it. An explicit override supports
+ * servers using a custom REACT_NATIVE_PACKAGER_HOSTNAME or proxy base URL.
+ *
+ * @param webSocketUrl - The target's WebSocket URL.
+ * @param override - An explicit HTTP(S) origin, if configured.
+ * @returns The HTTP(S) origin to send in the handshake.
+ */
+function resolveWebSocketOrigin(
+  webSocketUrl: string,
+  override: string | undefined,
+): string {
+  if (override !== undefined) {
+    const validationMessage =
+      'Hermes CDP origin must be an HTTP(S) origin without credentials, path, query, or fragment';
+    let origin: URL;
+    try {
+      origin = new URL(override);
+    } catch {
+      throw new Error(validationMessage);
+    }
+    if (
+      !['http:', 'https:'].includes(origin.protocol) ||
+      origin.username ||
+      origin.password ||
+      origin.pathname !== '/' ||
+      origin.search ||
+      origin.hash
+    ) {
+      throw new Error(validationMessage);
+    }
+    return origin.origin;
+  }
+
+  const origin = new URL(webSocketUrl);
+  origin.protocol = origin.protocol === 'wss:' ? 'https:' : 'http:';
+  if (ALLOWED_HOSTNAMES.has(origin.hostname)) {
+    origin.hostname = '127.0.0.1';
+  }
+  return origin.origin;
 }
 
 /**
@@ -523,7 +571,15 @@ export async function executeVerifiedCdpCommand(
     };
   }
 
-  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  // Node's WebSocket supports this headers overload on Node 20 (with the
+  // experimental flag), 22, and 24. The DOM typings omit the Node extension.
+  const WebSocketWithHeaders = WebSocket as typeof WebSocket &
+    (new (url: string, options: { headers: { origin: string } }) => WebSocket);
+  const socket = new WebSocketWithHeaders(target.webSocketDebuggerUrl, {
+    headers: {
+      origin: resolveWebSocketOrigin(target.webSocketDebuggerUrl, input.origin),
+    },
+  });
   let nextId = 1;
 
   try {

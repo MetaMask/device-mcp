@@ -7,7 +7,7 @@
  * idb/adb/Appium UI automation backends, and it stores no live connection
  * (the MVP opens a fresh WebSocket per tool call).
  *
- * Resolution precedence for both port and appId is exactly:
+ * Resolution precedence for port, appId, and the optional debugger Origin is:
  *   per-call param > environment variable > default.
  */
 
@@ -65,6 +65,8 @@ function parseEnvPort(value: string | undefined): number | undefined {
 export type HermesSessionResolveInput = {
   /** Override the Metro inspector proxy port for this call. */
   metroPort?: number;
+  /** Override the debugger WebSocket Origin for this call. */
+  origin?: string;
   /** Override the expected app bundle ID for this call. */
   appId?: string;
   /**
@@ -83,6 +85,8 @@ export type HermesSessionResolveInput = {
 export type HermesSessionResolved = {
   /** The resolved Metro inspector proxy port. */
   metroPort: number;
+  /** Explicit debugger Origin, or undefined to derive it from the target URL. */
+  origin: string | undefined;
   /** The resolved expected app bundle ID. */
   appId: string;
   /** The pinned Hermes `logicalDeviceId`, if one has been set. */
@@ -114,6 +118,8 @@ export type HermesSessionOptions = {
 export class HermesSession {
   readonly #metroPort: number;
 
+  readonly #origin: string | undefined;
+
   readonly #expectedAppId: string;
 
   /**
@@ -132,6 +138,7 @@ export class HermesSession {
     const env = options.env ?? process.env;
 
     this.#metroPort = parseEnvPort(env.HERMES_METRO_PORT) ?? DEFAULT_METRO_PORT;
+    this.#origin = env.HERMES_CDP_ORIGIN;
 
     this.#appIdFromEnv = env.HERMES_APP_ID !== undefined;
     this.#expectedAppId =
@@ -204,12 +211,13 @@ export class HermesSession {
    * a per-call `platform` recompute it — without mutating stored state. When no
    * `platform` is passed this preserves the original iOS-default behavior.
    *
-   * @param input - Optional per-call overrides for port, appId, and platform.
-   * @returns The effective `{ metroPort, appId, pinnedDeviceId }`.
+   * @param input - Optional per-call overrides for port, Origin, appId, and platform.
+   * @returns The effective `{ metroPort, origin, appId, pinnedDeviceId }`.
    */
   resolve(input: HermesSessionResolveInput = {}): HermesSessionResolved {
     return {
       metroPort: input.metroPort ?? this.#metroPort,
+      origin: input.origin ?? this.#origin,
       appId: input.appId ?? this.#resolveAppId(input.platform),
       pinnedDeviceId: this.#pinnedDeviceId,
     };

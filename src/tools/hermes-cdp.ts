@@ -64,17 +64,24 @@ export function registerHermesCdpTool(
           .number()
           .optional()
           .describe('Override the Metro inspector proxy port for this call.'),
+        origin: z
+          .string()
+          .optional()
+          .describe(
+            'Override the debugger WebSocket HTTP(S) Origin to match a custom Metro server base URL (default: http://127.0.0.1:<metroPort>).',
+          ),
         appId: z
           .string()
           .optional()
           .describe('Override the expected app bundle identifier.'),
       },
     },
-    async ({ method, params, timeoutMs, metroPort, appId }) => {
+    async ({ method, params, timeoutMs, metroPort, origin, appId }) => {
       try {
         const session = getHermesSession();
         const resolved = session.resolve({
           metroPort,
+          origin,
           appId,
           platform: backend.platform,
         });
@@ -88,6 +95,7 @@ export function registerHermesCdpTool(
           params,
           timeoutMs: clampedTimeoutMs,
           metroPort: resolved.metroPort,
+          origin: resolved.origin,
           appId: resolved.appId,
           pinnedDeviceId: resolved.pinnedDeviceId,
           onPin: (id) => {
