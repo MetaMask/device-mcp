@@ -1,0 +1,21 @@
+src/hermes/hermes-cdp.integration.test.ts
+  s_b0e4b0ed62eebd::t_1dee9cd80f49f6 3,5,7-10,12,14-16,23-24,31,35-43,48,51-59,61-68,72-79,82,84-90,93-100,103-113,116-120
+src/hermes/hermes-cdp.test.ts
+  s_b0e4b0ed62eebd::t_1dee9cd80f49f6 243-244
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aac9ede75837ffb765de67fc2249df1b9d218a14",
+  "prompts": {},
+  "sessions": {
+    "s_b0e4b0ed62eebd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ec98fd3a4ffeT70CEeOS4IWgwj",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
