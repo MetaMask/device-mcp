@@ -1,0 +1,57 @@
+README.md
+  s_b0e4b0ed62eebd::t_926665c865f7ed 324
+src/tools/hermes-cdp.test.ts
+  s_b0e4b0ed62eebd::t_ee714747eda53e 28,232,241,246-263
+src/hermes/hermes-cdp.integration.test.ts
+  s_b0e4b0ed62eebd::t_ec1910d7fc1659 270-278,284-286,288-289,311,328
+  s_b0e4b0ed62eebd::t_c4c8db381a6420 54-56,59,67,147,165-179,187,238,246-249,266,287,301-303,305,319,321,332,335,352-353,372-374
+  s_b0e4b0ed62eebd::t_aa77dec9ab20b2 1,23,84-86,110-112,208-211,250-252,297-300,310,312,327,329,368-371
+  s_b0e4b0ed62eebd::t_f2a01b7519f7a8 57-58,60-61,143-146,148,157-159,162,180-183,191,227,230-232,235,237
+  s_b0e4b0ed62eebd::t_a8154bda0289c9 62,65-66,149-156
+  s_b0e4b0ed62eebd::t_827cac4665dc92 239-242,280-283
+  s_b0e4b0ed62eebd::t_a07f0e35859239 224-226,291,308,324,338,356
+  s_b0e4b0ed62eebd::t_f1636e597a60a9 36,164
+  s_b0e4b0ed62eebd::t_ee714747eda53e 2-22,24-35,37-53,63-64,68-83,87-109,113-142,160-161,163,184-186,188-190,192-207,212-221,228-229,233-234,236,243-245,253-265,267-269,279,290,292-296,304,306-307,309,313-318,320,322-323,325-326,330-331,333-334,336-337,339-351,354-355,357-367,375-376
+  s_b0e4b0ed62eebd::t_a7d9ad15170c1d 222-223
+src/hermes/session.ts
+  s_b0e4b0ed62eebd::t_f1636e597a60a9 10,214-215
+  s_b0e4b0ed62eebd::t_58a6ca0aa7e3c9 68-69,88-89,121-122,141,220
+src/tools/hermes-cdp.ts
+  s_b0e4b0ed62eebd::t_58a6ca0aa7e3c9 67-72,79,84,98
+src/hermes/hermes-cdp.test.ts
+  s_b0e4b0ed62eebd::t_22c0cbb70b2981 241-244
+  s_b0e4b0ed62eebd::t_926665c865f7ed 260,267-269,1034-1043
+  s_b0e4b0ed62eebd::t_ec1910d7fc1659 1144
+  s_b0e4b0ed62eebd::t_aa77dec9ab20b2 50,56,250,261-266,270-272,1153
+  s_b0e4b0ed62eebd::t_ee714747eda53e 51,59,240,245-249,251-259,1145-1152,1154
+  s_b0e4b0ed62eebd::t_5c88bd1548bbd6 273
+  s_b0e4b0ed62eebd::t_af2c198ad92d4d 1155
+src/hermes/hermes-cdp.ts
+  s_b0e4b0ed62eebd::t_926665c865f7ed 484-485,488,510-517,526
+  s_b0e4b0ed62eebd::t_ec1910d7fc1659 17,453-454
+  s_b0e4b0ed62eebd::t_aa77dec9ab20b2 576-577,580
+  s_b0e4b0ed62eebd::t_58a6ca0aa7e3c9 14-15,89-90,496-509,518-525,527-538,574-575,578-579,581-582
+  s_b0e4b0ed62eebd::t_d4ad4d6e3cbe21 495
+src/hermes/session.test.ts
+  s_b0e4b0ed62eebd::t_926665c865f7ed 140-145
+  s_b0e4b0ed62eebd::t_aa77dec9ab20b2 151-153
+  s_b0e4b0ed62eebd::t_ee714747eda53e 135-139,146-150,154-157,192
+CHANGELOG.md
+  s_b0e4b0ed62eebd::t_58a6ca0aa7e3c9 10-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "08424679f57e747d66ecfdb8876bbe5e0f2d7780",
+  "prompts": {},
+  "sessions": {
+    "s_b0e4b0ed62eebd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ec98fd3a4ffeT70CEeOS4IWgwj",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
