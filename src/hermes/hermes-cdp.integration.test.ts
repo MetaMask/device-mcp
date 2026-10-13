@@ -33,11 +33,8 @@ async function startInspector(
   const origins: (string | undefined)[] = [];
   const requests: CdpRequest[] = [];
   const connections = new Set<Socket>();
+  const socketClosures: Promise<void>[] = [];
   let port = 0;
-  let resolveClosed: () => void;
-  const closed = new Promise<void>((resolve) => {
-    resolveClosed = resolve;
-  });
   const server = createServer((_request, response) => {
     response.setHeader('Content-Type', 'application/json');
     response.end(
@@ -67,7 +64,9 @@ async function startInspector(
   ipv6Server.on('connection', trackConnection);
   server.on('upgrade', (request, socket) => {
     origins.push(request.headers.origin);
-    socket.on('close', () => resolveClosed());
+    socketClosures.push(
+      new Promise<void>((resolve) => socket.once('close', resolve)),
+    );
     if (options.stallHandshake) {
       socket.on('end', () => socket.end());
       return;
@@ -76,7 +75,9 @@ async function startInspector(
     // RN requires an Origin; Expo additionally requires an exact base-URL host.
     const expectedOrigin = `http://${options.originHostname ?? '127.0.0.1'}:${port}`;
     if (request.headers.origin !== expectedOrigin) {
-      socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.end(
+        'HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+      );
       return;
     }
 
@@ -187,7 +188,9 @@ async function startInspector(
     ipv6Available,
     origins,
     requests,
-    closed,
+    waitForSocketClosures: async (): Promise<void> => {
+      await Promise.all(socketClosures);
+    },
     stop,
   };
 }
@@ -263,7 +266,7 @@ describe.skipIf(!hasWebSocket)('hermes CDP outbound handshake', () => {
         },
       ]);
       expect(onPin).toHaveBeenCalledWith('device-1');
-      await inspector.closed;
+      await inspector.waitForSocketClosures();
     },
   );
 
@@ -284,25 +287,28 @@ describe.skipIf(!hasWebSocket)('hermes CDP outbound handshake', () => {
       expect(inspector.origins).toStrictEqual([
         `http://${originHostname}:${inspector.port}`,
       ]);
-      await inspector.closed;
+      await inspector.waitForSocketClosures();
     },
   );
 
   it('reports a rejected Origin handshake without sending CDP', async () => {
     inspector = await startInspector();
-    const result = await runHermesCdp(
-      input(inspector.port, { origin: `http://localhost:${inspector.port}` }),
-    );
+    const onPin = vi.fn();
+    const origin = `http://localhost:${inspector.port}`;
+    const result = await runHermesCdp(input(inspector.port, { origin, onPin }));
 
     expect(result).toMatchObject({
       ok: false,
       code: HERMES_CONNECTION_FAILED,
     });
-    expect(inspector.origins).toStrictEqual([
-      `http://localhost:${inspector.port}`,
-    ]);
+    // Undici may retry a 401 handshake; every attempt must carry the Origin.
+    expect(inspector.origins.length).toBeGreaterThan(0);
+    expect(inspector.origins.every((observed) => observed === origin)).toBe(
+      true,
+    );
     expect(inspector.requests).toHaveLength(0);
-    await inspector.closed;
+    expect(onPin).not.toHaveBeenCalled();
+    await inspector.waitForSocketClosures();
   });
 
   it('closes an unanswered handshake after the timeout', async () => {
@@ -318,7 +324,7 @@ describe.skipIf(!hasWebSocket)('hermes CDP outbound handshake', () => {
     });
     expect(inspector.origins).toHaveLength(1);
     expect(inspector.requests).toHaveLength(0);
-    await inspector.closed;
+    await inspector.waitForSocketClosures();
   });
 
   it('closes on a probe timeout without pinning or user execution', async () => {
@@ -332,7 +338,7 @@ describe.skipIf(!hasWebSocket)('hermes CDP outbound handshake', () => {
     expect(inspector.origins).toHaveLength(1);
     expect(inspector.requests).toHaveLength(1);
     expect(onPin).not.toHaveBeenCalled();
-    await inspector.closed;
+    await inspector.waitForSocketClosures();
   });
 
   it('preserves CDP errors and closes the socket', async () => {
@@ -350,7 +356,7 @@ describe.skipIf(!hasWebSocket)('hermes CDP outbound handshake', () => {
       message: expect.stringContaining('Bad params - code -32602'),
     });
     expect(inspector.origins).toHaveLength(1);
-    await inspector.closed;
+    await inspector.waitForSocketClosures();
   });
 
   it('reports a socket closing before the user response', async () => {
@@ -371,6 +377,6 @@ describe.skipIf(!hasWebSocket)('hermes CDP outbound handshake', () => {
     });
     expect(inspector.origins).toHaveLength(1);
     expect(inspector.requests).toHaveLength(2);
-    await inspector.closed;
+    await inspector.waitForSocketClosures();
   });
 });

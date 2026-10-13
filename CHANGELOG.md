@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Send an accepted Origin header for Hermes CDP connections on React Native 0.85+ and Expo SDK 57, with an override for custom Metro server base URLs ([#34](https://github.com/MetaMask/device-mcp/issues/34))
-
 ## [0.4.2]
 
 ### Added
