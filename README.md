@@ -321,6 +321,7 @@ The synthetic legacy page (`React Native Experimental (Improved Chrome Reloads)`
 
 - **appId** defaults to `io.metamask.MetaMask` (iOS) / `io.metamask` (Android). Override globally via the `HERMES_APP_ID` env var or per-call via the tool's `appId` param. Android users not on the default must pass `appId` or set `HERMES_APP_ID`; `hermes_targets` with `all: true` aids discovery of the real appId.
 - **Metro port** defaults to `8081`. Override via the `HERMES_METRO_PORT` env var or per-call via the tool's `metroPort` param.
+- **Debugger Origin** defaults to `http://127.0.0.1:<metroPort>`, including when the target URL uses `localhost` or IPv6 loopback. This satisfies React Native 0.85+ and Expo SDK 57's debugger Origin checks. For a custom Metro server base URL (for example, Expo started with `REACT_NATIVE_PACKAGER_HOSTNAME=localhost`), set `HERMES_CDP_ORIGIN=http://localhost:8081` in the device-mcp process or pass the tool's `origin` param. The per-call value takes precedence. Use an HTTP(S) origin without credentials, path, query, or fragment; an explicitly empty value is invalid. Unset `HERMES_CDP_ORIGIN` to use the default. This header override does not change the local connection address or URL validation.
 
 ## WebView CDP (Android)
 
