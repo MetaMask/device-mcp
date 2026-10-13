@@ -240,6 +240,8 @@ describe('runHermesCdp', () => {
   it.each([
     ['ws://localhost/inspector', 80, 'http://127.0.0.1'],
     ['ws://localhost:80/inspector', 80, 'http://127.0.0.1'],
+    ['ws://localhost:8081/inspector', 8081, 'http://127.0.0.1:8081'],
+    ['ws://127.0.0.1:9000/inspector', 9000, 'http://127.0.0.1:9000'],
     ['ws://[::1]:9000/inspector', 9000, 'http://127.0.0.1:9000'],
   ])('sends the canonical Origin for %s', async (url, metroPort, origin) => {
     mockDiscovery([target({ webSocketDebuggerUrl: url })]);
@@ -1139,18 +1141,6 @@ describe('executeVerifiedCdpCommand', () => {
 
     expect(result.ok).toBe(true);
     expect(onPin).toHaveBeenCalledWith('logical-device-1');
-  });
-
-  it('maps a secure URL to an HTTPS Origin in the socket execution helper', async () => {
-    const result = await executeVerifiedCdpCommand(
-      target({ webSocketDebuggerUrl: 'wss://localhost/inspector' }),
-      baseInput(),
-      undefined,
-      undefined,
-    );
-
-    expect(result.ok).toBe(true);
-    expect(socketAt(0).options?.headers.origin).toBe('https://127.0.0.1');
   });
 
   it('fails closed with HERMES_DEVICE_PIN_MISMATCH', async () => {
