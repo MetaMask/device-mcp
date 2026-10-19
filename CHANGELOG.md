@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0]
 
-### Uncategorized
+### Fixed
 
 - fix: send Origin header for Hermes CDP connections ([#35](https://github.com/MetaMask/device-mcp/pull/35))
 
