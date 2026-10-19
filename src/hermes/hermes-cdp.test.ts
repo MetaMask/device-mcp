@@ -47,13 +47,16 @@ class MockWebSocket extends EventTarget {
 
   readonly url: string;
 
+  readonly options: { headers: { origin: string } } | undefined;
+
   readyState = MockWebSocket.connecting;
 
   sentMessages: string[] = [];
 
-  constructor(url: string) {
+  constructor(url: string, options?: { headers: { origin: string } }) {
     super();
     this.url = url;
+    this.options = options;
     MockWebSocket.instances.push(this);
 
     if (MockWebSocket.openSynchronously) {
@@ -233,6 +236,42 @@ describe('runHermesCdp', () => {
     expect(result.ok).toBe(true);
     expect(socketAt(0).url).toBe('ws://localhost:8081/inspector/debug?good');
   });
+
+  it.each([
+    ['ws://localhost/inspector', 80, 'http://127.0.0.1'],
+    ['ws://localhost:80/inspector', 80, 'http://127.0.0.1'],
+    ['ws://localhost:8081/inspector', 8081, 'http://127.0.0.1:8081'],
+    ['ws://127.0.0.1:9000/inspector', 9000, 'http://127.0.0.1:9000'],
+    ['ws://[::1]:9000/inspector', 9000, 'http://127.0.0.1:9000'],
+  ])('sends the canonical Origin for %s', async (url, metroPort, origin) => {
+    mockDiscovery([target({ webSocketDebuggerUrl: url })]);
+
+    const result = await runHermesCdp(baseInput({ metroPort }));
+
+    expect(result.ok).toBe(true);
+    expect(socketAt(0).options?.headers.origin).toBe(origin);
+  });
+
+  it.each([
+    'ws://localhost:8081',
+    'http://user:password@localhost:8081',
+    'http://localhost:8081/inspector',
+    'http://localhost:8081/?query=1',
+    'http://localhost:8081/#fragment',
+    'not a url',
+    '',
+  ])(
+    'rejects an invalid Origin override %s before opening a socket',
+    async (origin) => {
+      const result = await runHermesCdp(baseInput({ origin }));
+
+      expectError(result, HERMES_CONNECTION_FAILED);
+      expect(result.message).toBe(
+        'Hermes CDP connection failed: Hermes CDP origin must be an HTTP(S) origin without credentials, path, query, or fragment',
+      );
+      expect(MockWebSocket.instances).toHaveLength(0);
+    },
+  );
 
   it('appId mismatch → HERMES_TARGET_NOT_FOUND', async () => {
     mockDiscovery([target({ appId: 'io.evil.app' })]);
@@ -994,6 +1033,16 @@ describe('validateWebSocketUrl', () => {
       message: expect.stringContaining('Port mismatch'),
     });
   });
+
+  it.each(['ws://localhost/inspector', 'ws://localhost:80/inspector'])(
+    'reports the effective default port when %s mismatches Metro',
+    (url) => {
+      expect(validateWebSocketUrl(url, 8081)).toStrictEqual({
+        ok: false,
+        message: 'Port mismatch: target=80 expected=8081',
+      });
+    },
+  );
 });
 
 describe('fetchDiscoveryTargets', () => {

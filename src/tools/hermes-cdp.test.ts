@@ -25,6 +25,7 @@ type CdpHandlerArgs = {
   params?: Record<string, unknown>;
   timeoutMs?: number;
   metroPort?: number;
+  origin?: string;
   appId?: string;
 };
 
@@ -228,7 +229,7 @@ describe('registerHermesCdpTool', () => {
     );
   });
 
-  it('resolves metroPort and appId overrides through the session', async () => {
+  it('resolves metroPort, origin, and appId overrides through the session', async () => {
     runHermesCdpMock.mockResolvedValue({ ok: true, result: {} });
     const server = createMockServer();
     registerHermesCdpTool(server, createMockBackend());
@@ -237,11 +238,29 @@ describe('registerHermesCdpTool', () => {
     await handler({
       method: 'Runtime.evaluate',
       metroPort: 8090,
+      origin: 'http://metro.example:8090',
       appId: 'io.custom.app',
     });
 
     expect(runHermesCdpMock).toHaveBeenCalledWith(
-      expect.objectContaining({ metroPort: 8090, appId: 'io.custom.app' }),
+      expect.objectContaining({
+        metroPort: 8090,
+        origin: 'http://metro.example:8090',
+        appId: 'io.custom.app',
+      }),
+    );
+  });
+
+  it('passes the configured session Origin when no per-call override is supplied', async () => {
+    getHermesSession({ env: { HERMES_CDP_ORIGIN: 'http://localhost:8081' } });
+    runHermesCdpMock.mockResolvedValue({ ok: true, result: {} });
+    const server = createMockServer();
+    registerHermesCdpTool(server, createMockBackend());
+
+    await getCdpHandler(server)({ method: 'Runtime.evaluate' });
+
+    expect(runHermesCdpMock).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: 'http://localhost:8081' }),
     );
   });
 

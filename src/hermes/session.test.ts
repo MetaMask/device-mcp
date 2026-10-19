@@ -132,6 +132,29 @@ describe('HermesSession appId resolution', () => {
   });
 });
 
+describe('HermesSession debugger Origin resolution', () => {
+  it('leaves the origin unset so the core can derive it from the selected target', () => {
+    expect(new HermesSession({ env: {} }).resolve().origin).toBeUndefined();
+  });
+
+  it('keeps an empty env Origin explicit so validation can report the misconfiguration', () => {
+    const session = new HermesSession({ env: { HERMES_CDP_ORIGIN: '' } });
+
+    expect(session.resolve().origin).toBe('');
+  });
+
+  it('uses a per-call origin over HERMES_CDP_ORIGIN without changing the session default', () => {
+    const session = new HermesSession({
+      env: { HERMES_CDP_ORIGIN: 'http://localhost:8081' },
+    });
+
+    expect(
+      session.resolve({ origin: 'http://metro.example:9000' }).origin,
+    ).toBe('http://metro.example:9000');
+    expect(session.resolve().origin).toBe('http://localhost:8081');
+  });
+});
+
 describe('HermesSession pin set/get', () => {
   it('starts with no pin', () => {
     const session = new HermesSession({ env: {} });
@@ -166,6 +189,7 @@ describe('HermesSession.resolve immutability', () => {
     expect(session.getAppId()).toBe('io.default.app');
     expect(session.resolve()).toStrictEqual({
       metroPort: 8081,
+      origin: undefined,
       appId: 'io.default.app',
       pinnedDeviceId: undefined,
     });
