@@ -1,0 +1,40 @@
+src/backends/__fixtures__/idb-describe-all-login-flat.json
+  s_8b38f672718a39::t_7195a30b545eaf 1-439
+src/backends/idb-backend.ts
+  s_8b38f672718a39::t_0605ffff421d0c 781-789
+  s_8b38f672718a39::t_a1e7cb81f202b7 34,51-52,67-70,146-147,160-161
+  s_8b38f672718a39::t_bba361e010a67c 765
+  s_8b38f672718a39::t_5ca9290de3e6aa 742-758
+  s_8b38f672718a39::t_ae01a98192b02a 803-806
+  s_8b38f672718a39::t_e8850b53c8aa83 162
+src/utils/platform.ts
+  s_8b38f672718a39::t_7fb826e03550a7 174-190,192-200,205,207
+  s_8b38f672718a39::t_754417d6c6fce4 191
+src/backends/__fixtures__/idb-describe-all-login-nested.json
+  s_8b38f672718a39::t_7195a30b545eaf 1-467
+src/backends/idb-backend.test.ts
+  s_8b38f672718a39::t_0f3291494bbf37 1,3,7,25,37
+  s_8b38f672718a39::t_ccb530a3f151c9 8,132-142,147-209,213-240,286-290,889,1013-1102
+  s_8b38f672718a39::t_21b6e43c20a24c 210-212
+  s_8b38f672718a39::t_4f5c452b3e2168 143-146
+  s_8b38f672718a39::t_bc6731f4a96446 1103
+src/utils/platform.test.ts
+  s_8b38f672718a39::t_e58f1f527693da 9,729-805
+  s_8b38f672718a39::t_35007c10359517 806-807
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0e34147920f00fd43ea4f01a5d04c337c5e94446",
+  "prompts": {},
+  "sessions": {
+    "s_8b38f672718a39": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e96a4457bffeGlwfzEpRzFtDGs",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
