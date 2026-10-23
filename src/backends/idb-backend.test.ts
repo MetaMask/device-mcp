@@ -1,7 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { parseIdbHierarchy, mapIdbElement, IdbBackend } from './idb-backend.js';
+import type { UIElement } from './types.js';
+import { findElement, generateLocators } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
 import * as platformModule from '../utils/platform.js';
 
@@ -18,6 +22,7 @@ vi.mock('../utils/exec.js', () => ({
 vi.mock('../utils/platform.js', () => ({
   resolveIdbPath: vi.fn().mockResolvedValue('/usr/local/bin/idb'),
   idbSupportsApiSelection: vi.fn().mockResolvedValue(false),
+  idbSupportsNestedDescribe: vi.fn().mockResolvedValue(false),
   chooseAxApi: vi.fn().mockReturnValue(null),
   detectPlatform: vi.fn(),
   detectAllDevices: vi.fn(),
@@ -29,8 +34,33 @@ const mockExecStrict = vi.mocked(execModule.execStrict);
 const mockReadFile = vi.mocked(readFile);
 const mockSupportsApi = vi.mocked(platformModule.idbSupportsApiSelection);
 const mockChooseAxApi = vi.mocked(platformModule.chooseAxApi);
+const mockSupportsNested = vi.mocked(platformModule.idbSupportsNestedDescribe);
 
 describe('parseIdbHierarchy', () => {
+  it('treats an empty children array on a root object as a leaf', () => {
+    const result = parseIdbHierarchy(
+      JSON.stringify({ type: 'Application', AXLabel: 'App', children: [] }),
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].label).toBe('App');
+    expect(result[0].children).toBeUndefined();
+  });
+
+  it('returns the children of a root object that has children', () => {
+    const result = parseIdbHierarchy(
+      JSON.stringify({
+        type: 'Application',
+        AXLabel: 'App',
+        children: [{ type: 'Button', AXLabel: 'OK', children: [] }],
+      }),
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].label).toBe('OK');
+    expect(result[0].children).toBeUndefined();
+  });
+
   it('parses a JSON array of elements', () => {
     const raw = JSON.stringify([
       {
@@ -123,6 +153,105 @@ describe('parseIdbHierarchy', () => {
   });
 });
 
+describe('parseIdbHierarchy with synthetic flat and nested fixtures', () => {
+  // Synthetic MetaMask login screen with a bottom-sheet modal. The nodes and
+  // fields mirror real `idb ui describe-all --api axbridge` output; the
+  // nested file is the same screen read with `--nested`.
+  const fixture = (name: string): string =>
+    readFileSync(join(__dirname, '__fixtures__', name), 'utf8');
+  const flatRaw = fixture('idb-describe-all-login-flat.json');
+  const nestedRaw = fixture('idb-describe-all-login-nested.json');
+
+  const walk = (elements: UIElement[]): UIElement[] =>
+    elements.flatMap((el) => [el, ...walk(el.children ?? [])]);
+  const withoutChildren = (el: UIElement): UIElement => ({
+    ...el,
+    children: undefined,
+  });
+  const locatorKeys = (elements: UIElement[]): string[] =>
+    generateLocators(elements)
+      .map((loc) => loc.description)
+      .sort();
+
+  it('keeps the flat format as top-level elements', () => {
+    const flat = parseIdbHierarchy(flatRaw);
+
+    expect(flat).toHaveLength(19);
+    expect(flat.every((el) => el.children === undefined)).toBe(true);
+  });
+
+  it('keeps the nested format as a single rooted tree', () => {
+    const nested = parseIdbHierarchy(nestedRaw);
+
+    expect(nested).toHaveLength(1);
+    expect(nested[0].type).toBe('Application');
+    expect(walk(nested)).toHaveLength(19);
+  });
+
+  it('maps every node identically in both formats (pre-order)', () => {
+    const flat = parseIdbHierarchy(flatRaw);
+    const nested = walk(parseIdbHierarchy(nestedRaw));
+
+    expect(nested.map(withoutChildren)).toStrictEqual(flat);
+  });
+
+  it('yields the same actionable elements from both formats', () => {
+    const flat = parseIdbHierarchy(flatRaw);
+    const nested = parseIdbHierarchy(nestedRaw);
+
+    expect(locatorKeys(nested)).toStrictEqual(locatorKeys(flat));
+    expect(locatorKeys(nested)).toStrictEqual(
+      expect.arrayContaining([
+        'SecureTextField label="Password" id="login-password-input"',
+        'Button label="Unlock" id="log-in-button"',
+        'Button label="Enable" id="login-info-modal-enable-button"',
+        'Button label="Not now" id="login-info-modal-dismiss-button"',
+      ]),
+    );
+    for (const query of [
+      { identifier: 'login-password-input' },
+      { label: 'Unlock' },
+      { identifier: 'login-info-modal-dismiss-button' },
+    ]) {
+      expect(findElement(nested, query)).toStrictEqual(
+        findElement(flat, query),
+      );
+    }
+  });
+
+  it('keeps the modal buttons as descendants of the modal container', () => {
+    const nested = parseIdbHierarchy(nestedRaw);
+    const modal = findElement(nested, { identifier: 'login-info-modal' });
+
+    expect(modal).not.toBeNull();
+    const inModal = walk(modal?.children ?? []);
+    expect(inModal.map((el) => el.identifier).filter(Boolean)).toStrictEqual([
+      'login-info-modal-enable-button',
+      'login-info-modal-dismiss-button',
+    ]);
+    expect(inModal.map((el) => el.label)).toContain('Unlock with Face ID?');
+    // The login form is a sibling of the modal, not inside it.
+    expect(
+      findElement(modal?.children ?? [], { identifier: 'log-in-button' }),
+    ).toBeNull();
+  });
+
+  it('places the password field under the login screen container', () => {
+    const nested = parseIdbHierarchy(nestedRaw);
+    const login = findElement(nested, { identifier: 'login' });
+
+    expect(
+      findElement(login?.children ?? [], {
+        identifier: 'login-password-input',
+      }),
+    ).not.toBeNull();
+    expect(
+      findElement(login?.children ?? [], { identifier: 'log-in-button' })
+        ?.enabled,
+    ).toBe(false);
+  });
+});
+
 describe('mapIdbElement', () => {
   it('prefers AX-prefixed fields over plain fields', () => {
     const node = {
@@ -166,6 +295,11 @@ describe('mapIdbElement', () => {
     const node = { type: 'Other' };
     const result = mapIdbElement(node);
     expect(result.frame).toStrictEqual({ x: 0, y: 0, width: 0, height: 0 });
+  });
+
+  it('maps an empty children array (nested-format leaf) to undefined', () => {
+    const result = mapIdbElement({ type: 'Button', children: [] });
+    expect(result.children).toBeUndefined();
   });
 
   it('defaults type to Unknown when missing', () => {
@@ -766,6 +900,7 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSupportsNested.mockResolvedValue(false);
     mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
     backend = new IdbBackend(udid);
   });
@@ -887,6 +1022,97 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
     await backend.snapshot();
 
     expect(seen).toStrictEqual(['ax', 'axbridge']);
+  });
+
+  it('omits --nested when the CLI does not support it', async () => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockExecStrict.mockResolvedValue(JSON.stringify([]));
+
+    await backend.snapshot();
+
+    expect(mockExecStrict).not.toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      expect.arrayContaining(['--nested']),
+    );
+  });
+
+  it('passes --nested when the CLI supports it', async () => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockSupportsNested.mockResolvedValue(true);
+    mockExecStrict.mockResolvedValue(JSON.stringify([]));
+
+    await backend.snapshot();
+
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      describeArgs(['--nested']),
+    );
+  });
+
+  it('passes --nested with every --api attempt', async () => {
+    mockSupportsApi.mockResolvedValue(true);
+    mockSupportsNested.mockResolvedValue(true);
+    mockChooseAxApi.mockReturnValue('axbridge');
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify({ os_version: '26.1', name: 'iPhone' });
+      }
+      if (args?.includes('axbridge')) {
+        throw new Error('axbridge backend requested accessibility failed');
+      }
+      return JSON.stringify([]);
+    });
+
+    await backend.snapshot();
+
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      describeArgs(['--api', 'axbridge', '--nested']),
+    );
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      describeArgs(['--api', 'ax', '--nested']),
+    );
+  });
+
+  it('probes --nested support once per backend', async () => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockSupportsNested.mockResolvedValue(true);
+    mockExecStrict.mockResolvedValue(JSON.stringify([]));
+
+    await backend.snapshot();
+    await backend.snapshot();
+
+    expect(mockSupportsNested).toHaveBeenCalledTimes(1);
+    expect(mockSupportsNested).toHaveBeenCalledWith('/usr/local/bin/idb');
+  });
+
+  it('returns the nested tree from snapshot', async () => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockSupportsNested.mockResolvedValue(true);
+    mockExecStrict.mockResolvedValue(
+      JSON.stringify([
+        {
+          type: 'Application',
+          frame: { x: 0, y: 0, width: 402, height: 874 },
+          children: [
+            {
+              type: 'Button',
+              AXLabel: 'Unlock',
+              AXUniqueId: 'log-in-button',
+              frame: { x: 24, y: 396, width: 354, height: 48 },
+              children: [],
+            },
+          ],
+        },
+      ]),
+    );
+
+    const { hierarchy } = await backend.snapshot();
+
+    expect(hierarchy).toHaveLength(1);
+    expect(hierarchy[0].children?.[0].identifier).toBe('log-in-button');
+    expect(hierarchy[0].children?.[0].children).toBeUndefined();
   });
 
   it('rethrows a non-Error rejection as a descriptive Error', async () => {

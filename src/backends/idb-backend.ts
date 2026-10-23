@@ -31,6 +31,7 @@ import {
 import {
   chooseAxApi,
   idbSupportsApiSelection,
+  idbSupportsNestedDescribe,
   resolveIdbPath,
 } from '../utils/platform.js';
 
@@ -47,6 +48,8 @@ export class IdbBackend implements DeviceBackend {
 
   #idbSupportsApi = false;
 
+  #idbSupportsNested = false;
+
   #recordingProcess: ChildProcess | null = null;
 
   #recordingPath: string | null = null;
@@ -61,7 +64,10 @@ export class IdbBackend implements DeviceBackend {
     }
 
     this.#idbPath = await resolveIdbPath();
-    this.#idbSupportsApi = await idbSupportsApiSelection(this.#idbPath);
+    [this.#idbSupportsApi, this.#idbSupportsNested] = await Promise.all([
+      idbSupportsApiSelection(this.#idbPath),
+      idbSupportsNestedDescribe(this.#idbPath),
+    ]);
     await exec(this.#idbPath, ['connect', this.#udid]);
     await this.#enableSimulatorAccessibility();
     this.#connected = true;
@@ -137,6 +143,8 @@ export class IdbBackend implements DeviceBackend {
    * Run `idb ui describe-all`, trying the version-appropriate accessibility
    * backend first and falling back to the others if it errors. This keeps
    * snapshots working across iOS 17-26 regardless of the user's idb client.
+   * When the CLI supports it, `--nested` is passed so idb returns the real
+   * parent/child tree instead of a flat element list.
    *
    * @returns The raw JSON hierarchy from the first backend that succeeds.
    * @throws When every attempted backend fails.
@@ -148,6 +156,9 @@ export class IdbBackend implements DeviceBackend {
       const args = ['ui', 'describe-all', '--udid', this.#udid];
       if (api !== null) {
         args.push('--api', api);
+      }
+      if (this.#idbSupportsNested) {
+        args.push('--nested');
       }
       try {
         return await execStrict(this.#idbPath, args);
@@ -728,13 +739,30 @@ function collectTextsFromChildren(
   }
 }
 
+/**
+ * Parse `idb ui describe-all` JSON into a `UIElement` tree.
+ *
+ * Handles both output formats with the same per-node mapping
+ * ({@link mapIdbElement}):
+ * - nested (`--nested`): an array holding the root element(s), where every
+ * node carries a `children` array (empty on leaves). The tree is kept as is.
+ * - flat (default): an array of every element in pre-order with no
+ * `children`. Each element becomes a top-level node (no parent/child info).
+ *
+ * A single root object is also accepted: its children become the top level
+ * when it has any, otherwise the object itself is the only element.
+ *
+ * @param raw - The raw stdout of `idb ui describe-all`.
+ * @returns The parsed hierarchy, or a single `raw` element when the output
+ * is not JSON.
+ */
 export function parseIdbHierarchy(raw: string): UIElement[] {
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       return parsed.map(mapIdbElement);
     }
-    if (parsed.children) {
+    if (Array.isArray(parsed.children) && parsed.children.length > 0) {
       return parsed.children.map(mapIdbElement);
     }
     return [mapIdbElement(parsed)];
@@ -750,6 +778,15 @@ export function parseIdbHierarchy(raw: string): UIElement[] {
   }
 }
 
+/**
+ * Map one idb accessibility node to a `UIElement`, recursing into its
+ * `children`. Shared by the flat and nested formats so a node maps the same
+ * way in both. An empty `children` array (nested-format leaf) maps to
+ * `undefined`, like a flat-format node.
+ *
+ * @param node - The idb node.
+ * @returns The mapped element.
+ */
 export function mapIdbElement(node: Record<string, unknown>): UIElement {
   const frame = node.frame as
     | { x: number; y: number; width: number; height: number }
@@ -763,8 +800,9 @@ export function mapIdbElement(node: Record<string, unknown>): UIElement {
       (node.AXUniqueId as string) ?? (node.identifier as string) ?? undefined,
     frame: frame ?? { x: 0, y: 0, width: 0, height: 0 },
     enabled: (node.enabled as boolean) ?? true,
-    children: Array.isArray(node.children)
-      ? node.children.map(mapIdbElement)
-      : undefined,
+    children:
+      Array.isArray(node.children) && node.children.length > 0
+        ? node.children.map(mapIdbElement)
+        : undefined,
   };
 }
