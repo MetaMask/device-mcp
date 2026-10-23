@@ -6,6 +6,7 @@ import {
   detectAllDevices,
   detectPlatform,
   idbSupportsApiSelection,
+  idbSupportsNestedDescribe,
   resolveIdbPath,
   MultipleDevicesError,
 } from './platform.js';
@@ -722,6 +723,102 @@ describe('idbSupportsApiSelection', () => {
     mockExec.mockRejectedValue(new Error('ENOENT'));
 
     expect(await idbSupportsApiSelection('/bad/idb')).toBe(false);
+  });
+});
+
+describe('idbSupportsNestedDescribe', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  // Excerpt of the unified idb client's `ui describe-all --help`.
+  const unifiedHelp = [
+    'usage: idb ui describe-all [-h] [--udid UDID]',
+    '                           [--json] [--reason REASON] [--nested]',
+    '                           [--api {ax,axbridge}]',
+    '                           [--format {default,nested,complete}]',
+    '  --nested              Will report data in the newer nested format, rather',
+    '                        than the flat one',
+  ].join('\n');
+
+  it('is true when describe-all help lists --nested', async () => {
+    mockExec.mockResolvedValue({
+      exitCode: 0,
+      stdout: unifiedHelp,
+      stderr: '',
+    });
+
+    expect(await idbSupportsNestedDescribe('idb')).toBe(true);
+    expect(mockExec).toHaveBeenCalledWith('idb', [
+      'ui',
+      'describe-all',
+      '--help',
+    ]);
+  });
+
+  it('reads help printed on stderr', async () => {
+    mockExec.mockResolvedValue({
+      exitCode: 0,
+      stdout: '',
+      stderr: unifiedHelp,
+    });
+
+    expect(await idbSupportsNestedDescribe('idb')).toBe(true);
+  });
+
+  it('is false when help lacks --nested', async () => {
+    mockExec.mockResolvedValue({
+      exitCode: 0,
+      stdout:
+        'usage: idb ui describe-all [-h] [--udid UDID] [--json]\n' +
+        '  --format {default,nested,complete}',
+      stderr: '',
+    });
+
+    expect(await idbSupportsNestedDescribe('idb')).toBe(false);
+  });
+
+  it('does not match a longer flag that starts with --nested', async () => {
+    mockExec.mockResolvedValue({
+      exitCode: 0,
+      stdout: '  --nested-depth N',
+      stderr: '',
+    });
+
+    expect(await idbSupportsNestedDescribe('idb')).toBe(false);
+  });
+
+  it('is false when the help probe exits non-zero', async () => {
+    mockExec.mockResolvedValue({
+      exitCode: 2,
+      stdout: '',
+      stderr: 'unrecognized arguments: --nested',
+    });
+
+    expect(await idbSupportsNestedDescribe('idb')).toBe(false);
+  });
+
+  it('is false when the help probe fails', async () => {
+    mockExec.mockRejectedValue(new Error('ENOENT'));
+
+    expect(await idbSupportsNestedDescribe('/bad/idb')).toBe(false);
+  });
+
+  it('shares one help read between concurrent probes', async () => {
+    mockExec.mockResolvedValueOnce({
+      stdout: 'usage: idb ui describe-all [--api {ax,axbridge}] [--nested]',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    const [api, nested] = await Promise.all([
+      idbSupportsApiSelection('idb'),
+      idbSupportsNestedDescribe('idb'),
+    ]);
+
+    expect(api).toBe(true);
+    expect(nested).toBe(true);
+    expect(mockExec).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -171,13 +171,53 @@ function findPythonBinDirs(base: string): string[] {
 export async function idbSupportsApiSelection(
   idbPath: string,
 ): Promise<boolean> {
-  const help = await exec(idbPath, ['ui', 'describe-all', '--help']).catch(
-    () => null,
-  );
-  if (help?.exitCode !== 0) {
-    return false;
+  const help = await readDescribeAllHelp(idbPath);
+  return help?.includes('--api') ?? false;
+}
+
+/**
+ * Whether an `idb` binary supports `describe-all --nested`, which returns the
+ * accessibility tree with each element carrying its `children` instead of the
+ * default flat element list. Probed from the help text like
+ * {@link idbSupportsApiSelection}.
+ *
+ * @param idbPath - The `idb` executable to probe.
+ * @returns True when `--nested` is accepted.
+ */
+export async function idbSupportsNestedDescribe(
+  idbPath: string,
+): Promise<boolean> {
+  const help = await readDescribeAllHelp(idbPath);
+  return help === null ? false : /(?:^|[\s[])--nested(?=[\s\]]|$)/mu.test(help);
+}
+
+/** In-flight help reads, keyed by idb path, so concurrent probes share one. */
+const pendingHelpReads = new Map<string, Promise<string | null>>();
+
+/**
+ * Read the `idb ui describe-all --help` text (stdout and stderr). Concurrent
+ * calls for the same binary (the `--api` and `--nested` probes at connect)
+ * share one `idb` process.
+ *
+ * @param idbPath - The `idb` executable to probe.
+ * @returns The help text, or null when the probe fails.
+ */
+async function readDescribeAllHelp(idbPath: string): Promise<string | null> {
+  const pending = pendingHelpReads.get(idbPath);
+  if (pending) {
+    return pending;
   }
-  return `${help.stdout}\n${help.stderr}`.includes('--api');
+  const read = (async (): Promise<string | null> => {
+    const help = await exec(idbPath, ['ui', 'describe-all', '--help']).catch(
+      () => null,
+    );
+    if (help?.exitCode !== 0) {
+      return null;
+    }
+    return `${help.stdout}\n${help.stderr}`;
+  })().finally(() => pendingHelpReads.delete(idbPath));
+  pendingHelpReads.set(idbPath, read);
+  return read;
 }
 
 /**
