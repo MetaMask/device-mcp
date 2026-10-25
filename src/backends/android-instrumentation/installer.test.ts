@@ -3,8 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import * as adbModule from './adb.js';
 import * as artifactModule from './artifact.js';
-import { UntrustedHelperError } from './errors.js';
 import {
+  HelperNotInstalledError,
+  UNTRUSTED_HELPER_REMEDY,
+  UntrustedHelperError,
+} from './errors.js';
+import {
+  HelperTrustCache,
   INSTRUMENTATION_NOT_FOUND_SIGNATURE,
   assertInstalledHelperTrusted,
   ensureHelperInstalled,
@@ -167,6 +172,18 @@ describe('android-instrumentation/installer', () => {
         expectedSignerSha256: ARTIFACT.signerSha256,
       });
     });
+
+    it('tells the user how to recover from a signer conflict', async () => {
+      mockExec.mockResolvedValue({
+        stdout: 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]',
+        stderr: '',
+        exitCode: 1,
+      });
+
+      await expect(installHelper('emulator-5554')).rejects.toThrow(
+        UNTRUSTED_HELPER_REMEDY,
+      );
+    });
   });
 
   describe('ensureHelperTrusted', () => {
@@ -256,7 +273,7 @@ describe('android-instrumentation/installer', () => {
       expect(mockRmSync).toHaveBeenCalled();
     });
 
-    it('fails closed when the installed APK path cannot be resolved', async () => {
+    it('reports a missing helper, not a trust failure, when pm path finds no APK', async () => {
       mockExec.mockResolvedValue({
         stdout: 'versionCode=3003\n',
         stderr: '',
@@ -265,7 +282,7 @@ describe('android-instrumentation/installer', () => {
       wireExecutor('');
 
       await expect(ensureHelperTrusted('emulator-5554')).rejects.toBeInstanceOf(
-        UntrustedHelperError,
+        HelperNotInstalledError,
       );
     });
   });
@@ -348,12 +365,217 @@ describe('android-instrumentation/installer', () => {
       expect(mockRmSync).toHaveBeenCalled();
     });
 
-    it('fails closed when the installed APK path cannot be resolved', async () => {
+    it('throws HelperNotInstalledError (not a trust error) when pm path finds no APK', async () => {
       wireExecutor('');
 
+      const error = await assertInstalledHelperTrusted('emulator-5554').then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(HelperNotInstalledError);
+      expect(error).not.toBeInstanceOf(UntrustedHelperError);
+      expect(String(error)).toMatch(/not installed/u);
+      expect(mockAssertSigner).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assertInstalledHelperTrusted with a trust cache', () => {
+    const PATH_A =
+      'package:/data/app/~~abc==/io.metamask.devicemcp.snapshothelper-x1==/base.apk';
+    const PATH_B =
+      'package:/data/app/~~def==/io.metamask.devicemcp.snapshothelper-y2==/base.apk';
+
+    /**
+     * Wire a fake adb executor whose `pm path` output and API level can change
+     * between calls.
+     *
+     * @param state - Mutable device state read on every call.
+     * @param state.pmPath - The current `pm path` stdout.
+     * @param state.sdk - The current `ro.build.version.sdk` stdout.
+     * @param state.sdkExitCode - The exit code of the `getprop` call.
+     * @returns The executor mock.
+     */
+    const wireDevice = (state: {
+      pmPath: string;
+      sdk?: string;
+      sdkExitCode?: number;
+    }): ReturnType<typeof vi.fn> => {
+      const run = vi.fn(async (args: string[]) => {
+        if (args.includes('path')) {
+          return { stdout: state.pmPath, stderr: '', exitCode: 0 };
+        }
+        if (args.includes('getprop')) {
+          return {
+            stdout: state.sdk ?? '34\n',
+            stderr: '',
+            exitCode: state.sdkExitCode ?? 0,
+          };
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      });
+      mockCreateExecutor.mockReturnValue(run);
+      return run;
+    };
+
+    const countCalls = (run: ReturnType<typeof vi.fn>, token: string): number =>
+      run.mock.calls.filter((call) => (call[0] as string[]).includes(token))
+        .length;
+
+    it('runs pm path every time but skips the pull when the path is unchanged', async () => {
+      const run = wireDevice({ pmPath: PATH_A });
+      const cache = new HelperTrustCache();
+
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+
+      expect(countCalls(run, 'path')).toBe(3);
+      expect(countCalls(run, 'pull')).toBe(1);
+      expect(mockAssertSigner).toHaveBeenCalledTimes(1);
+      // The API level is read once per cache, not per snapshot.
+      expect(countCalls(run, 'getprop')).toBe(1);
+    });
+
+    it('pulls and verifies again when the installed path changes', async () => {
+      const state = { pmPath: PATH_A };
+      const run = wireDevice(state);
+      const cache = new HelperTrustCache();
+
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+      // A reinstall or update always lands in a new randomized directory.
+      state.pmPath = PATH_B;
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+
+      expect(countCalls(run, 'pull')).toBe(2);
+      expect(run).toHaveBeenCalledWith(
+        ['pull', PATH_B.slice('package:'.length), expect.any(String)],
+        expect.anything(),
+      );
+      expect(mockAssertSigner).toHaveBeenCalledTimes(2);
+    });
+
+    it('pulls again when a split APK is added at the same base path', async () => {
+      const state = { pmPath: PATH_A };
+      const run = wireDevice(state);
+      const cache = new HelperTrustCache();
+
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+      state.pmPath = `${PATH_A}\npackage:/data/app/~~abc==/split_config.apk`;
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+
+      expect(countCalls(run, 'pull')).toBe(3);
+    });
+
+    it('fails closed when the changed install has a foreign signer, and keeps failing', async () => {
+      const state = { pmPath: PATH_A };
+      wireDevice(state);
+      const cache = new HelperTrustCache();
+
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+
+      // A squatter replaced the helper: new path, foreign certificate.
+      state.pmPath = PATH_B;
+      mockAssertSigner.mockRejectedValue(
+        new UntrustedHelperError('mismatch', {
+          expectedSignerSha256: ARTIFACT.signerSha256,
+          actualSignerSha256: 'bbbb',
+        }),
+      );
+
       await expect(
-        assertInstalledHelperTrusted('emulator-5554'),
+        assertInstalledHelperTrusted('emulator-5554', cache),
       ).rejects.toBeInstanceOf(UntrustedHelperError);
+      // The failed path is never remembered: the next call verifies again.
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554', cache),
+      ).rejects.toBeInstanceOf(UntrustedHelperError);
+      expect(mockAssertSigner).toHaveBeenCalledTimes(3);
+    });
+
+    it('clears the cache when the helper is not installed', async () => {
+      const state = { pmPath: PATH_A };
+      const run = wireDevice(state);
+      const cache = new HelperTrustCache();
+
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+      state.pmPath = '';
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554', cache),
+      ).rejects.toBeInstanceOf(HelperNotInstalledError);
+      // The same path as before is verified in full after the gap.
+      state.pmPath = PATH_A;
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+
+      expect(countCalls(run, 'pull')).toBe(2);
+    });
+
+    it('does not remember a path after a failed pull', async () => {
+      const failingPull = vi.fn(async (args: string[]) => {
+        if (args.includes('path')) {
+          return { stdout: PATH_A, stderr: '', exitCode: 0 };
+        }
+        if (args.includes('getprop')) {
+          return { stdout: '34', stderr: '', exitCode: 0 };
+        }
+        return { stdout: '', stderr: 'pull failed', exitCode: 1 };
+      });
+      mockCreateExecutor.mockReturnValue(failingPull);
+      const cache = new HelperTrustCache();
+
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554', cache),
+      ).rejects.toBeInstanceOf(UntrustedHelperError);
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554', cache),
+      ).rejects.toBeInstanceOf(UntrustedHelperError);
+      expect(countCalls(failingPull, 'pull')).toBe(2);
+    });
+
+    it('never skips the pull before Android 8.0 (API 26), where paths repeat', async () => {
+      const run = wireDevice({ pmPath: PATH_A, sdk: '25' });
+      const cache = new HelperTrustCache();
+
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+
+      expect(countCalls(run, 'pull')).toBe(2);
+    });
+
+    it('never skips the pull when the API level cannot be read', async () => {
+      const run = wireDevice({ pmPath: PATH_A, sdk: '', sdkExitCode: 1 });
+      const cache = new HelperTrustCache();
+
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+
+      expect(countCalls(run, 'pull')).toBe(2);
+      // A failed read is retried rather than remembered.
+      expect(countCalls(run, 'getprop')).toBe(2);
+    });
+
+    it('pulls again when the pinned signer changes', async () => {
+      const run = wireDevice({ pmPath: PATH_A });
+      const cache = new HelperTrustCache();
+
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+      mockLoadArtifact.mockResolvedValue({
+        ...ARTIFACT,
+        signerSha256: 'c'.repeat(64),
+      });
+      await assertInstalledHelperTrusted('emulator-5554', cache);
+
+      expect(countCalls(run, 'pull')).toBe(2);
+    });
+
+    it('always pulls without a cache', async () => {
+      const run = wireDevice({ pmPath: PATH_A });
+
+      await assertInstalledHelperTrusted('emulator-5554');
+      await assertInstalledHelperTrusted('emulator-5554');
+
+      expect(countCalls(run, 'pull')).toBe(2);
+      expect(countCalls(run, 'getprop')).toBe(0);
     });
   });
 });

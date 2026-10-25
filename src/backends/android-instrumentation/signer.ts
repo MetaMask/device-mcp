@@ -22,7 +22,11 @@ import {
 } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
-import { SnapshotHelperError, UntrustedHelperError } from './errors.js';
+import {
+  SnapshotHelperError,
+  UNTRUSTED_HELPER_REMEDY,
+  UntrustedHelperError,
+} from './errors.js';
 
 export type ApkSignerVerification = {
   verified: true;
@@ -581,7 +585,7 @@ export async function assertApkSignerSha256(
   const expected = expectedSignerSha256.toLowerCase();
   if (signerSha256 !== expected) {
     throw new UntrustedHelperError(
-      'Installed snapshot helper is signed by an unexpected certificate',
+      `Installed snapshot helper is signed by an unexpected certificate. ${UNTRUSTED_HELPER_REMEDY}`,
       { expectedSignerSha256: expected, actualSignerSha256: signerSha256 },
     );
   }

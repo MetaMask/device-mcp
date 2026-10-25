@@ -1,8 +1,13 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  HelperIncompleteCaptureError,
+  HelperNotInstalledError,
   SnapshotHelperError,
+  UNTRUSTED_HELPER_REMEDY,
   UntrustedHelperError,
+  isHelperIncompleteCaptureError,
+  isHelperNotInstalledError,
   isUntrustedHelperError,
 } from './errors.js';
 
@@ -64,5 +69,52 @@ describe('UntrustedHelperError', () => {
     const trustErrors = errors.filter(isUntrustedHelperError);
     expect(trustErrors).toHaveLength(1);
     expect(trustErrors[0]?.message).toBe('trust');
+  });
+});
+
+describe('HelperNotInstalledError', () => {
+  it('is a generic helper error, never a trust error', () => {
+    const error = new HelperNotInstalledError('gone');
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(SnapshotHelperError);
+    expect(error.name).toBe('HelperNotInstalledError');
+    expect(error.code).toBe('COMMAND_FAILED');
+    expect(isHelperNotInstalledError(error)).toBe(true);
+    expect(isUntrustedHelperError(error)).toBe(false);
+  });
+
+  it('is not matched by the guard for other errors', () => {
+    expect(
+      isHelperNotInstalledError(
+        new SnapshotHelperError('COMMAND_FAILED', 'adb died'),
+      ),
+    ).toBe(false);
+    expect(
+      isHelperNotInstalledError(
+        new UntrustedHelperError('mismatch', { expectedSignerSha256: 'aaaa' }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('UNTRUSTED_HELPER_REMEDY', () => {
+  it('names the uninstall command and the dump mode', () => {
+    expect(UNTRUSTED_HELPER_REMEDY).toContain(
+      'adb uninstall io.metamask.devicemcp.snapshothelper',
+    );
+    expect(UNTRUSTED_HELPER_REMEDY).toContain('DEVICE_MCP_ADB_SNAPSHOT=dump');
+    expect(UNTRUSTED_HELPER_REMEDY).toContain("snapshotMode 'dump'");
+  });
+});
+
+describe('HelperIncompleteCaptureError', () => {
+  it('is a generic helper error, never a trust error', () => {
+    const error = new HelperIncompleteCaptureError('did not stabilize');
+    expect(error).toBeInstanceOf(SnapshotHelperError);
+    expect(error.name).toBe('HelperIncompleteCaptureError');
+    expect(isHelperIncompleteCaptureError(error)).toBe(true);
+    expect(isUntrustedHelperError(error)).toBe(false);
+    expect(isHelperNotInstalledError(error)).toBe(false);
+    expect(isHelperIncompleteCaptureError(new Error('x'))).toBe(false);
   });
 });

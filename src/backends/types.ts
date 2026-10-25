@@ -29,6 +29,17 @@ export type SnapshotResult = {
   hierarchy: UIElement[];
   raw: string;
   timestamp: number;
+  /**
+   * Which capture path produced the snapshot. Set by the ADB backend only:
+   * `dump` is `uiautomator dump`, `instrument` is the bundled helper.
+   */
+  source?: 'dump' | 'instrument';
+  /**
+   * Wall-clock time of the capture in ms, including any failed attempts and
+   * fallbacks, but not the wait for an earlier capture. Set by the ADB backend
+   * only.
+   */
+  captureMs?: number;
 };
 
 export type TapResult = {

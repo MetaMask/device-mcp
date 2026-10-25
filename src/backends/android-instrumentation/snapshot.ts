@@ -13,6 +13,8 @@
  * ADB backend.
  */
 
+import { HelperIncompleteCaptureError } from './errors.js';
+
 /** Emitted as `agentDeviceProtocol` in every status and result record. */
 export const HELPER_PROTOCOL = 'device-mcp-snapshot-helper-v1';
 
@@ -142,6 +144,24 @@ export function parseInstrumentationOutput(
 }
 
 /**
+ * Check whether a helper failure is the transient "capture did not stabilize"
+ * case (`AccessibilityCaptureStabilizer.IncompleteCaptureException`).
+ *
+ * @param errorType - The `errorType` result key (the Java class name).
+ * @param message - The `message` result key.
+ * @returns True for an incomplete capture.
+ */
+function isIncompleteCapture(
+  errorType: string | undefined,
+  message: string | undefined,
+): boolean {
+  return (
+    (errorType?.includes('IncompleteCaptureException') ?? false) ||
+    (message?.includes('Capture did not stabilize') ?? false)
+  );
+}
+
+/**
  * Reassemble the hierarchy XML from an `am instrument` run.
  *
  * Each chunk is an independently valid base64 encoding of a raw byte slice
@@ -151,6 +171,8 @@ export function parseInstrumentationOutput(
  *
  * @param stdout - Raw stdout from `adb shell am instrument -w ...`.
  * @returns The reassembled hierarchy XML.
+ * @throws {@link HelperIncompleteCaptureError} when the helper could not
+ * capture a complete tree in time (transient; the caller may retry).
  * @throws If the helper reported failure, chunks are missing, or the payload is
  * not complete hierarchy XML.
  */
@@ -171,9 +193,11 @@ export function reassembleInstrumentationXml(stdout: string): string {
     const message = result.get('message');
     const errorType = result.get('errorType');
     const detail = [errorType, message].filter(Boolean).join(': ');
-    throw new Error(
-      `Snapshot helper reported failure${detail ? ` (${detail})` : ''}.`,
-    );
+    const text = `Snapshot helper reported failure${detail ? ` (${detail})` : ''}.`;
+    if (isIncompleteCapture(errorType, message)) {
+      throw new HelperIncompleteCaptureError(text);
+    }
+    throw new Error(text);
   }
 
   if (

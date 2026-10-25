@@ -128,9 +128,11 @@ CLASS_FILES="$(find "$CLASSES_DIR" -name '*.class')"
 #   1. DEVICE_MCP_HELPER_KEYSTORE (+ _PASSWORD / _KEY_ALIAS) -> the real shared
 #      key (CI secret decode, or a dev's vault copy). APKs signed with it match
 #      the pinned signerSha256, so the on-device trust check accepts them.
-#   2. Otherwise -> generate a throwaway per-build key. The resulting APK will
-#      NOT match the pin; the helper path rejects it by design (use
-#      DEVICE_MCP_ADB_SNAPSHOT=dump for local iteration without the real key).
+#   2. Otherwise -> generate a throwaway per-build key. The pin is read from
+#      this build's manifest, so the fresh APK verifies on a device without a
+#      helper. It fails closed only when a helper signed with a different key
+#      is already installed: then `adb uninstall
+#      io.metamask.devicemcp.snapshothelper`, or use DEVICE_MCP_ADB_SNAPSHOT=dump.
 if [[ -n "${DEVICE_MCP_HELPER_KEYSTORE:-}" ]]; then
   KEYSTORE="$DEVICE_MCP_HELPER_KEYSTORE"
   KS_PASS="${DEVICE_MCP_HELPER_KEYSTORE_PASSWORD:-}"

@@ -176,6 +176,24 @@ describe('createLazyBackend', () => {
 
       expect(mockDetectPlatform).toHaveBeenCalledWith(undefined, 'android');
     });
+
+    it('passes the adb options to the AdbBackend constructor', async () => {
+      const createLazyBackend = await getLazyBackend();
+      const { AdbBackend } = await import('./adb-backend.js');
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'android',
+        deviceId: 'emulator-5554',
+      });
+
+      const lazy = createLazyBackend(undefined, 'android', {
+        adb: { snapshotMode: 'instrument' },
+      });
+      await lazy.getDeviceInfo();
+
+      expect(AdbBackend).toHaveBeenCalledWith('emulator-5554', {
+        snapshotMode: 'instrument',
+      });
+    });
   });
 
   describe('multiple device handling', () => {

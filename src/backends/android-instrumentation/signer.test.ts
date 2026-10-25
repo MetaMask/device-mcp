@@ -142,6 +142,9 @@ describe('android snapshot-helper signer verification', () => {
           name: 'UntrustedHelperError',
           expectedSignerSha256: wrong,
           actualSignerSha256: built.expectedSignerSha256,
+          message: expect.stringContaining(
+            'adb uninstall io.metamask.devicemcp.snapshothelper',
+          ),
         });
       },
     );

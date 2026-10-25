@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
+import { HelperIncompleteCaptureError } from './errors.js';
 import {
   HELPER_INSTRUMENTATION,
   HELPER_PACKAGE,
@@ -154,6 +155,45 @@ describe('android-instrumentation/snapshot', () => {
       expect(() => reassembleInstrumentationXml(stdout)).toThrow(
         /reported failure.*TimeoutException.*idle wait exceeded/u,
       );
+    });
+
+    it('throws HelperIncompleteCaptureError when the capture did not stabilize', () => {
+      const stdout = buildInstrumentOutput(SAMPLE_XML, {
+        chunkSize: 40,
+        ok: 'false',
+        extraResult: {
+          errorType:
+            'io.metamask.devicemcp.snapshothelper.AccessibilityCaptureStabilizer$IncompleteCaptureException',
+          message: 'Capture did not stabilize within 500ms',
+        },
+      });
+
+      expect(() => reassembleInstrumentationXml(stdout)).toThrow(
+        HelperIncompleteCaptureError,
+      );
+      expect(() => reassembleInstrumentationXml(stdout)).toThrow(
+        /reported failure.*Capture did not stabilize within 500ms/u,
+      );
+    });
+
+    it('keeps other helper failures as plain errors', () => {
+      const stdout = buildInstrumentOutput(SAMPLE_XML, {
+        chunkSize: 40,
+        ok: 'false',
+        extraResult: {
+          errorType: 'java.util.concurrent.TimeoutException',
+          message: 'idle wait exceeded',
+        },
+      });
+
+      let caught: unknown;
+      try {
+        reassembleInstrumentationXml(stdout);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught).not.toBeInstanceOf(HelperIncompleteCaptureError);
     });
 
     it('distinguishes a killed run (no result record) from a clean failure', () => {

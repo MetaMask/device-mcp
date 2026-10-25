@@ -24,9 +24,14 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createAndroidAdbExecutor } from './adb.js';
+import type { AndroidAdbExecutor } from './adb.js';
 import { loadHelperArtifact } from './artifact.js';
 import type { HelperArtifact } from './artifact.js';
-import { UntrustedHelperError } from './errors.js';
+import {
+  HelperNotInstalledError,
+  UNTRUSTED_HELPER_REMEDY,
+  UntrustedHelperError,
+} from './errors.js';
 import { assertApkSignerSha256 } from './signer.js';
 import { HELPER_PACKAGE } from './snapshot.js';
 import { exec } from '../../utils/exec.js';
@@ -145,7 +150,8 @@ export async function installHelper(
     if (SIGNER_CONFLICT_TOKENS.some((token) => output.includes(token))) {
       throw new UntrustedHelperError(
         `Snapshot helper install was refused because the installed package is ` +
-          `signed by a different certificate (a squatter). ${output}`,
+          `signed by a different certificate (a squatter). ${output}\n` +
+          `${UNTRUSTED_HELPER_REMEDY}`,
         { expectedSignerSha256: resolved.signerSha256 },
       );
     }
@@ -156,17 +162,101 @@ export async function installHelper(
 }
 
 /**
- * Pull every installed APK path for the helper package (base + splits) into a
- * private temp dir and verify each is signed by the pinned certificate.
+ * The first API level (Android 8.0) where every install or update of a package
+ * gets a new, randomized code directory: `/data/app/<pkg>-<random>/`, and
+ * `/data/app/~~<random>/<pkg>-<random>/` from Android 11. Android 7 and earlier
+ * alternate between `/data/app/<pkg>-1/` and `-2/`, so a path can repeat across
+ * installs there and the path cache is not used.
+ */
+const MIN_SDK_FOR_PATH_CACHE = 26;
+
+/**
+ * Per-backend state that lets {@link verifyInstalledSigner} skip the pull and
+ * hash when the helper install has not changed.
+ *
+ * This is NOT a cached trust decision. `pm path` still runs before every use,
+ * and the cache only remembers which APK paths last passed full signer
+ * verification against the pin. Android writes every install or update to a
+ * new randomized directory, so the same paths mean the same install. Replacing
+ * the APK bytes at an existing path requires root, which is outside the threat
+ * model (root can also tamper with the helper process, `am`, or `adb` itself).
+ *
+ * Create one instance per device and pass the same instance on every call.
+ */
+export class HelperTrustCache {
+  // The pin and APK paths that last passed full verification.
+  #verifiedKey: string | undefined;
+
+  // The device API level, once it has been read successfully.
+  #sdkLevel: number | undefined;
+
+  /**
+   * @param key - The pin and APK paths of the current install.
+   * @returns True when this exact install already passed full verification.
+   */
+  isVerified(key: string): boolean {
+    return this.#verifiedKey === key;
+  }
+
+  /**
+   * Remember an install that just passed full verification. Only call this
+   * after a successful pull + hash, and only on API 26+.
+   *
+   * @param key - The pin and APK paths of the verified install.
+   */
+  rememberVerified(key: string): void {
+    this.#verifiedKey = key;
+  }
+
+  /** Forget the verified install, so the next call verifies in full. */
+  forget(): void {
+    this.#verifiedKey = undefined;
+  }
+
+  /**
+   * Read the device API level, once per cache. A failed read is not
+   * remembered, so a transient adb error is retried on the next call.
+   *
+   * @param run - The device-scoped adb executor.
+   * @returns The API level, or null when it could not be read.
+   */
+  async sdkLevel(run: AndroidAdbExecutor): Promise<number | null> {
+    if (this.#sdkLevel !== undefined) {
+      return this.#sdkLevel;
+    }
+    const result = await run(['shell', 'getprop', 'ro.build.version.sdk'], {
+      timeoutMs: QUERY_TIMEOUT_MS,
+    }).catch(() => null);
+    const level = Number(result?.stdout.trim());
+    if (result?.exitCode !== 0 || !Number.isInteger(level) || level <= 0) {
+      return null;
+    }
+    this.#sdkLevel = level;
+    return level;
+  }
+}
+
+/**
+ * Resolve the helper's installed APK paths (base + splits), then pull each one
+ * into a private temp dir and verify it is signed by the pinned certificate.
+ *
+ * With a `cache`, `pm path` still runs on every call, but the pull and hash are
+ * skipped when the paths are the same as the last successful verification and
+ * the device is API {@link MIN_SDK_FOR_PATH_CACHE} or later. Any failure clears
+ * the cache before it throws, so the next call verifies in full.
  *
  * @param serial - The target device serial.
  * @param artifact - The bundled artifact carrying the pinned signer SHA-256.
+ * @param cache - Optional per-backend cache of the last verified install.
  * @throws {@link UntrustedHelperError} when the installed signer does not match
  * the pin.
+ * @throws {@link HelperNotInstalledError} when the helper package is not
+ * installed (not a trust failure).
  */
 export async function verifyInstalledSigner(
   serial: string,
   artifact: HelperArtifact,
+  cache?: HelperTrustCache,
 ): Promise<void> {
   const run = createAndroidAdbExecutor(serial);
   const pathsResult = await run(['shell', 'pm', 'path', HELPER_PACKAGE], {
@@ -178,12 +268,47 @@ export async function verifyInstalledSigner(
     .filter((line) => line.startsWith('package:'))
     .map((line) => line.slice('package:'.length));
   if (remotePaths.length === 0) {
-    throw new UntrustedHelperError(
-      'Snapshot helper is installed but its APK path could not be resolved',
-      { expectedSignerSha256: artifact.signerSha256 },
+    cache?.forget();
+    // No APK path means the package is not installed (for example it was
+    // uninstalled mid-session). A missing package cannot run code, so this is
+    // not a trust failure: the backend reinstalls the helper and retries, and
+    // the fresh install is verified in full before `am instrument` runs.
+    throw new HelperNotInstalledError(
+      `Snapshot helper is not installed: \`pm path ${HELPER_PACKAGE}\` ` +
+        'returned no APK path',
     );
   }
 
+  // The key includes the pin, so a different bundled helper never matches.
+  // A key is only remembered on API 26+ (see below), so a match is enough.
+  const key = [artifact.signerSha256, ...remotePaths].join('\n');
+  if (cache?.isVerified(key)) {
+    return;
+  }
+  cache?.forget();
+
+  await pullAndVerify(run, remotePaths, artifact);
+
+  const sdkLevel = cache ? await cache.sdkLevel(run) : null;
+  if (sdkLevel !== null && sdkLevel >= MIN_SDK_FOR_PATH_CACHE) {
+    cache?.rememberVerified(key);
+  }
+}
+
+/**
+ * Pull each APK into a private temp dir and verify its signer against the pin.
+ *
+ * @param run - The device-scoped adb executor.
+ * @param remotePaths - The installed APK paths from `pm path`.
+ * @param artifact - The bundled artifact carrying the pinned signer SHA-256.
+ * @throws {@link UntrustedHelperError} when a pull fails or a signer does not
+ * match the pin.
+ */
+async function pullAndVerify(
+  run: AndroidAdbExecutor,
+  remotePaths: string[],
+  artifact: HelperArtifact,
+): Promise<void> {
   const tempDir = createPrivateTempDir('helper-verify');
   try {
     let index = 0;
@@ -233,23 +358,31 @@ export async function ensureHelperInstalled(serial: string): Promise<void> {
 /**
  * Verify that the helper currently installed on the device is signed by the
  * pinned certificate. This is the trust invariant and MUST run before EVERY
- * `am instrument`, never cached: package name and versionCode are
+ * `am instrument`, never cached as a boolean: package name and versionCode are
  * attacker-controlled, so an actor who can install packages could replace a
  * previously-trusted helper with a malicious same-package instrumentation
- * between snapshots. Re-verifying the installed signer on every use (pm path +
- * pull + hash — cheap relative to the instrumentation run) is what keeps the
- * signature pin a per-use invariant instead of a one-time check.
+ * between snapshots. Re-checking the installed helper on every use is what
+ * keeps the signature pin a per-use invariant instead of a one-time check.
+ *
+ * Without a `cache`, every call runs pm path + pull + hash. With a `cache`,
+ * every call still runs `pm path`, and the pull + hash are skipped only when
+ * the APK paths are the same as the last successful verification (see
+ * {@link HelperTrustCache} for why that is safe on API 26+).
  *
  * @param serial - The target device serial.
+ * @param cache - Optional per-backend cache of the last verified install.
  * @throws {@link UntrustedHelperError} when the installed helper is signed by
  * an unexpected certificate (a squatter). The caller MUST NOT fall back to
  * `uiautomator dump` in that case.
+ * @throws {@link HelperNotInstalledError} when the helper package is not
+ * installed (not a trust failure; reinstall and retry).
  */
 export async function assertInstalledHelperTrusted(
   serial: string,
+  cache?: HelperTrustCache,
 ): Promise<void> {
   const artifact = await loadHelperArtifact();
-  await verifyInstalledSigner(serial, artifact);
+  await verifyInstalledSigner(serial, artifact, cache);
 }
 
 /**

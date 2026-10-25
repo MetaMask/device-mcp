@@ -211,14 +211,79 @@ foreground window's root is present, then streams the hierarchy back over
 `am instrument` as chunked base64. It is installed on demand the first time it
 is needed and reused across snapshots in the session.
 
-The strategy is controlled by `DEVICE_MCP_ADB_SNAPSHOT`:
+Snapshot modes:
 
-- **`auto`** (default) — a single fast `uiautomator dump` first (wins instantly
-  on idle screens), then the instrumentation helper if that dump does not
-  produce a hierarchy, then the remaining dump retries as a last resort.
-- **`instrument`** — use the instrumentation helper only.
-- **`dump`** — use stock `uiautomator dump` only (the original behavior; no APK
-  is installed).
+| Mode           | Order                                                                 | Dump fallback                        |
+| -------------- | --------------------------------------------------------------------- | ------------------------------------ |
+| `helper-first` | Helper, then 1 `uiautomator dump` attempt (3 if the helper never ran) | Non-trust helper failures only       |
+| `auto`         | 1 quick dump, then the helper, then up to 3 dump attempts             | Non-trust helper failures only       |
+| `instrument`   | Helper only                                                           | None (fully fail-closed)             |
+| `dump`         | Up to 3 `uiautomator dump` attempts (the original behavior)           | Not applicable (no APK is installed) |
+
+- **Default:** `helper-first` when the bundled helper APK is available, else
+  `dump` (for example a local build without the APK, or an APK that fails its
+  manifest digest check). When it falls back to `dump`, the backend prints the
+  reason once to stderr. The helper does not wait for idle, so it is fast on
+  busy screens. It also returns a fuller tree than the dump, for example
+  WebView content that the dump leaves out.
+- **First snapshot:** the first helper snapshot of a backend may also install
+  the helper. The install has its own timeout (up to 60 s) and runs outside the
+  25 s snapshot deadline, so that first snapshot can take longer. Later
+  snapshots reuse the install. If the helper is uninstalled mid-session, the
+  next snapshot reinstalls it once and checks its signer again before it runs.
+- **`auto`** is sticky per backend instance. When the quick dump fails and the
+  helper then succeeds, later snapshots skip the quick dump: on a busy screen it
+  waits about 11 s for an idle state before it fails. When the helper later
+  fails and the dump fallback succeeds, the next snapshot tries the quick dump
+  first again. Note that on an idle screen `auto` returns the dump tree, which
+  can be smaller than the helper tree.
+- **Incomplete captures:** the helper waits at most 500 ms for the foreground
+  window's root. During a screen transition the root can be missing for
+  longer, and the helper reports `Capture did not stabilize within 500ms`. In
+  every mode that uses the helper, the backend then runs the helper up to 2
+  more times, 250 ms apart, within the 25 s snapshot deadline, before any dump
+  fallback.
+- **`helper-first` dump cap:** when the helper ran on the device and still
+  failed, the screen is probably busy, and each `uiautomator dump` attempt
+  there waits about 11 s for an idle state before it fails. So `helper-first`
+  makes only 1 dump attempt in that case, and fails fast if it does not work.
+  It keeps 3 dump attempts when the helper never ran (for example the install
+  failed).
+- A trust failure (see below) never falls back to dump in any mode, and is
+  never retried.
+
+> **TODO (next helper release):** the 500 ms root-stabilization timeout is
+> hard-coded in the APK (`ROOT_CAPTURE_STABILIZATION_TIMEOUT_MS` in
+> `SnapshotInstrumentation.java`). Make it an instrumentation argument, like
+> `timeoutMs`, so the backend can pass a longer value. The shipped APK ignores
+> unknown arguments, so the backend retries instead for now.
+
+Select a mode with the `adb.snapshotMode` option of `createBackend` /
+`createLazyBackend`, or with the `DEVICE_MCP_ADB_SNAPSHOT` environment
+variable. The option takes precedence over the environment variable. An unknown
+`snapshotMode` throws; an unknown environment value is ignored (the default
+applies):
+
+```ts
+import { createBackend, createLazyBackend } from '@metamask/device-mcp';
+
+const backend = await createBackend('emulator-5554', 'android', {
+  adb: { snapshotMode: 'instrument' },
+});
+
+const lazy = createLazyBackend('emulator-5554', 'android', {
+  adb: { snapshotMode: 'instrument' },
+});
+```
+
+The `device-mcp` MCP server CLI passes no option, so it uses
+`DEVICE_MCP_ADB_SNAPSHOT` or the default. Its default changes too: it was
+`auto` and is now `helper-first`. To keep the old behavior, set
+`DEVICE_MCP_ADB_SNAPSHOT=auto` in the server's environment.
+
+On the ADB backend, each `SnapshotResult` also reports `source` (`'dump'` or
+`'instrument'`, the path that produced the tree) and `captureMs` (the capture
+time, including failed attempts and fallbacks).
 
 The helper is a `testOnly` APK installed with `adb install -t`, so it only
 installs on developer emulators/attached devices, never on locked-down or
@@ -235,8 +300,36 @@ in the bundled build manifest. If a different app is squatting the helper's
 package name, the signer will not match: the snapshot **fails closed** with a
 trust error and does **not** silently fall back to `uiautomator dump`. Generic,
 non-trust failures (a churny screen, an `am` hiccup) still fall back to dump in
-`auto` mode. Use `DEVICE_MCP_ADB_SNAPSHOT=instrument` for a fully fail-closed
-mode, or `DEVICE_MCP_ADB_SNAPSHOT=dump` to skip the helper entirely.
+`helper-first` and `auto` mode. Use `instrument` for a fully fail-closed mode,
+or `dump` to skip the helper entirely.
+
+The check runs before **every** `am instrument`. It is never cached as a
+"trusted" flag, because anyone who can install packages could replace a
+trusted helper with a same-package squatter between two snapshots. To keep it
+cheap, each backend instance does this:
+
+1. It runs `pm path` on every snapshot to get the installed APK path(s).
+2. It pulls and verifies the APK(s) again only when the paths are different
+   from the last successful verification (or the pinned signer changed). A
+   failed check is never remembered, so the next snapshot verifies in full.
+
+This is safe because, on Android 8.0 (API 26) and later, every install or
+update of a package goes to a new randomized directory under `/data/app/`
+(`/data/app/~~<random>/<package>-<random>/` from Android 11). So a replaced
+helper always has a new path. Replacing the APK bytes at the same path needs
+root, and root is outside this threat model: a root user can also tamper with
+the helper process, `am`, or `adbd` directly. Before API 26 a package path can
+repeat across installs, so the backend pulls and verifies on every snapshot
+there, as it does when it cannot read the API level. On the measured emulator
+the full check took about 87 ms per snapshot (p50); `pm path` alone is one
+`adb shell` round trip.
+
+If a helper signed by a different key is already on the device (for example a
+release helper, and your local build is signed with a throwaway key), the
+install is refused and every helper snapshot fails closed. The trust error
+names the fix: uninstall it with
+`adb uninstall io.metamask.devicemcp.snapshothelper` so the bundled helper can
+be installed, or use the `dump` mode.
 
 ##### Building the Android snapshot helper locally
 
@@ -248,9 +341,10 @@ Requirements: JDK 17, Android SDK with `platforms/android-36` and
 `build-tools;36.0.0` (auto-discovered from `$ANDROID_HOME` / `$ANDROID_SDK_ROOT`
 / `~/Library/Android/sdk`).
 
-The helper is signed with a shared key so the on-device trust check accepts your
-local build. Obtain the keystore from the team vault, place it **outside** the
-repo, point the build at it, and build:
+The helper is signed with a shared key, so your local build and the released
+helper can replace each other on a device without a signer conflict. Obtain
+the keystore from the team vault, place it **outside** the repo, point the
+build at it, and build:
 
 ```bash
 export DEVICE_MCP_HELPER_KEYSTORE=~/.device-mcp/helper.keystore
@@ -262,10 +356,14 @@ yarn build:android-helper
 The APK and its `.manifest.json` land in `dist/android/`. The MCP server
 installs the APK on demand and verifies its signing certificate before use.
 
-**Don't have the keystore?** You can still develop everything except the
-helper-signed path: the build script auto-generates a throwaway key when
-`DEVICE_MCP_HELPER_KEYSTORE` is unset. A throwaway-signed APK will **not** match
-the pinned signer, so the helper path rejects it by design — run snapshots via
+**Don't have the keystore?** The build script auto-generates a throwaway key
+when `DEVICE_MCP_HELPER_KEYSTORE` is unset. The pinned signer comes from the
+manifest of the APK you just built, so a fresh throwaway-signed helper installs
+and verifies normally. It fails only when a helper signed with a different key
+is already installed on the device (for example from a release build or an
+earlier throwaway build): Android refuses the install, and the snapshot fails
+closed with a trust error. Then run
+`adb uninstall io.metamask.devicemcp.snapshothelper`, or use
 `DEVICE_MCP_ADB_SNAPSHOT=dump`.
 
 > Never commit a keystore. `*.keystore`, `*.jks`, `*.p12`, and `~/.device-mcp/`
