@@ -30,14 +30,11 @@ export type SnapshotResult = {
   raw: string;
   timestamp: number;
   /**
-   * Which capture path produced the snapshot. Set by the ADB backend only:
-   * `dump` is `uiautomator dump`, `instrument` is the bundled helper.
+   * ADB only: stock uiautomator dump or the bundled instrumentation helper.
    */
   source?: 'dump' | 'instrument';
   /**
-   * Wall-clock time of the capture in ms, including any failed attempts and
-   * fallbacks, but not the wait for an earlier capture. Set by the ADB backend
-   * only.
+   * ADB capture time in ms, including retries and fallbacks, excluding queue wait.
    */
   captureMs?: number;
 };

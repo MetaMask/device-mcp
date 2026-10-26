@@ -74,6 +74,29 @@ describe('android-instrumentation/installer', () => {
     mockAssertSigner.mockResolvedValue(undefined);
   });
 
+  const wireDevice = (state: {
+    pmPath: string;
+    sdk?: string;
+    sdkExitCode?: number;
+    pullExitCode?: number;
+  }) => {
+    const run = vi.fn(async (args: string[]) => {
+      if (args.includes('path')) {
+        return { stdout: state.pmPath, stderr: '', exitCode: 0 };
+      }
+      if (args.includes('getprop')) {
+        return {
+          stdout: state.sdk ?? '34',
+          stderr: '',
+          exitCode: state.sdkExitCode ?? 0,
+        };
+      }
+      return { stdout: '', stderr: '', exitCode: state.pullExitCode ?? 0 };
+    });
+    mockCreateExecutor.mockReturnValue(run);
+    return run;
+  };
+
   describe('constants', () => {
     it('exposes the am instrument not-found signature', () => {
       expect(INSTRUMENTATION_NOT_FOUND_SIGNATURE).toBe(
@@ -161,7 +184,7 @@ describe('android-instrumentation/installer', () => {
       );
     });
 
-    it('carries the pinned signer digest on a conflict failure', async () => {
+    it('includes the signer pin and recovery steps on a conflict failure', async () => {
       mockExec.mockResolvedValue({
         stdout: 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]',
         stderr: '',
@@ -170,42 +193,22 @@ describe('android-instrumentation/installer', () => {
 
       await expect(installHelper('emulator-5554')).rejects.toMatchObject({
         expectedSignerSha256: ARTIFACT.signerSha256,
+        message: expect.stringContaining(UNTRUSTED_HELPER_REMEDY),
       });
-    });
-
-    it('tells the user how to recover from a signer conflict', async () => {
-      mockExec.mockResolvedValue({
-        stdout: 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]',
-        stderr: '',
-        exitCode: 1,
-      });
-
-      await expect(installHelper('emulator-5554')).rejects.toThrow(
-        UNTRUSTED_HELPER_REMEDY,
-      );
     });
   });
 
   describe('ensureHelperTrusted', () => {
-    const wireExecutor = (pmPathStdout: string, pullExit = 0): void => {
-      const run = vi.fn(async (args: string[]) => {
-        if (args.includes('path')) {
-          return { stdout: pmPathStdout, stderr: '', exitCode: 0 };
-        }
-        return { stdout: '', stderr: '', exitCode: pullExit };
-      });
-      mockCreateExecutor.mockReturnValue(run);
-    };
-
     it('installs when the helper is absent, then verifies the signer', async () => {
       mockExec.mockResolvedValue({
         stdout: 'Success\n',
         stderr: '',
         exitCode: 0,
       });
-      wireExecutor(
-        'package:/data/app/io.metamask.devicemcp.snapshothelper/base.apk',
-      );
+      wireDevice({
+        pmPath:
+          'package:/data/app/io.metamask.devicemcp.snapshothelper/base.apk',
+      });
 
       await ensureHelperTrusted('emulator-5554');
 
@@ -225,9 +228,10 @@ describe('android-instrumentation/installer', () => {
         stderr: '',
         exitCode: 0,
       });
-      wireExecutor(
-        'package:/data/app/io.metamask.devicemcp.snapshothelper/base.apk',
-      );
+      wireDevice({
+        pmPath:
+          'package:/data/app/io.metamask.devicemcp.snapshothelper/base.apk',
+      });
 
       await ensureHelperTrusted('emulator-5554');
 
@@ -244,9 +248,10 @@ describe('android-instrumentation/installer', () => {
         stderr: '',
         exitCode: 0,
       });
-      wireExecutor(
-        'package:/data/app/pkg/base.apk\npackage:/data/app/pkg/split_config.apk\n',
-      );
+      wireDevice({
+        pmPath:
+          'package:/data/app/pkg/base.apk\npackage:/data/app/pkg/split_config.apk\n',
+      });
 
       await ensureHelperTrusted('emulator-5554');
 
@@ -259,7 +264,7 @@ describe('android-instrumentation/installer', () => {
         stderr: '',
         exitCode: 0,
       });
-      wireExecutor('package:/data/app/pkg/base.apk');
+      wireDevice({ pmPath: 'package:/data/app/pkg/base.apk' });
       mockAssertSigner.mockRejectedValue(
         new UntrustedHelperError('mismatch', {
           expectedSignerSha256: ARTIFACT.signerSha256,
@@ -279,7 +284,7 @@ describe('android-instrumentation/installer', () => {
         stderr: '',
         exitCode: 0,
       });
-      wireExecutor('');
+      wireDevice({ pmPath: '' });
 
       await expect(ensureHelperTrusted('emulator-5554')).rejects.toBeInstanceOf(
         HelperNotInstalledError,
@@ -324,18 +329,8 @@ describe('android-instrumentation/installer', () => {
   });
 
   describe('assertInstalledHelperTrusted', () => {
-    const wireExecutor = (pmPathStdout: string, pullExit = 0): void => {
-      const run = vi.fn(async (args: string[]) => {
-        if (args.includes('path')) {
-          return { stdout: pmPathStdout, stderr: '', exitCode: 0 };
-        }
-        return { stdout: '', stderr: '', exitCode: pullExit };
-      });
-      mockCreateExecutor.mockReturnValue(run);
-    };
-
     it('verifies the installed signer without installing', async () => {
-      wireExecutor('package:/data/app/pkg/base.apk');
+      wireDevice({ pmPath: 'package:/data/app/pkg/base.apk' });
 
       await assertInstalledHelperTrusted('emulator-5554');
 
@@ -351,7 +346,7 @@ describe('android-instrumentation/installer', () => {
     });
 
     it('propagates UntrustedHelperError from the signer check', async () => {
-      wireExecutor('package:/data/app/pkg/base.apk');
+      wireDevice({ pmPath: 'package:/data/app/pkg/base.apk' });
       mockAssertSigner.mockRejectedValue(
         new UntrustedHelperError('mismatch', {
           expectedSignerSha256: ARTIFACT.signerSha256,
@@ -366,16 +361,11 @@ describe('android-instrumentation/installer', () => {
     });
 
     it('throws HelperNotInstalledError (not a trust error) when pm path finds no APK', async () => {
-      wireExecutor('');
+      wireDevice({ pmPath: '' });
 
-      const error = await assertInstalledHelperTrusted('emulator-5554').then(
-        () => null,
-        (caught: unknown) => caught,
-      );
-
-      expect(error).toBeInstanceOf(HelperNotInstalledError);
-      expect(error).not.toBeInstanceOf(UntrustedHelperError);
-      expect(String(error)).toMatch(/not installed/u);
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554'),
+      ).rejects.toThrow(HelperNotInstalledError);
       expect(mockAssertSigner).not.toHaveBeenCalled();
     });
   });
@@ -386,41 +376,10 @@ describe('android-instrumentation/installer', () => {
     const PATH_B =
       'package:/data/app/~~def==/io.metamask.devicemcp.snapshothelper-y2==/base.apk';
 
-    /**
-     * Wire a fake adb executor whose `pm path` output and API level can change
-     * between calls.
-     *
-     * @param state - Mutable device state read on every call.
-     * @param state.pmPath - The current `pm path` stdout.
-     * @param state.sdk - The current `ro.build.version.sdk` stdout.
-     * @param state.sdkExitCode - The exit code of the `getprop` call.
-     * @returns The executor mock.
-     */
-    const wireDevice = (state: {
-      pmPath: string;
-      sdk?: string;
-      sdkExitCode?: number;
-    }): ReturnType<typeof vi.fn> => {
-      const run = vi.fn(async (args: string[]) => {
-        if (args.includes('path')) {
-          return { stdout: state.pmPath, stderr: '', exitCode: 0 };
-        }
-        if (args.includes('getprop')) {
-          return {
-            stdout: state.sdk ?? '34\n',
-            stderr: '',
-            exitCode: state.sdkExitCode ?? 0,
-          };
-        }
-        return { stdout: '', stderr: '', exitCode: 0 };
-      });
-      mockCreateExecutor.mockReturnValue(run);
-      return run;
-    };
-
-    const countCalls = (run: ReturnType<typeof vi.fn>, token: string): number =>
-      run.mock.calls.filter((call) => (call[0] as string[]).includes(token))
-        .length;
+    const countCalls = (
+      run: ReturnType<typeof wireDevice>,
+      token: string,
+    ): number => run.mock.calls.filter(([args]) => args.includes(token)).length;
 
     it('runs pm path every time but skips the pull when the path is unchanged', async () => {
       const run = wireDevice({ pmPath: PATH_A });
@@ -433,7 +392,6 @@ describe('android-instrumentation/installer', () => {
       expect(countCalls(run, 'path')).toBe(3);
       expect(countCalls(run, 'pull')).toBe(1);
       expect(mockAssertSigner).toHaveBeenCalledTimes(1);
-      // The API level is read once per cache, not per snapshot.
       expect(countCalls(run, 'getprop')).toBe(1);
     });
 
@@ -443,7 +401,6 @@ describe('android-instrumentation/installer', () => {
       const cache = new HelperTrustCache();
 
       await assertInstalledHelperTrusted('emulator-5554', cache);
-      // A reinstall or update always lands in a new randomized directory.
       state.pmPath = PATH_B;
       await assertInstalledHelperTrusted('emulator-5554', cache);
 
@@ -474,7 +431,6 @@ describe('android-instrumentation/installer', () => {
 
       await assertInstalledHelperTrusted('emulator-5554', cache);
 
-      // A squatter replaced the helper: new path, foreign certificate.
       state.pmPath = PATH_B;
       mockAssertSigner.mockRejectedValue(
         new UntrustedHelperError('mismatch', {
@@ -486,7 +442,6 @@ describe('android-instrumentation/installer', () => {
       await expect(
         assertInstalledHelperTrusted('emulator-5554', cache),
       ).rejects.toBeInstanceOf(UntrustedHelperError);
-      // The failed path is never remembered: the next call verifies again.
       await expect(
         assertInstalledHelperTrusted('emulator-5554', cache),
       ).rejects.toBeInstanceOf(UntrustedHelperError);
@@ -503,7 +458,6 @@ describe('android-instrumentation/installer', () => {
       await expect(
         assertInstalledHelperTrusted('emulator-5554', cache),
       ).rejects.toBeInstanceOf(HelperNotInstalledError);
-      // The same path as before is verified in full after the gap.
       state.pmPath = PATH_A;
       await assertInstalledHelperTrusted('emulator-5554', cache);
 
@@ -511,16 +465,7 @@ describe('android-instrumentation/installer', () => {
     });
 
     it('does not remember a path after a failed pull', async () => {
-      const failingPull = vi.fn(async (args: string[]) => {
-        if (args.includes('path')) {
-          return { stdout: PATH_A, stderr: '', exitCode: 0 };
-        }
-        if (args.includes('getprop')) {
-          return { stdout: '34', stderr: '', exitCode: 0 };
-        }
-        return { stdout: '', stderr: 'pull failed', exitCode: 1 };
-      });
-      mockCreateExecutor.mockReturnValue(failingPull);
+      const run = wireDevice({ pmPath: PATH_A, pullExitCode: 1 });
       const cache = new HelperTrustCache();
 
       await expect(
@@ -529,7 +474,7 @@ describe('android-instrumentation/installer', () => {
       await expect(
         assertInstalledHelperTrusted('emulator-5554', cache),
       ).rejects.toBeInstanceOf(UntrustedHelperError);
-      expect(countCalls(failingPull, 'pull')).toBe(2);
+      expect(countCalls(run, 'pull')).toBe(2);
     });
 
     it('never skips the pull before Android 8.0 (API 26), where paths repeat', async () => {

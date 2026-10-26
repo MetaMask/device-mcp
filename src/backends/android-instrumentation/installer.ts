@@ -1,20 +1,7 @@
 /**
- * Installs and TRUSTS the bundled Android snapshot-helper instrumentation APK.
- *
- * The APK is built during `prepack` into `dist/android/` and shipped with the
- * npm package (`files: ["dist"]`). Before the ADB backend runs `am instrument`
- * it must guarantee that the package on the device is OUR helper — not a
- * malicious app squatting the package name. Package name and versionCode are
- * attacker-controlled metadata; the only trust anchor is the signing
- * certificate. So `ensureHelperTrusted` installs/upgrades by versionCode
- * (freshness only) and then UNCONDITIONALLY verifies the installed APK's v2/v3
- * signer against the pinned SHA-256 from the build manifest. A mismatch throws
- * {@link UntrustedHelperError} and the caller must fail closed (no dump
- * fallback) — see `adb-backend.ts`.
- *
- * `__dirname` is used for path resolution because it is portable across the
- * dual ESM/CJS build: ts-bridge rewrites it to an `import.meta.url`-based shim
- * in the `.mjs` output and leaves the native binding in the `.cjs` output.
+ * Install the bundled helper by versionCode (freshness), then verify the
+ * installed signer against the manifest pin (trust). Package name and version
+ * are attacker-controlled; neither establishes trust.
  *
  * Version/policy/signer-verify flow adapted from agent-device (MIT, Copyright
  * (c) Callstack) onto our source-built APK and pure-JS signer verifier.
@@ -161,46 +148,25 @@ export async function installHelper(
   }
 }
 
-/**
- * The first API level (Android 8.0) where every install or update of a package
- * gets a new, randomized code directory: `/data/app/<pkg>-<random>/`, and
- * `/data/app/~~<random>/<pkg>-<random>/` from Android 11. Android 7 and earlier
- * alternate between `/data/app/<pkg>-1/` and `-2/`, so a path can repeat across
- * installs there and the path cache is not used.
- */
 const MIN_SDK_FOR_PATH_CACHE = 26;
 
 /**
- * Per-backend state that lets {@link verifyInstalledSigner} skip the pull and
- * hash when the helper install has not changed.
- *
- * This is NOT a cached trust decision. `pm path` still runs before every use,
- * and the cache only remembers which APK paths last passed full signer
- * verification against the pin. Android writes every install or update to a
- * new randomized directory, so the same paths mean the same install. Replacing
- * the APK bytes at an existing path requires root, which is outside the threat
- * model (root can also tamper with the helper process, `am`, or `adb` itself).
- *
- * Create one instance per device and pass the same instance on every call.
+ * Per-device cache of the signer pin and APK paths that passed verification.
+ * `pm path` still runs before every use. API 26+ randomizes install directories,
+ * so unchanged paths identify the same install. Earlier APIs can reuse paths.
+ * Replacing bytes in place requires root, outside this threat model.
  */
 export class HelperTrustCache {
-  // The pin and APK paths that last passed full verification.
   #verifiedKey: string | undefined;
 
-  // The device API level, once it has been read successfully.
   #sdkLevel: number | undefined;
 
-  /**
-   * @param key - The pin and APK paths of the current install.
-   * @returns True when this exact install already passed full verification.
-   */
   isVerified(key: string): boolean {
     return this.#verifiedKey === key;
   }
 
   /**
-   * Remember an install that just passed full verification. Only call this
-   * after a successful pull + hash, and only on API 26+.
+   * Call only after full verification on API 26+.
    *
    * @param key - The pin and APK paths of the verified install.
    */
@@ -208,14 +174,12 @@ export class HelperTrustCache {
     this.#verifiedKey = key;
   }
 
-  /** Forget the verified install, so the next call verifies in full. */
   forget(): void {
     this.#verifiedKey = undefined;
   }
 
   /**
-   * Read the device API level, once per cache. A failed read is not
-   * remembered, so a transient adb error is retried on the next call.
+   * Cache successful API-level reads; retry failed reads on the next call.
    *
    * @param run - The device-scoped adb executor.
    * @returns The API level, or null when it could not be read.
@@ -237,13 +201,8 @@ export class HelperTrustCache {
 }
 
 /**
- * Resolve the helper's installed APK paths (base + splits), then pull each one
- * into a private temp dir and verify it is signed by the pinned certificate.
- *
- * With a `cache`, `pm path` still runs on every call, but the pull and hash are
- * skipped when the paths are the same as the last successful verification and
- * the device is API {@link MIN_SDK_FOR_PATH_CACHE} or later. Any failure clears
- * the cache before it throws, so the next call verifies in full.
+ * Check installed APK paths on every call; pull and verify uncached installs.
+ * See {@link HelperTrustCache} for the path-cache assumptions.
  *
  * @param serial - The target device serial.
  * @param artifact - The bundled artifact carrying the pinned signer SHA-256.
@@ -269,22 +228,17 @@ export async function verifyInstalledSigner(
     .map((line) => line.slice('package:'.length));
   if (remotePaths.length === 0) {
     cache?.forget();
-    // No APK path means the package is not installed (for example it was
-    // uninstalled mid-session). A missing package cannot run code, so this is
-    // not a trust failure: the backend reinstalls the helper and retries, and
-    // the fresh install is verified in full before `am instrument` runs.
     throw new HelperNotInstalledError(
       `Snapshot helper is not installed: \`pm path ${HELPER_PACKAGE}\` ` +
         'returned no APK path',
     );
   }
 
-  // The key includes the pin, so a different bundled helper never matches.
-  // A key is only remembered on API 26+ (see below), so a match is enough.
   const key = [artifact.signerSha256, ...remotePaths].join('\n');
   if (cache?.isVerified(key)) {
     return;
   }
+  // A failed verification must not leave a previous install cached.
   cache?.forget();
 
   await pullAndVerify(run, remotePaths, artifact);
@@ -356,18 +310,8 @@ export async function ensureHelperInstalled(serial: string): Promise<void> {
 }
 
 /**
- * Verify that the helper currently installed on the device is signed by the
- * pinned certificate. This is the trust invariant and MUST run before EVERY
- * `am instrument`, never cached as a boolean: package name and versionCode are
- * attacker-controlled, so an actor who can install packages could replace a
- * previously-trusted helper with a malicious same-package instrumentation
- * between snapshots. Re-checking the installed helper on every use is what
- * keeps the signature pin a per-use invariant instead of a one-time check.
- *
- * Without a `cache`, every call runs pm path + pull + hash. With a `cache`,
- * every call still runs `pm path`, and the pull + hash are skipped only when
- * the APK paths are the same as the last successful verification (see
- * {@link HelperTrustCache} for why that is safe on API 26+).
+ * Check trust before every `am instrument`, including retries. Never cache
+ * this call: the installed package can change between invocations.
  *
  * @param serial - The target device serial.
  * @param cache - Optional per-backend cache of the last verified install.

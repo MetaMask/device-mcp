@@ -153,7 +153,12 @@ describe('android-instrumentation/snapshot', () => {
         },
       });
       expect(() => reassembleInstrumentationXml(stdout)).toThrow(
-        /reported failure.*TimeoutException.*idle wait exceeded/u,
+        expect.objectContaining({
+          constructor: Error,
+          message: expect.stringMatching(
+            /reported failure.*TimeoutException.*idle wait exceeded/u,
+          ),
+        }),
       );
     });
 
@@ -174,26 +179,6 @@ describe('android-instrumentation/snapshot', () => {
       expect(() => reassembleInstrumentationXml(stdout)).toThrow(
         /reported failure.*Capture did not stabilize within 500ms/u,
       );
-    });
-
-    it('keeps other helper failures as plain errors', () => {
-      const stdout = buildInstrumentOutput(SAMPLE_XML, {
-        chunkSize: 40,
-        ok: 'false',
-        extraResult: {
-          errorType: 'java.util.concurrent.TimeoutException',
-          message: 'idle wait exceeded',
-        },
-      });
-
-      let caught: unknown;
-      try {
-        reassembleInstrumentationXml(stdout);
-      } catch (error) {
-        caught = error;
-      }
-      expect(caught).toBeInstanceOf(Error);
-      expect(caught).not.toBeInstanceOf(HelperIncompleteCaptureError);
     });
 
     it('distinguishes a killed run (no result record) from a clean failure', () => {

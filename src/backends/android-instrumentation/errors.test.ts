@@ -72,28 +72,35 @@ describe('UntrustedHelperError', () => {
   });
 });
 
-describe('HelperNotInstalledError', () => {
+describe.each([
+  {
+    ErrorType: HelperNotInstalledError,
+    guard: isHelperNotInstalledError,
+    otherError: new HelperIncompleteCaptureError('incomplete'),
+  },
+  {
+    ErrorType: HelperIncompleteCaptureError,
+    guard: isHelperIncompleteCaptureError,
+    otherError: new HelperNotInstalledError('gone'),
+  },
+])('$ErrorType.name', ({ ErrorType, guard, otherError }) => {
   it('is a generic helper error, never a trust error', () => {
-    const error = new HelperNotInstalledError('gone');
-    expect(error).toBeInstanceOf(Error);
+    const error = new ErrorType('capture failed');
     expect(error).toBeInstanceOf(SnapshotHelperError);
-    expect(error.name).toBe('HelperNotInstalledError');
+    expect(error.name).toBe(ErrorType.name);
     expect(error.code).toBe('COMMAND_FAILED');
-    expect(isHelperNotInstalledError(error)).toBe(true);
+    expect(guard(error)).toBe(true);
     expect(isUntrustedHelperError(error)).toBe(false);
   });
 
   it('is not matched by the guard for other errors', () => {
-    expect(
-      isHelperNotInstalledError(
-        new SnapshotHelperError('COMMAND_FAILED', 'adb died'),
-      ),
-    ).toBe(false);
-    expect(
-      isHelperNotInstalledError(
-        new UntrustedHelperError('mismatch', { expectedSignerSha256: 'aaaa' }),
-      ),
-    ).toBe(false);
+    const errors = [
+      new Error('plain'),
+      new SnapshotHelperError('COMMAND_FAILED', 'adb died'),
+      new UntrustedHelperError('mismatch', { expectedSignerSha256: 'aaaa' }),
+      otherError,
+    ];
+    expect(errors.filter(guard)).toStrictEqual([]);
   });
 });
 
@@ -104,17 +111,5 @@ describe('UNTRUSTED_HELPER_REMEDY', () => {
     );
     expect(UNTRUSTED_HELPER_REMEDY).toContain('DEVICE_MCP_ADB_SNAPSHOT=dump');
     expect(UNTRUSTED_HELPER_REMEDY).toContain("snapshotMode 'dump'");
-  });
-});
-
-describe('HelperIncompleteCaptureError', () => {
-  it('is a generic helper error, never a trust error', () => {
-    const error = new HelperIncompleteCaptureError('did not stabilize');
-    expect(error).toBeInstanceOf(SnapshotHelperError);
-    expect(error.name).toBe('HelperIncompleteCaptureError');
-    expect(isHelperIncompleteCaptureError(error)).toBe(true);
-    expect(isUntrustedHelperError(error)).toBe(false);
-    expect(isHelperNotInstalledError(error)).toBe(false);
-    expect(isHelperIncompleteCaptureError(new Error('x'))).toBe(false);
   });
 });
