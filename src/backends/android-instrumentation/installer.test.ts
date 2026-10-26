@@ -1,10 +1,12 @@
 import { rmSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+import { AdbBackend } from '../adb-backend.js';
 import * as adbModule from './adb.js';
 import * as artifactModule from './artifact.js';
 import {
   HelperNotInstalledError,
+  SnapshotHelperError,
   UNTRUSTED_HELPER_REMEDY,
   UntrustedHelperError,
 } from './errors.js';
@@ -40,6 +42,7 @@ vi.mock('../../utils/output-path.js', () => ({
 
 vi.mock('../../utils/exec.js', () => ({
   exec: vi.fn(),
+  execStrict: vi.fn(),
 }));
 
 vi.mock('node:fs', () => ({
@@ -51,6 +54,7 @@ const mockAssertSigner = vi.mocked(signerModule.assertApkSignerSha256);
 const mockCreateExecutor = vi.mocked(adbModule.createAndroidAdbExecutor);
 const mockCreateTempDir = vi.mocked(outputPathModule.createPrivateTempDir);
 const mockExec = vi.mocked(execModule.exec);
+const mockExecStrict = vi.mocked(execModule.execStrict);
 const mockRmSync = vi.mocked(rmSync);
 
 const ARTIFACT = {
@@ -76,19 +80,33 @@ describe('android-instrumentation/installer', () => {
 
   const wireDevice = (state: {
     pmPath: string;
+    pathExitCode?: number;
+    packageList?: string;
+    packageListExitCode?: number;
     sdk?: string;
     sdkExitCode?: number;
     pullExitCode?: number;
   }) => {
     const run = vi.fn(async (args: string[]) => {
       if (args.includes('path')) {
-        return { stdout: state.pmPath, stderr: '', exitCode: 0 };
+        return {
+          stdout: state.pmPath,
+          stderr: '',
+          exitCode: state.pathExitCode ?? 0,
+        };
       }
       if (args.includes('getprop')) {
         return {
           stdout: state.sdk ?? '34',
           stderr: '',
           exitCode: state.sdkExitCode ?? 0,
+        };
+      }
+      if (args.includes('list')) {
+        return {
+          stdout: state.packageList ?? '',
+          stderr: '',
+          exitCode: state.packageListExitCode ?? 0,
         };
       }
       return { stdout: '', stderr: '', exitCode: state.pullExitCode ?? 0 };
@@ -145,57 +163,184 @@ describe('android-instrumentation/installer', () => {
       );
     });
 
-    it('throws when the install does not report Success', async () => {
+    it('keeps the install error when no helper remains installed', async () => {
       mockExec.mockResolvedValue({
         stdout: '',
         stderr: 'INSTALL_FAILED_TEST_ONLY',
         exitCode: 1,
       });
+      wireDevice({ pmPath: '' });
 
-      await expect(installHelper('emulator-5554')).rejects.toThrow(
-        /Failed to install snapshot helper APK[\s\S]*INSTALL_FAILED_TEST_ONLY/u,
-      );
+      await expect(installHelper('emulator-5554')).rejects.toMatchObject({
+        name: 'Error',
+        message: expect.stringMatching(
+          /Failed to install snapshot helper APK[\s\S]*INSTALL_FAILED_TEST_ONLY/u,
+        ),
+      });
+      expect(mockAssertSigner).not.toHaveBeenCalled();
     });
 
-    it('fails closed when the install is refused on a signer conflict', async () => {
+    it.each([
+      'INSTALL_FAILED_UPDATE_INCOMPATIBLE',
+      'INSTALL_FAILED_SHARED_USER_INCOMPATIBLE',
+      'INSTALL_FAILED_VERIFICATION_FAILURE',
+      'INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES',
+      'OEM_INSTALL_REJECTED',
+    ])('fails closed on a foreign signer after %s', async (token) => {
       mockExec.mockResolvedValue({
-        stdout:
-          'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package ' +
-          'io.metamask.devicemcp.snapshothelper signatures do not match ' +
-          'newer version; ignoring!]',
+        stdout: `Failure [${token}]`,
         stderr: '',
         exitCode: 1,
       });
+      wireDevice({ pmPath: 'package:/data/app/pkg/base.apk' });
+      const trustError = new UntrustedHelperError(UNTRUSTED_HELPER_REMEDY, {
+        expectedSignerSha256: ARTIFACT.signerSha256,
+        actualSignerSha256: 'b'.repeat(64),
+      });
+      mockAssertSigner.mockRejectedValue(trustError);
 
-      await expect(installHelper('emulator-5554')).rejects.toBeInstanceOf(
-        UntrustedHelperError,
+      await expect(installHelper('emulator-5554')).rejects.toBe(trustError);
+      expect(mockAssertSigner).toHaveBeenCalledWith(
+        expect.stringContaining('apk-0.apk'),
+        ARTIFACT.signerSha256,
       );
     });
 
-    it('fails closed on a shared-user signer conflict', async () => {
+    it('keeps the install error when the installed signer matches, regardless of the token', async () => {
       mockExec.mockResolvedValue({
         stdout: 'Failure [INSTALL_FAILED_SHARED_USER_INCOMPATIBLE]',
         stderr: '',
         exitCode: 1,
       });
+      wireDevice({ pmPath: 'package:/data/app/pkg/base.apk' });
 
-      await expect(installHelper('emulator-5554')).rejects.toBeInstanceOf(
-        UntrustedHelperError,
-      );
+      await expect(installHelper('emulator-5554')).rejects.toMatchObject({
+        name: 'Error',
+        message: expect.stringContaining(
+          'INSTALL_FAILED_SHARED_USER_INCOMPATIBLE',
+        ),
+      });
+      expect(mockAssertSigner).toHaveBeenCalledTimes(1);
     });
 
-    it('includes the signer pin and recovery steps on a conflict failure', async () => {
+    it.each([
+      new SnapshotHelperError('ARTIFACT_INVALID', 'Unsupported APK signature'),
+      new Error('Could not read pulled APK'),
+    ])('fails closed when signer verification fails: %s', async (cause) => {
       mockExec.mockResolvedValue({
-        stdout: 'Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]',
+        stdout: 'Failure [OEM_INSTALL_REJECTED]',
         stderr: '',
         exitCode: 1,
       });
+      wireDevice({ pmPath: 'package:/data/app/pkg/base.apk' });
+      mockAssertSigner.mockRejectedValue(cause);
 
       await expect(installHelper('emulator-5554')).rejects.toMatchObject({
+        name: 'UntrustedHelperError',
         expectedSignerSha256: ARTIFACT.signerSha256,
-        message: expect.stringContaining(UNTRUSTED_HELPER_REMEDY),
+        message: expect.stringContaining('could not be verified'),
+        cause,
       });
     });
+
+    it('checks trust even when the install command rejects', async () => {
+      mockExec.mockRejectedValueOnce(new Error('Could not start adb'));
+      wireDevice({ pmPath: 'package:/data/app/pkg/base.apk' });
+      const trustError = new UntrustedHelperError('signer mismatch', {
+        expectedSignerSha256: ARTIFACT.signerSha256,
+      });
+      mockAssertSigner.mockRejectedValue(trustError);
+
+      await expect(installHelper('emulator-5554')).rejects.toBe(trustError);
+    });
+  });
+
+  describe('snapshot after an install failure', () => {
+    const DUMP_XML =
+      '<hierarchy><node text="dump" bounds="[0,0][1,1]" /></hierarchy>';
+
+    beforeEach(() => {
+      mockExecStrict.mockReset();
+      mockExec.mockImplementation(async (_command, args) => ({
+        stdout: args.includes('dumpsys')
+          ? 'versionCode=1\n'
+          : 'Failure [INSTALL_FAILED_VERIFICATION_FAILURE]',
+        stderr: '',
+        exitCode: args.includes('install') ? 1 : 0,
+      }));
+    });
+
+    it.each(['helper-first', 'auto', 'instrument'] as const)(
+      '%s: a foreign signer stops capture without a retry or dump fallback',
+      async (snapshotMode) => {
+        const backend = new AdbBackend('emulator-5554', { snapshotMode });
+        wireDevice({ pmPath: 'package:/data/app/pkg/base.apk' });
+        const trustError = new UntrustedHelperError('signer mismatch', {
+          expectedSignerSha256: ARTIFACT.signerSha256,
+          actualSignerSha256: 'b'.repeat(64),
+        });
+        mockAssertSigner.mockRejectedValue(trustError);
+        // Let auto's initial dump fail, but make any fallback succeed.
+        mockExecStrict
+          .mockResolvedValue(DUMP_XML)
+          .mockResolvedValueOnce(snapshotMode === 'auto' ? '' : DUMP_XML);
+
+        await expect(backend.snapshot()).rejects.toBe(trustError);
+
+        const countCalls = (token: string): number =>
+          mockExec.mock.calls.filter(([, args]) => args.includes(token)).length;
+        expect(countCalls('install')).toBe(1);
+        expect(countCalls('instrument')).toBe(0);
+        expect(countCalls('uiautomator')).toBe(snapshotMode === 'auto' ? 1 : 0);
+        expect(mockAssertSigner).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('helper-first: stops capture when the remaining package cannot be verified', async () => {
+      const backend = new AdbBackend('emulator-5554', {
+        snapshotMode: 'helper-first',
+      });
+      wireDevice({ pmPath: 'package:/data/app/pkg/base.apk' });
+      mockAssertSigner.mockRejectedValue(
+        new SnapshotHelperError(
+          'ARTIFACT_INVALID',
+          'Unsupported APK signature',
+        ),
+      );
+      mockExecStrict.mockResolvedValue(DUMP_XML);
+
+      await expect(backend.snapshot()).rejects.toBeInstanceOf(
+        UntrustedHelperError,
+      );
+      expect(
+        mockExec.mock.calls.some(
+          ([, args]) =>
+            args.includes('uiautomator') || args.includes('instrument'),
+        ),
+      ).toBe(false);
+    });
+
+    it.each(['absent', 'trusted'] as const)(
+      'helper-first: keeps dump fallback when the helper is %s',
+      async (state) => {
+        const backend = new AdbBackend('emulator-5554', {
+          snapshotMode: 'helper-first',
+        });
+        wireDevice({
+          pmPath: state === 'absent' ? '' : 'package:/data/app/pkg/base.apk',
+          pathExitCode: state === 'absent' ? 1 : 0,
+        });
+        mockExecStrict.mockResolvedValue(DUMP_XML);
+
+        const snapshot = await backend.snapshot();
+
+        expect(snapshot.source).toBe('dump');
+        expect(snapshot.hierarchy[0].value).toBe('dump');
+        expect(
+          mockExec.mock.calls.some(([, args]) => args.includes('instrument')),
+        ).toBe(false);
+      },
+    );
   });
 
   describe('ensureHelperTrusted', () => {
@@ -293,7 +438,7 @@ describe('android-instrumentation/installer', () => {
   });
 
   describe('ensureHelperInstalled', () => {
-    it('installs when the helper is absent and never verifies the signer', async () => {
+    it('leaves signer verification to the caller after a successful install', async () => {
       mockExec.mockResolvedValue({
         stdout: 'Success\n',
         stderr: '',
@@ -306,8 +451,7 @@ describe('android-instrumentation/installer', () => {
         call[1]?.includes('install'),
       );
       expect(installCall).toBeDefined();
-      // Install is a freshness decision, not a trust decision: it must not
-      // touch the signer verifier. The caller verifies trust separately.
+      // A successful install does not establish per-use trust.
       expect(mockAssertSigner).not.toHaveBeenCalled();
     });
 
@@ -361,11 +505,42 @@ describe('android-instrumentation/installer', () => {
     });
 
     it('throws HelperNotInstalledError (not a trust error) when pm path finds no APK', async () => {
-      wireDevice({ pmPath: '' });
+      wireDevice({ pmPath: '', pathExitCode: 1 });
 
       await expect(
         assertInstalledHelperTrusted('emulator-5554'),
       ).rejects.toThrow(HelperNotInstalledError);
+      expect(mockAssertSigner).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when pm path returns no APK for an installed package', async () => {
+      wireDevice({
+        pmPath: '',
+        pathExitCode: 1,
+        packageList: `package:${ARTIFACT.packageName}\n`,
+      });
+
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554'),
+      ).rejects.toBeInstanceOf(UntrustedHelperError);
+      expect(mockAssertSigner).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when package absence cannot be confirmed', async () => {
+      wireDevice({ pmPath: '', pathExitCode: 1, packageListExitCode: 1 });
+
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554'),
+      ).rejects.toBeInstanceOf(UntrustedHelperError);
+      expect(mockAssertSigner).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when pm path reports an error despite returning a path', async () => {
+      wireDevice({ pmPath: 'package:/data/app/pkg/base.apk', pathExitCode: 1 });
+
+      await expect(
+        assertInstalledHelperTrusted('emulator-5554'),
+      ).rejects.toBeInstanceOf(UntrustedHelperError);
       expect(mockAssertSigner).not.toHaveBeenCalled();
     });
   });

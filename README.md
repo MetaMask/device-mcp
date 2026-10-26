@@ -303,6 +303,11 @@ non-trust failures (a churny screen, an `am` hiccup) still fall back to dump in
 `helper-first` and `auto` mode. Use `instrument` for a fully fail-closed mode,
 or `dump` to skip the helper entirely.
 
+If installation fails, the backend checks the package that remains on the
+device. A different signer or a failed trust check stops the snapshot, regardless
+of the install error text. A verified signer or confirmed absence preserves the
+install error and permits dump fallback in `helper-first` and `auto` mode.
+
 The check runs before **every** `am instrument`. It is never cached as a
 "trusted" flag, because anyone who can install packages could replace a
 trusted helper with a same-package squatter between two snapshots. To keep it

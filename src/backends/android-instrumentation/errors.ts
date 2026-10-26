@@ -89,7 +89,7 @@ export const UNTRUSTED_HELPER_REMEDY =
   "or use snapshotMode 'dump' (DEVICE_MCP_ADB_SNAPSHOT=dump) to skip the helper.";
 
 /**
- * A trust failure: the installed helper is not signed by our pinned key.
+ * A trust failure: the installed helper's pinned signer could not be verified.
  *
  * This is a hard stop. It must propagate out of the snapshot flow — never be
  * converted to `null`, never be collected into a generic failure list, and
