@@ -533,15 +533,6 @@ export class AdbBackend implements DeviceBackend {
       throw new Error(this.#composeDumpFailure(failures));
     }
 
-    if (mode === 'instrument') {
-      // Fully fail-closed: no dump fallback for any helper failure.
-      const { xml } = await this.#dumpViaInstrumentation(deadline, failures);
-      if (xml !== null) {
-        return { xml, source: 'instrument' };
-      }
-      throw new Error(this.#composeDumpFailure(failures));
-    }
-
     // auto: a single fast dump wins instantly on idle screens. Skip it once it
     // has lost to the helper on this backend: on a busy screen it waits ~11 s
     // for an idle state that never comes.
@@ -558,14 +549,19 @@ export class AdbBackend implements DeviceBackend {
       quickDumpFailed = true;
     }
 
-    // helper-first and auto: the helper handles churn. A trust failure throws
-    // out of here and never reaches the dump fallback.
+    // All helper modes share installation, trust checks, and recovery. A trust
+    // failure throws out of here and never reaches the dump fallback.
     const helper = await this.#dumpViaInstrumentation(deadline, failures);
     if (helper.xml !== null) {
       if (quickDumpFailed) {
         this.#autoSkipQuickDump = true;
       }
       return { xml: helper.xml, source: 'instrument' };
+    }
+
+    if (mode === 'instrument') {
+      // Fully fail-closed: no dump fallback for any helper failure.
+      throw new Error(this.#composeDumpFailure(failures));
     }
 
     // The dump retries are the last resort for a non-trust helper failure, so
@@ -1258,19 +1254,14 @@ export function parseAndroidHierarchy(xml: string): UIElement[] {
 
     const element = attrs ? parseNodeAttributes(attrs) : null;
 
-    if (isSelfClosing) {
-      if (element) {
-        parent.push(element);
-      }
-      continue;
-    }
-
     if (element) {
-      element.children = [];
+      if (!isSelfClosing) {
+        element.children = [];
+      }
       parent.push(element);
-      stack.push(element.children);
-    } else {
-      stack.push(parent);
+    }
+    if (!isSelfClosing) {
+      stack.push(element?.children ?? parent);
     }
   }
 

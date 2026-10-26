@@ -144,24 +144,6 @@ export function parseInstrumentationOutput(
 }
 
 /**
- * Check whether a helper failure is the transient "capture did not stabilize"
- * case (`AccessibilityCaptureStabilizer.IncompleteCaptureException`).
- *
- * @param errorType - The `errorType` result key (the Java class name).
- * @param message - The `message` result key.
- * @returns True for an incomplete capture.
- */
-function isIncompleteCapture(
-  errorType: string | undefined,
-  message: string | undefined,
-): boolean {
-  return (
-    (errorType?.includes('IncompleteCaptureException') ?? false) ||
-    (message?.includes('Capture did not stabilize') ?? false)
-  );
-}
-
-/**
  * Reassemble the hierarchy XML from an `am instrument` run.
  *
  * Each chunk is an independently valid base64 encoding of a raw byte slice
@@ -194,7 +176,10 @@ export function reassembleInstrumentationXml(stdout: string): string {
     const errorType = result.get('errorType');
     const detail = [errorType, message].filter(Boolean).join(': ');
     const text = `Snapshot helper reported failure${detail ? ` (${detail})` : ''}.`;
-    if (isIncompleteCapture(errorType, message)) {
+    const incompleteCapture =
+      (errorType?.includes('IncompleteCaptureException') ?? false) ||
+      (message?.includes('Capture did not stabilize') ?? false);
+    if (incompleteCapture) {
       throw new HelperIncompleteCaptureError(text);
     }
     throw new Error(text);
