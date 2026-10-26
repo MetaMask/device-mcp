@@ -1,0 +1,46 @@
+src/backends/android-instrumentation/errors.ts
+  s_385edc94d798b1::t_e5ddd5f9744dda 2-3,16,40,63-64
+src/backends/android-instrumentation/installer.test.ts
+  s_385edc94d798b1::t_a38a43f6548770 83-84,86,95-96,98-99,187,196
+  s_385edc94d798b1::t_cd2daf344cd7f9 468,477
+  s_385edc94d798b1::t_e5b787ace532a1 77-82,85,87,93-94,97,267,287,333,349,364
+  s_385edc94d798b1::t_41c037d78e94f6 88-92,208-211,231-234,251-254,379-382
+  s_385edc94d798b1::t_42408a8a641e35 366-368
+src/backends/android-instrumentation/installer.ts
+  s_385edc94d798b1::t_e5ddd5f9744dda 2-4,154-157,169,182,204-205,241,313-314
+src/backends/adb-backend.test.ts
+  s_385edc94d798b1::t_67bc912d6787c5 86-88,94-96,737-742,752-753,929-931,938-940,1218-1223,1243-1245,1256-1259,1276-1278,1289-1291,1311-1313
+  s_385edc94d798b1::t_cd2daf344cd7f9 20,691-698
+  s_385edc94d798b1::t_69ef35738f658c 89-93,97-104,743,754,756,759,1225,1227-1228,1241,1261,1263,1287,1302,1314
+  s_385edc94d798b1::t_51473cb9882478 270-286,290-306,312-313,315-320,323,325
+  s_385edc94d798b1::t_f0c5902810b918 710-718,755,757
+  s_385edc94d798b1::t_577eb69178987e 720,724-725,771,818,823-824,843,873-875
+  s_385edc94d798b1::t_eb7d004ddd3b23 892-896,898,914,917,928,932-933,936-937,942-943,980-981,1081,1085,1093
+src/backends/android-instrumentation/errors.test.ts
+  s_385edc94d798b1::t_a38a43f6548770 75,88,90,92,97-100,102-103
+  s_385edc94d798b1::t_42408a8a641e35 76-85
+  s_385edc94d798b1::t_e556d713c3a27e 86,101
+src/backends/types.ts
+  s_385edc94d798b1::t_8abfc2f34cb69b 33,37
+src/backends/android-instrumentation/snapshot.test.ts
+  s_385edc94d798b1::t_a38a43f6548770 156-157,161
+  s_385edc94d798b1::t_42408a8a641e35 158-160
+src/backends/adb-backend.ts
+  s_385edc94d798b1::t_8abfc2f34cb69b 89,94,97,101-105,116,120,210,223,441,517,521,544,602,1112-1113,1148,1157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d55cf0d3ad53672db14b2e7961792f8236267d20",
+  "prompts": {},
+  "sessions": {
+    "s_385edc94d798b1": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e8a9bc3b2ffejQ7dk4A6nkMtYw",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
