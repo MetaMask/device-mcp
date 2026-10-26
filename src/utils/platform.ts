@@ -171,13 +171,47 @@ function findPythonBinDirs(base: string): string[] {
 export async function idbSupportsApiSelection(
   idbPath: string,
 ): Promise<boolean> {
-  const help = await exec(idbPath, ['ui', 'describe-all', '--help']).catch(
-    () => null,
-  );
-  if (help?.exitCode !== 0) {
-    return false;
+  const help = await readDescribeAllHelp(idbPath);
+  return help?.includes('--api') ?? false;
+}
+
+/**
+ * Probe support for tree output (`describe-all --nested`).
+ *
+ * @param idbPath - The `idb` executable to probe.
+ * @returns True when `--nested` is accepted.
+ */
+export async function idbSupportsNestedDescribe(
+  idbPath: string,
+): Promise<boolean> {
+  const help = await readDescribeAllHelp(idbPath);
+  return help === null ? false : /(?:^|[\s[])--nested(?=[\s\]]|$)/mu.test(help);
+}
+
+const pendingHelpReads = new Map<string, Promise<string | null>>();
+
+/**
+ * Share one help process across concurrent capability probes for a binary.
+ *
+ * @param idbPath - The `idb` executable to probe.
+ * @returns The help text, or null when the probe fails.
+ */
+async function readDescribeAllHelp(idbPath: string): Promise<string | null> {
+  const pending = pendingHelpReads.get(idbPath);
+  if (pending) {
+    return pending;
   }
-  return `${help.stdout}\n${help.stderr}`.includes('--api');
+  const read = (async (): Promise<string | null> => {
+    const help = await exec(idbPath, ['ui', 'describe-all', '--help']).catch(
+      () => null,
+    );
+    if (help?.exitCode !== 0) {
+      return null;
+    }
+    return `${help.stdout}\n${help.stderr}`;
+  })().finally(() => pendingHelpReads.delete(idbPath));
+  pendingHelpReads.set(idbPath, read);
+  return read;
 }
 
 /**

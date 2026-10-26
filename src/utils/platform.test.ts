@@ -6,6 +6,7 @@ import {
   detectAllDevices,
   detectPlatform,
   idbSupportsApiSelection,
+  idbSupportsNestedDescribe,
   resolveIdbPath,
   MultipleDevicesError,
 } from './platform.js';
@@ -722,6 +723,95 @@ describe('idbSupportsApiSelection', () => {
     mockExec.mockRejectedValue(new Error('ENOENT'));
 
     expect(await idbSupportsApiSelection('/bad/idb')).toBe(false);
+  });
+});
+
+describe('idbSupportsNestedDescribe', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  // Excerpt of the unified idb client's `ui describe-all --help`.
+  const unifiedHelp = [
+    'usage: idb ui describe-all [-h] [--udid UDID]',
+    '                           [--json] [--reason REASON] [--nested]',
+    '                           [--api {ax,axbridge}]',
+    '                           [--format {default,nested,complete}]',
+    '  --nested              Will report data in the newer nested format, rather',
+    '                        than the flat one',
+  ].join('\n');
+
+  it.each([
+    {
+      name: 'stdout',
+      stdout: unifiedHelp,
+      stderr: '',
+      exitCode: 0,
+      supported: true,
+    },
+    {
+      name: 'stderr',
+      stdout: '',
+      stderr: unifiedHelp,
+      exitCode: 0,
+      supported: true,
+    },
+    {
+      name: 'no flag',
+      stdout: '--format {default,nested,complete}',
+      stderr: '',
+      exitCode: 0,
+      supported: false,
+    },
+    {
+      name: 'longer flag',
+      stdout: '--nested-depth N',
+      stderr: '',
+      exitCode: 0,
+      supported: false,
+    },
+    {
+      name: 'non-zero exit',
+      stdout: '',
+      stderr: 'unrecognized arguments: --nested',
+      exitCode: 2,
+      supported: false,
+    },
+  ])(
+    'detects --nested support: $name',
+    async ({ stdout, stderr, exitCode, supported }) => {
+      mockExec.mockResolvedValue({ stdout, stderr, exitCode });
+
+      expect(await idbSupportsNestedDescribe('idb')).toBe(supported);
+      expect(mockExec).toHaveBeenCalledExactlyOnceWith('idb', [
+        'ui',
+        'describe-all',
+        '--help',
+      ]);
+    },
+  );
+
+  it('is false when the help probe fails', async () => {
+    mockExec.mockRejectedValue(new Error('ENOENT'));
+
+    expect(await idbSupportsNestedDescribe('/bad/idb')).toBe(false);
+  });
+
+  it('shares one help read between concurrent probes', async () => {
+    mockExec.mockResolvedValueOnce({
+      stdout: 'usage: idb ui describe-all [--api {ax,axbridge}] [--nested]',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    const [api, nested] = await Promise.all([
+      idbSupportsApiSelection('idb'),
+      idbSupportsNestedDescribe('idb'),
+    ]);
+
+    expect(api).toBe(true);
+    expect(nested).toBe(true);
+    expect(mockExec).toHaveBeenCalledTimes(1);
   });
 });
 

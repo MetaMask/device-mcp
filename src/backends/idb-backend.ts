@@ -31,6 +31,7 @@ import {
 import {
   chooseAxApi,
   idbSupportsApiSelection,
+  idbSupportsNestedDescribe,
   resolveIdbPath,
 } from '../utils/platform.js';
 
@@ -47,6 +48,8 @@ export class IdbBackend implements DeviceBackend {
 
   #idbSupportsApi = false;
 
+  #idbSupportsNested = false;
+
   #recordingProcess: ChildProcess | null = null;
 
   #recordingPath: string | null = null;
@@ -61,7 +64,10 @@ export class IdbBackend implements DeviceBackend {
     }
 
     this.#idbPath = await resolveIdbPath();
-    this.#idbSupportsApi = await idbSupportsApiSelection(this.#idbPath);
+    [this.#idbSupportsApi, this.#idbSupportsNested] = await Promise.all([
+      idbSupportsApiSelection(this.#idbPath),
+      idbSupportsNestedDescribe(this.#idbPath),
+    ]);
     await exec(this.#idbPath, ['connect', this.#udid]);
     await this.#enableSimulatorAccessibility();
     this.#connected = true;
@@ -148,6 +154,9 @@ export class IdbBackend implements DeviceBackend {
       const args = ['ui', 'describe-all', '--udid', this.#udid];
       if (api !== null) {
         args.push('--api', api);
+      }
+      if (this.#idbSupportsNested) {
+        args.push('--nested');
       }
       try {
         return await execStrict(this.#idbPath, args);
@@ -728,13 +737,20 @@ function collectTextsFromChildren(
   }
 }
 
+/**
+ * Parse flat or nested idb output. Legacy object roots expose their children
+ * at the top level; array roots keep their tree shape.
+ *
+ * @param raw - The raw stdout of `idb ui describe-all`.
+ * @returns The hierarchy, or a `raw` element when parsing fails.
+ */
 export function parseIdbHierarchy(raw: string): UIElement[] {
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       return parsed.map(mapIdbElement);
     }
-    if (parsed.children) {
+    if (Array.isArray(parsed.children) && parsed.children.length > 0) {
       return parsed.children.map(mapIdbElement);
     }
     return [mapIdbElement(parsed)];
@@ -750,6 +766,12 @@ export function parseIdbHierarchy(raw: string): UIElement[] {
   }
 }
 
+/**
+ * Normalize idb fields, treating empty child arrays like flat-format leaves.
+ *
+ * @param node - The idb node.
+ * @returns The mapped element.
+ */
 export function mapIdbElement(node: Record<string, unknown>): UIElement {
   const frame = node.frame as
     | { x: number; y: number; width: number; height: number }
@@ -763,8 +785,9 @@ export function mapIdbElement(node: Record<string, unknown>): UIElement {
       (node.AXUniqueId as string) ?? (node.identifier as string) ?? undefined,
     frame: frame ?? { x: 0, y: 0, width: 0, height: 0 },
     enabled: (node.enabled as boolean) ?? true,
-    children: Array.isArray(node.children)
-      ? node.children.map(mapIdbElement)
-      : undefined,
+    children:
+      Array.isArray(node.children) && node.children.length > 0
+        ? node.children.map(mapIdbElement)
+        : undefined,
   };
 }

@@ -1,0 +1,184 @@
+[
+  {
+    "type": "Application",
+    "AXLabel": "MetaMask",
+    "enabled": null,
+    "frame": { "x": 0, "y": 0, "width": 402, "height": 874 },
+    "children": [
+      {
+        "type": "Window",
+        "frame": { "x": 0, "y": 0, "width": 402, "height": 874 },
+        "children": [
+          {
+            "type": "Other",
+            "frame": { "x": 0, "y": 0, "width": 402, "height": 874 },
+            "children": [
+              {
+                "type": "Other",
+                "AXUniqueId": "login",
+                "frame": { "x": 0, "y": 0, "width": 402, "height": 874 },
+                "children": [
+                  {
+                    "type": "Other",
+                    "frame": { "x": 0, "y": 120, "width": 402, "height": 400 },
+                    "children": [
+                      {
+                        "type": "Image",
+                        "AXUniqueId": "fox-logo",
+                        "frame": {
+                          "x": 151,
+                          "y": 140,
+                          "width": 100,
+                          "height": 100
+                        },
+                        "children": []
+                      },
+                      {
+                        "type": "StaticText",
+                        "AXLabel": "Welcome back",
+                        "AXUniqueId": "login-title",
+                        "frame": {
+                          "x": 24,
+                          "y": 260,
+                          "width": 354,
+                          "height": 36
+                        },
+                        "children": []
+                      },
+                      {
+                        "type": "Other",
+                        "frame": {
+                          "x": 24,
+                          "y": 320,
+                          "width": 354,
+                          "height": 52
+                        },
+                        "children": [
+                          {
+                            "type": "SecureTextField",
+                            "AXLabel": "Password",
+                            "AXUniqueId": "login-password-input",
+                            "AXValue": null,
+                            "frame": {
+                              "x": 24,
+                              "y": 320,
+                              "width": 354,
+                              "height": 52
+                            },
+                            "children": []
+                          }
+                        ]
+                      },
+                      {
+                        "type": "Button",
+                        "AXLabel": "Unlock",
+                        "AXUniqueId": "log-in-button",
+                        "enabled": false,
+                        "frame": {
+                          "x": 24,
+                          "y": 396,
+                          "width": 354,
+                          "height": 48
+                        },
+                        "children": []
+                      },
+                      {
+                        "type": "Button",
+                        "AXLabel": "Forgot password?",
+                        "AXUniqueId": "reset-wallet-button",
+                        "frame": {
+                          "x": 24,
+                          "y": 460,
+                          "width": 354,
+                          "height": 32
+                        },
+                        "children": []
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Other",
+                    "AXUniqueId": "login-info-modal",
+                    "frame": { "x": 0, "y": 520, "width": 402, "height": 354 },
+                    "children": [
+                      {
+                        "type": "StaticText",
+                        "AXLabel": "Unlock with Face ID?",
+                        "frame": {
+                          "x": 24,
+                          "y": 548,
+                          "width": 354,
+                          "height": 24
+                        },
+                        "children": []
+                      },
+                      {
+                        "type": "StaticText",
+                        "AXLabel": "You can turn this on later in Settings.",
+                        "frame": {
+                          "x": 24,
+                          "y": 580,
+                          "width": 354,
+                          "height": 40
+                        },
+                        "children": []
+                      },
+                      {
+                        "type": "Other",
+                        "frame": {
+                          "x": 24,
+                          "y": 640,
+                          "width": 354,
+                          "height": 116
+                        },
+                        "children": [
+                          {
+                            "type": "Button",
+                            "AXLabel": "Enable",
+                            "AXUniqueId": "login-info-modal-enable-button",
+                            "frame": {
+                              "x": 24,
+                              "y": 640,
+                              "width": 354,
+                              "height": 48
+                            },
+                            "children": []
+                          },
+                          {
+                            "type": "Button",
+                            "AXLabel": "Not now",
+                            "AXUniqueId": "login-info-modal-dismiss-button",
+                            "frame": {
+                              "x": 24,
+                              "y": 704,
+                              "width": 354,
+                              "height": 48
+                            },
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "Other",
+        "AXLabel": "Status bar",
+        "frame": { "x": 0, "y": 0, "width": 402, "height": 54 },
+        "children": [
+          {
+            "type": "StaticText",
+            "AXLabel": "9:41",
+            "frame": { "x": 40, "y": 18, "width": 40, "height": 20 },
+            "children": []
+          }
+        ]
+      }
+    ]
+  }
+]
