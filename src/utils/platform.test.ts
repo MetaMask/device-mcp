@@ -741,62 +741,55 @@ describe('idbSupportsNestedDescribe', () => {
     '                        than the flat one',
   ].join('\n');
 
-  it('is true when describe-all help lists --nested', async () => {
-    mockExec.mockResolvedValue({
-      exitCode: 0,
+  it.each([
+    {
+      name: 'stdout',
       stdout: unifiedHelp,
       stderr: '',
-    });
-
-    expect(await idbSupportsNestedDescribe('idb')).toBe(true);
-    expect(mockExec).toHaveBeenCalledWith('idb', [
-      'ui',
-      'describe-all',
-      '--help',
-    ]);
-  });
-
-  it('reads help printed on stderr', async () => {
-    mockExec.mockResolvedValue({
       exitCode: 0,
+      supported: true,
+    },
+    {
+      name: 'stderr',
       stdout: '',
       stderr: unifiedHelp,
-    });
-
-    expect(await idbSupportsNestedDescribe('idb')).toBe(true);
-  });
-
-  it('is false when help lacks --nested', async () => {
-    mockExec.mockResolvedValue({
       exitCode: 0,
-      stdout:
-        'usage: idb ui describe-all [-h] [--udid UDID] [--json]\n' +
-        '  --format {default,nested,complete}',
+      supported: true,
+    },
+    {
+      name: 'no flag',
+      stdout: '--format {default,nested,complete}',
       stderr: '',
-    });
-
-    expect(await idbSupportsNestedDescribe('idb')).toBe(false);
-  });
-
-  it('does not match a longer flag that starts with --nested', async () => {
-    mockExec.mockResolvedValue({
       exitCode: 0,
-      stdout: '  --nested-depth N',
+      supported: false,
+    },
+    {
+      name: 'longer flag',
+      stdout: '--nested-depth N',
       stderr: '',
-    });
-
-    expect(await idbSupportsNestedDescribe('idb')).toBe(false);
-  });
-
-  it('is false when the help probe exits non-zero', async () => {
-    mockExec.mockResolvedValue({
-      exitCode: 2,
+      exitCode: 0,
+      supported: false,
+    },
+    {
+      name: 'non-zero exit',
       stdout: '',
       stderr: 'unrecognized arguments: --nested',
-    });
+      exitCode: 2,
+      supported: false,
+    },
+  ])(
+    'detects --nested support: $name',
+    async ({ stdout, stderr, exitCode, supported }) => {
+      mockExec.mockResolvedValue({ stdout, stderr, exitCode });
 
-    expect(await idbSupportsNestedDescribe('idb')).toBe(false);
-  });
+      expect(await idbSupportsNestedDescribe('idb')).toBe(supported);
+      expect(mockExec).toHaveBeenCalledExactlyOnceWith('idb', [
+        'ui',
+        'describe-all',
+        '--help',
+      ]);
+    },
+  );
 
   it('is false when the help probe fails', async () => {
     mockExec.mockRejectedValue(new Error('ENOENT'));

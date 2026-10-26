@@ -143,8 +143,6 @@ export class IdbBackend implements DeviceBackend {
    * Run `idb ui describe-all`, trying the version-appropriate accessibility
    * backend first and falling back to the others if it errors. This keeps
    * snapshots working across iOS 17-26 regardless of the user's idb client.
-   * When the CLI supports it, `--nested` is passed so idb returns the real
-   * parent/child tree instead of a flat element list.
    *
    * @returns The raw JSON hierarchy from the first backend that succeeds.
    * @throws When every attempted backend fails.
@@ -740,21 +738,11 @@ function collectTextsFromChildren(
 }
 
 /**
- * Parse `idb ui describe-all` JSON into a `UIElement` tree.
- *
- * Handles both output formats with the same per-node mapping
- * ({@link mapIdbElement}):
- * - nested (`--nested`): an array holding the root element(s), where every
- * node carries a `children` array (empty on leaves). The tree is kept as is.
- * - flat (default): an array of every element in pre-order with no
- * `children`. Each element becomes a top-level node (no parent/child info).
- *
- * A single root object is also accepted: its children become the top level
- * when it has any, otherwise the object itself is the only element.
+ * Parse flat or nested idb output. Legacy object roots expose their children
+ * at the top level; array roots keep their tree shape.
  *
  * @param raw - The raw stdout of `idb ui describe-all`.
- * @returns The parsed hierarchy, or a single `raw` element when the output
- * is not JSON.
+ * @returns The hierarchy, or a `raw` element when parsing fails.
  */
 export function parseIdbHierarchy(raw: string): UIElement[] {
   try {
@@ -779,10 +767,7 @@ export function parseIdbHierarchy(raw: string): UIElement[] {
 }
 
 /**
- * Map one idb accessibility node to a `UIElement`, recursing into its
- * `children`. Shared by the flat and nested formats so a node maps the same
- * way in both. An empty `children` array (nested-format leaf) maps to
- * `undefined`, like a flat-format node.
+ * Normalize idb fields, treating empty child arrays like flat-format leaves.
  *
  * @param node - The idb node.
  * @returns The mapped element.

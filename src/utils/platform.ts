@@ -176,10 +176,7 @@ export async function idbSupportsApiSelection(
 }
 
 /**
- * Whether an `idb` binary supports `describe-all --nested`, which returns the
- * accessibility tree with each element carrying its `children` instead of the
- * default flat element list. Probed from the help text like
- * {@link idbSupportsApiSelection}.
+ * Probe support for tree output (`describe-all --nested`).
  *
  * @param idbPath - The `idb` executable to probe.
  * @returns True when `--nested` is accepted.
@@ -191,13 +188,10 @@ export async function idbSupportsNestedDescribe(
   return help === null ? false : /(?:^|[\s[])--nested(?=[\s\]]|$)/mu.test(help);
 }
 
-/** In-flight help reads, keyed by idb path, so concurrent probes share one. */
 const pendingHelpReads = new Map<string, Promise<string | null>>();
 
 /**
- * Read the `idb ui describe-all --help` text (stdout and stderr). Concurrent
- * calls for the same binary (the `--api` and `--nested` probes at connect)
- * share one `idb` process.
+ * Share one help process across concurrent capability probes for a binary.
  *
  * @param idbPath - The `idb` executable to probe.
  * @returns The help text, or null when the probe fails.

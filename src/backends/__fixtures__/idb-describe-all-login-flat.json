@@ -1,439 +1,101 @@
 [
   {
-    "AXFrame": "{{0, 0}, {402, 874}}",
+    "type": "Application",
     "AXLabel": "MetaMask",
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
     "enabled": null,
-    "frame": {
-      "x": 0,
-      "y": 0,
-      "width": 402,
-      "height": 874
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Application",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "Application"
+    "frame": { "x": 0, "y": 0, "width": 402, "height": 874 }
   },
   {
-    "AXFrame": "{{0, 0}, {402, 874}}",
-    "AXLabel": null,
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 0,
-      "y": 0,
-      "width": 402,
-      "height": 874
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Window",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "Window"
+    "type": "Window",
+    "frame": { "x": 0, "y": 0, "width": 402, "height": 874 }
   },
   {
-    "AXFrame": "{{0, 0}, {402, 874}}",
-    "AXLabel": null,
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 0,
-      "y": 0,
-      "width": 402,
-      "height": 874
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Other",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "Other"
+    "type": "Other",
+    "frame": { "x": 0, "y": 0, "width": 402, "height": 874 }
   },
   {
-    "AXFrame": "{{0, 0}, {402, 874}}",
-    "AXLabel": null,
+    "type": "Other",
     "AXUniqueId": "login",
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 0,
-      "y": 0,
-      "width": 402,
-      "height": 874
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Other",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "Other"
+    "frame": { "x": 0, "y": 0, "width": 402, "height": 874 }
   },
   {
-    "AXFrame": "{{0, 120}, {402, 400}}",
-    "AXLabel": null,
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 0,
-      "y": 120,
-      "width": 402,
-      "height": 400
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Other",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "Other"
+    "type": "Other",
+    "frame": { "x": 0, "y": 120, "width": 402, "height": 400 }
   },
   {
-    "AXFrame": "{{151, 140}, {100, 100}}",
-    "AXLabel": null,
+    "type": "Image",
     "AXUniqueId": "fox-logo",
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 151,
-      "y": 140,
-      "width": 100,
-      "height": 100
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Image",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["Image"],
-    "type": "Image"
+    "frame": { "x": 151, "y": 140, "width": 100, "height": 100 }
   },
   {
-    "AXFrame": "{{24, 260}, {354, 36}}",
+    "type": "StaticText",
     "AXLabel": "Welcome back",
     "AXUniqueId": "login-title",
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 24,
-      "y": 260,
-      "width": 354,
-      "height": 36
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "StaticText",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["StaticText", "Header"],
-    "type": "StaticText"
+    "frame": { "x": 24, "y": 260, "width": 354, "height": 36 }
   },
   {
-    "AXFrame": "{{24, 320}, {354, 52}}",
-    "AXLabel": null,
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 24,
-      "y": 320,
-      "width": 354,
-      "height": 52
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Other",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "Other"
+    "type": "Other",
+    "frame": { "x": 24, "y": 320, "width": 354, "height": 52 }
   },
   {
-    "AXFrame": "{{24, 320}, {354, 52}}",
+    "type": "SecureTextField",
     "AXLabel": "Password",
     "AXUniqueId": "login-password-input",
     "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 24,
-      "y": 320,
-      "width": 354,
-      "height": 52
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "SecureTextField",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "SecureTextField"
+    "frame": { "x": 24, "y": 320, "width": 354, "height": 52 }
   },
   {
-    "AXFrame": "{{24, 396}, {354, 48}}",
+    "type": "Button",
     "AXLabel": "Unlock",
     "AXUniqueId": "log-in-button",
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
     "enabled": false,
-    "frame": {
-      "x": 24,
-      "y": 396,
-      "width": 354,
-      "height": 48
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Button",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["Button", "NotEnabled"],
-    "type": "Button"
+    "frame": { "x": 24, "y": 396, "width": 354, "height": 48 }
   },
   {
-    "AXFrame": "{{24, 460}, {354, 32}}",
+    "type": "Button",
     "AXLabel": "Forgot password?",
     "AXUniqueId": "reset-wallet-button",
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 24,
-      "y": 460,
-      "width": 354,
-      "height": 32
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Button",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["Button"],
-    "type": "Button"
+    "frame": { "x": 24, "y": 460, "width": 354, "height": 32 }
   },
   {
-    "AXFrame": "{{0, 520}, {402, 354}}",
-    "AXLabel": null,
+    "type": "Other",
     "AXUniqueId": "login-info-modal",
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 0,
-      "y": 520,
-      "width": 402,
-      "height": 354
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Other",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "Other"
+    "frame": { "x": 0, "y": 520, "width": 402, "height": 354 }
   },
   {
-    "AXFrame": "{{24, 548}, {354, 24}}",
+    "type": "StaticText",
     "AXLabel": "Unlock with Face ID?",
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 24,
-      "y": 548,
-      "width": 354,
-      "height": 24
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "StaticText",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["StaticText", "Header"],
-    "type": "StaticText"
+    "frame": { "x": 24, "y": 548, "width": 354, "height": 24 }
   },
   {
-    "AXFrame": "{{24, 580}, {354, 40}}",
+    "type": "StaticText",
     "AXLabel": "You can turn this on later in Settings.",
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 24,
-      "y": 580,
-      "width": 354,
-      "height": 40
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "StaticText",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["StaticText"],
-    "type": "StaticText"
+    "frame": { "x": 24, "y": 580, "width": 354, "height": 40 }
   },
   {
-    "AXFrame": "{{24, 640}, {354, 116}}",
-    "AXLabel": null,
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 24,
-      "y": 640,
-      "width": 354,
-      "height": 116
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Other",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "Other"
+    "type": "Other",
+    "frame": { "x": 24, "y": 640, "width": 354, "height": 116 }
   },
   {
-    "AXFrame": "{{24, 640}, {354, 48}}",
+    "type": "Button",
     "AXLabel": "Enable",
     "AXUniqueId": "login-info-modal-enable-button",
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 24,
-      "y": 640,
-      "width": 354,
-      "height": 48
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Button",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["Button"],
-    "type": "Button"
+    "frame": { "x": 24, "y": 640, "width": 354, "height": 48 }
   },
   {
-    "AXFrame": "{{24, 704}, {354, 48}}",
+    "type": "Button",
     "AXLabel": "Not now",
     "AXUniqueId": "login-info-modal-dismiss-button",
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 24,
-      "y": 704,
-      "width": 354,
-      "height": 48
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Button",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["Button"],
-    "type": "Button"
+    "frame": { "x": 24, "y": 704, "width": 354, "height": 48 }
   },
   {
-    "AXFrame": "{{0, 0}, {402, 54}}",
+    "type": "Other",
     "AXLabel": "Status bar",
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 0,
-      "y": 0,
-      "width": 402,
-      "height": 54
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "Other",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["None"],
-    "type": "Other"
+    "frame": { "x": 0, "y": 0, "width": 402, "height": 54 }
   },
   {
-    "AXFrame": "{{40, 18}, {40, 20}}",
+    "type": "StaticText",
     "AXLabel": "9:41",
-    "AXUniqueId": null,
-    "AXValue": null,
-    "content_required": false,
-    "custom_actions": [],
-    "enabled": null,
-    "frame": {
-      "x": 40,
-      "y": 18,
-      "width": 40,
-      "height": 20
-    },
-    "help": null,
-    "pid": 12345,
-    "role": "StaticText",
-    "role_description": null,
-    "subrole": null,
-    "title": null,
-    "traits": ["StaticText"],
-    "type": "StaticText"
+    "frame": { "x": 40, "y": 18, "width": 40, "height": 20 }
   }
 ]

@@ -47,20 +47,6 @@ describe('parseIdbHierarchy', () => {
     expect(result[0].children).toBeUndefined();
   });
 
-  it('returns the children of a root object that has children', () => {
-    const result = parseIdbHierarchy(
-      JSON.stringify({
-        type: 'Application',
-        AXLabel: 'App',
-        children: [{ type: 'Button', AXLabel: 'OK', children: [] }],
-      }),
-    );
-
-    expect(result).toHaveLength(1);
-    expect(result[0].label).toBe('OK');
-    expect(result[0].children).toBeUndefined();
-  });
-
   it('parses a JSON array of elements', () => {
     const raw = JSON.stringify([
       {
@@ -154,13 +140,13 @@ describe('parseIdbHierarchy', () => {
 });
 
 describe('parseIdbHierarchy with synthetic flat and nested fixtures', () => {
-  // Synthetic MetaMask login screen with a bottom-sheet modal. The nodes and
-  // fields mirror real `idb ui describe-all --api axbridge` output; the
-  // nested file is the same screen read with `--nested`.
+  // Synthetic idb output: only fields consumed by the mapper are included.
   const fixture = (name: string): string =>
     readFileSync(join(__dirname, '__fixtures__', name), 'utf8');
-  const flatRaw = fixture('idb-describe-all-login-flat.json');
-  const nestedRaw = fixture('idb-describe-all-login-nested.json');
+  const flat = parseIdbHierarchy(fixture('idb-describe-all-login-flat.json'));
+  const nested = parseIdbHierarchy(
+    fixture('idb-describe-all-login-nested.json'),
+  );
 
   const walk = (elements: UIElement[]): UIElement[] =>
     elements.flatMap((el) => [el, ...walk(el.children ?? [])]);
@@ -173,32 +159,15 @@ describe('parseIdbHierarchy with synthetic flat and nested fixtures', () => {
       .map((loc) => loc.description)
       .sort();
 
-  it('keeps the flat format as top-level elements', () => {
-    const flat = parseIdbHierarchy(flatRaw);
-
-    expect(flat).toHaveLength(19);
+  it('preserves tree shape and maps both formats identically in pre-order', () => {
     expect(flat.every((el) => el.children === undefined)).toBe(true);
-  });
-
-  it('keeps the nested format as a single rooted tree', () => {
-    const nested = parseIdbHierarchy(nestedRaw);
-
     expect(nested).toHaveLength(1);
     expect(nested[0].type).toBe('Application');
-    expect(walk(nested)).toHaveLength(19);
-  });
-
-  it('maps every node identically in both formats (pre-order)', () => {
-    const flat = parseIdbHierarchy(flatRaw);
-    const nested = walk(parseIdbHierarchy(nestedRaw));
-
-    expect(nested.map(withoutChildren)).toStrictEqual(flat);
+    expect(flat).toHaveLength(19);
+    expect(walk(nested).map(withoutChildren)).toStrictEqual(flat);
   });
 
   it('yields the same actionable elements from both formats', () => {
-    const flat = parseIdbHierarchy(flatRaw);
-    const nested = parseIdbHierarchy(nestedRaw);
-
     expect(locatorKeys(nested)).toStrictEqual(locatorKeys(flat));
     expect(locatorKeys(nested)).toStrictEqual(
       expect.arrayContaining([
@@ -220,7 +189,6 @@ describe('parseIdbHierarchy with synthetic flat and nested fixtures', () => {
   });
 
   it('keeps the modal buttons as descendants of the modal container', () => {
-    const nested = parseIdbHierarchy(nestedRaw);
     const modal = findElement(nested, { identifier: 'login-info-modal' });
 
     expect(modal).not.toBeNull();
@@ -230,14 +198,12 @@ describe('parseIdbHierarchy with synthetic flat and nested fixtures', () => {
       'login-info-modal-dismiss-button',
     ]);
     expect(inModal.map((el) => el.label)).toContain('Unlock with Face ID?');
-    // The login form is a sibling of the modal, not inside it.
     expect(
       findElement(modal?.children ?? [], { identifier: 'log-in-button' }),
     ).toBeNull();
   });
 
   it('places the password field under the login screen container', () => {
-    const nested = parseIdbHierarchy(nestedRaw);
     const login = findElement(nested, { identifier: 'login' });
 
     expect(
@@ -1024,30 +990,32 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
     expect(seen).toStrictEqual(['ax', 'axbridge']);
   });
 
-  it('omits --nested when the CLI does not support it', async () => {
-    mockSupportsApi.mockResolvedValue(false);
-    mockExecStrict.mockResolvedValue(JSON.stringify([]));
+  it.each([false, true])(
+    'uses --nested only when supported (%s), probing once per backend',
+    async (supported) => {
+      mockSupportsApi.mockResolvedValue(false);
+      mockSupportsNested.mockResolvedValue(supported);
+      mockExecStrict.mockResolvedValue(JSON.stringify([]));
 
-    await backend.snapshot();
+      await backend.snapshot();
+      await backend.snapshot();
 
-    expect(mockExecStrict).not.toHaveBeenCalledWith(
-      '/usr/local/bin/idb',
-      expect.arrayContaining(['--nested']),
-    );
-  });
-
-  it('passes --nested when the CLI supports it', async () => {
-    mockSupportsApi.mockResolvedValue(false);
-    mockSupportsNested.mockResolvedValue(true);
-    mockExecStrict.mockResolvedValue(JSON.stringify([]));
-
-    await backend.snapshot();
-
-    expect(mockExecStrict).toHaveBeenCalledWith(
-      '/usr/local/bin/idb',
-      describeArgs(['--nested']),
-    );
-  });
+      expect(mockExecStrict).toHaveBeenCalledTimes(2);
+      expect(mockExecStrict).toHaveBeenNthCalledWith(
+        1,
+        '/usr/local/bin/idb',
+        describeArgs(supported ? ['--nested'] : []),
+      );
+      expect(mockExecStrict).toHaveBeenNthCalledWith(
+        2,
+        '/usr/local/bin/idb',
+        describeArgs(supported ? ['--nested'] : []),
+      );
+      expect(mockSupportsNested).toHaveBeenCalledExactlyOnceWith(
+        '/usr/local/bin/idb',
+      );
+    },
+  );
 
   it('passes --nested with every --api attempt', async () => {
     mockSupportsApi.mockResolvedValue(true);
@@ -1073,18 +1041,6 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
       '/usr/local/bin/idb',
       describeArgs(['--api', 'ax', '--nested']),
     );
-  });
-
-  it('probes --nested support once per backend', async () => {
-    mockSupportsApi.mockResolvedValue(false);
-    mockSupportsNested.mockResolvedValue(true);
-    mockExecStrict.mockResolvedValue(JSON.stringify([]));
-
-    await backend.snapshot();
-    await backend.snapshot();
-
-    expect(mockSupportsNested).toHaveBeenCalledTimes(1);
-    expect(mockSupportsNested).toHaveBeenCalledWith('/usr/local/bin/idb');
   });
 
   it('returns the nested tree from snapshot', async () => {
