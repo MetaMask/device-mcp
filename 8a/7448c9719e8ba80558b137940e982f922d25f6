@@ -1,0 +1,30 @@
+src/backends/android-instrumentation/installer.test.ts
+  s_2d621cc1390a33::t_28a1d09251f894 84-85,105-111,219-221,284-286,339-341,441,454,508,516-539,544-545
+  s_2d621cc1390a33::t_d3f718d36a0f7d 263,299-304,309-316,319-320,322,331
+  s_2d621cc1390a33::t_70952e54b0e386 305-308,317-318
+  s_2d621cc1390a33::t_959cdd436c7591 4,9,45,57,83,92-96,166,172,174-180,183-189,191,195-200,202-205,209,215,217-218,222-223,226-229,231,235-236,239-249,252-262,264-283,287-298,323-330,332-338,342-343,515,540-543
+README.md
+  s_2d621cc1390a33::t_77fcdc2aec8400 306-310
+src/backends/android-instrumentation/installer.ts
+  s_2d621cc1390a33::t_d3f718d36a0f7d 202-203
+  s_2d621cc1390a33::t_28a1d09251f894 221-245
+  s_2d621cc1390a33::t_77fcdc2aec8400 19-20,92-94,99-101,109-118,121-137,304-305
+src/backends/android-instrumentation/errors.ts
+  s_2d621cc1390a33::t_77fcdc2aec8400 92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8a7448c9719e8ba80558b137940e982f922d25f6",
+  "prompts": {},
+  "sessions": {
+    "s_2d621cc1390a33": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e874d7ca1ffexNcFKy6bmDaIWc",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
