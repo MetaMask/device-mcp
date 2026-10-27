@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0]
 
-### Uncategorized
+### Added
 
 - feat: faster, correct Android snapshots on busy screens ([#39](https://github.com/MetaMask/device-mcp/pull/39))
 - feat: read idb describe-all nested format ([#38](https://github.com/MetaMask/device-mcp/pull/38))
