@@ -1,8 +1,13 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  HelperIncompleteCaptureError,
+  HelperNotInstalledError,
   SnapshotHelperError,
+  UNTRUSTED_HELPER_REMEDY,
   UntrustedHelperError,
+  isHelperIncompleteCaptureError,
+  isHelperNotInstalledError,
   isUntrustedHelperError,
 } from './errors.js';
 
@@ -64,5 +69,47 @@ describe('UntrustedHelperError', () => {
     const trustErrors = errors.filter(isUntrustedHelperError);
     expect(trustErrors).toHaveLength(1);
     expect(trustErrors[0]?.message).toBe('trust');
+  });
+});
+
+describe.each([
+  {
+    ErrorType: HelperNotInstalledError,
+    guard: isHelperNotInstalledError,
+    otherError: new HelperIncompleteCaptureError('incomplete'),
+  },
+  {
+    ErrorType: HelperIncompleteCaptureError,
+    guard: isHelperIncompleteCaptureError,
+    otherError: new HelperNotInstalledError('gone'),
+  },
+])('$ErrorType.name', ({ ErrorType, guard, otherError }) => {
+  it('is a generic helper error, never a trust error', () => {
+    const error = new ErrorType('capture failed');
+    expect(error).toBeInstanceOf(SnapshotHelperError);
+    expect(error.name).toBe(ErrorType.name);
+    expect(error.code).toBe('COMMAND_FAILED');
+    expect(guard(error)).toBe(true);
+    expect(isUntrustedHelperError(error)).toBe(false);
+  });
+
+  it('is not matched by the guard for other errors', () => {
+    const errors = [
+      new Error('plain'),
+      new SnapshotHelperError('COMMAND_FAILED', 'adb died'),
+      new UntrustedHelperError('mismatch', { expectedSignerSha256: 'aaaa' }),
+      otherError,
+    ];
+    expect(errors.filter(guard)).toStrictEqual([]);
+  });
+});
+
+describe('UNTRUSTED_HELPER_REMEDY', () => {
+  it('names the uninstall command and the dump mode', () => {
+    expect(UNTRUSTED_HELPER_REMEDY).toContain(
+      'adb uninstall io.metamask.devicemcp.snapshothelper',
+    );
+    expect(UNTRUSTED_HELPER_REMEDY).toContain('DEVICE_MCP_ADB_SNAPSHOT=dump');
+    expect(UNTRUSTED_HELPER_REMEDY).toContain("snapshotMode 'dump'");
   });
 });

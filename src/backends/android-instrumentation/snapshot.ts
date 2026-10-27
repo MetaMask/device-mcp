@@ -13,6 +13,8 @@
  * ADB backend.
  */
 
+import { HelperIncompleteCaptureError } from './errors.js';
+
 /** Emitted as `agentDeviceProtocol` in every status and result record. */
 export const HELPER_PROTOCOL = 'device-mcp-snapshot-helper-v1';
 
@@ -151,6 +153,8 @@ export function parseInstrumentationOutput(
  *
  * @param stdout - Raw stdout from `adb shell am instrument -w ...`.
  * @returns The reassembled hierarchy XML.
+ * @throws {@link HelperIncompleteCaptureError} when the helper could not
+ * capture a complete tree in time (transient; the caller may retry).
  * @throws If the helper reported failure, chunks are missing, or the payload is
  * not complete hierarchy XML.
  */
@@ -171,9 +175,14 @@ export function reassembleInstrumentationXml(stdout: string): string {
     const message = result.get('message');
     const errorType = result.get('errorType');
     const detail = [errorType, message].filter(Boolean).join(': ');
-    throw new Error(
-      `Snapshot helper reported failure${detail ? ` (${detail})` : ''}.`,
-    );
+    const text = `Snapshot helper reported failure${detail ? ` (${detail})` : ''}.`;
+    const incompleteCapture =
+      (errorType?.includes('IncompleteCaptureException') ?? false) ||
+      (message?.includes('Capture did not stabilize') ?? false);
+    if (incompleteCapture) {
+      throw new HelperIncompleteCaptureError(text);
+    }
+    throw new Error(text);
   }
 
   if (

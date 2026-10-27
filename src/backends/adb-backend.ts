@@ -12,10 +12,16 @@ import {
   resolvePackagePids,
   selectWebViewSocket,
 } from './adb-forward.js';
-import { isUntrustedHelperError } from './android-instrumentation/errors.js';
+import { loadHelperArtifact } from './android-instrumentation/artifact.js';
+import {
+  isHelperIncompleteCaptureError,
+  isHelperNotInstalledError,
+  isUntrustedHelperError,
+} from './android-instrumentation/errors.js';
 import {
   assertInstalledHelperTrusted,
   ensureHelperInstalled,
+  HelperTrustCache,
   INSTRUMENTATION_NOT_FOUND_SIGNATURE,
 } from './android-instrumentation/installer.js';
 import {
@@ -80,28 +86,49 @@ const INSTRUMENT_MAX_BUFFER = 16 * 1024 * 1024;
 // on idle screens) before paying for the instrumentation path.
 const AUTO_PROBE_DUMP_ATTEMPTS = 1;
 
-/**
- * How `#dumpUiHierarchy` chooses between the uiautomator dump and the
- * instrumentation helper.
- *
- * - `auto` (default): one quick dump, then the helper, then the remaining dump
- *   retries as a last resort. Fast on idle screens, self-healing on churn.
- * - `instrument`: helper only.
- * - `dump`: stock uiautomator dump only (the original behavior).
- */
-type AdbSnapshotMode = 'auto' | 'instrument' | 'dump';
+// The shipped helper's fixed 500 ms stabilization window can miss transitions.
+const HELPER_INCOMPLETE_RETRIES = 2;
+
+const HELPER_INCOMPLETE_RETRY_DELAY_MS = 250;
+
+// Leave enough budget for the helper's minimum timeout.
+const HELPER_RETRY_MIN_REMAINING_MS = 1_000;
+
+// A failed capture suggests a busy screen, where each dump can waste ~11 s.
+const HELPER_FIRST_FALLBACK_DUMP_ATTEMPTS = 1;
 
 /**
- * Resolve the snapshot mode from the environment.
- *
- * @returns The configured mode, defaulting to `auto` for unset/unknown values.
+ * - `helper-first`: helper, then dump on non-trust failures (default with APK).
+ * - `auto`: quick dump, then helper; skip later quick dumps once the helper wins.
+ * - `instrument`: helper only, with no fallback.
+ * - `dump`: stock uiautomator only (default without APK).
+ * Trust failures never fall back in any mode.
  */
-function resolveSnapshotMode(): AdbSnapshotMode {
+export type AdbSnapshotMode = 'helper-first' | 'auto' | 'instrument' | 'dump';
+
+const SNAPSHOT_MODES: readonly AdbSnapshotMode[] = [
+  'helper-first',
+  'auto',
+  'instrument',
+  'dump',
+];
+
+type Capture = { xml: string; source: 'dump' | 'instrument' };
+
+export type AdbBackendOptions = {
+  /**
+   * Overrides `DEVICE_MCP_ADB_SNAPSHOT`; otherwise use the artifact-aware default.
+   */
+  snapshotMode?: AdbSnapshotMode;
+};
+
+function isSnapshotMode(value: unknown): value is AdbSnapshotMode {
+  return SNAPSHOT_MODES.includes(value as AdbSnapshotMode);
+}
+
+function readSnapshotModeFromEnv(): AdbSnapshotMode | undefined {
   const raw = process.env.DEVICE_MCP_ADB_SNAPSHOT?.trim().toLowerCase();
-  if (raw === 'instrument' || raw === 'dump' || raw === 'auto') {
-    return raw;
-  }
-  return 'auto';
+  return isSnapshotMode(raw) ? raw : undefined;
 }
 
 /**
@@ -180,20 +207,34 @@ export class AdbBackend implements DeviceBackend {
 
   readonly #recordingRemotePath = '/sdcard/device-mcp-recording.mp4';
 
-  // Optimistic per-process cache: once the helper is confirmed installed we
-  // skip the `pm list packages` probe on every snapshot. A mid-session
-  // uninstall/reboot is recovered reactively when `am instrument` reports the
-  // instrumentation is missing.
+  // Installation is cached; trust is still checked before every helper run.
   #helperInstalled = false;
+
+  readonly #helperTrust = new HelperTrustCache();
 
   // Serializes snapshot captures so overlapping `am instrument` runs (e.g. a
   // tap that triggers a nested snapshot) do not race on the single helper.
   #captureQueue: Promise<unknown> = Promise.resolve();
 
-  // No stored WebView "active context": webviewCdp re-enumerates the live
-  // devtools sockets on every call, so there is no per-context state to keep.
-  constructor(serial: string) {
+  readonly #snapshotModeOption: AdbSnapshotMode | undefined;
+
+  #defaultSnapshotMode: Promise<AdbSnapshotMode> | null = null;
+
+  // Reset when a dump fallback succeeds, giving the quick dump another chance.
+  #autoSkipQuickDump = false;
+
+  constructor(serial: string, options: AdbBackendOptions = {}) {
+    if (
+      options.snapshotMode !== undefined &&
+      !isSnapshotMode(options.snapshotMode)
+    ) {
+      throw new Error(
+        `Unknown ADB snapshot mode "${String(options.snapshotMode)}". ` +
+          `Expected one of: ${SNAPSHOT_MODES.join(', ')}.`,
+      );
+    }
     this.#serial = serial;
+    this.#snapshotModeOption = options.snapshotMode;
   }
 
   async #adb(args: string[]): Promise<string> {
@@ -230,15 +271,20 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async snapshot(): Promise<SnapshotResult> {
-    const raw = await this.#serializeCapture(async () =>
-      this.#dumpUiHierarchy(),
-    );
-    const hierarchy = parseAndroidHierarchy(raw);
+    const { capture, captureMs } = await this.#serializeCapture(async () => {
+      // Time the capture itself, not the wait for an earlier capture.
+      const start = Date.now();
+      const result = await this.#dumpUiHierarchy();
+      return { capture: result, captureMs: Date.now() - start };
+    });
+    const hierarchy = parseAndroidHierarchy(capture.xml);
     return {
       platform: 'android',
       hierarchy,
-      raw,
+      raw: capture.xml,
       timestamp: Date.now(),
+      source: capture.source,
+      captureMs,
     };
   }
 
@@ -387,8 +433,29 @@ export class AdbBackend implements DeviceBackend {
     return run;
   }
 
-  async #dumpUiHierarchy(): Promise<string> {
-    const mode = resolveSnapshotMode();
+  async #resolveSnapshotMode(): Promise<AdbSnapshotMode> {
+    const explicit = this.#snapshotModeOption ?? readSnapshotModeFromEnv();
+    if (explicit) {
+      return explicit;
+    }
+    // Resolve once per backend. Keep warnings off the MCP stdio transport.
+    this.#defaultSnapshotMode ??= loadHelperArtifact().then(
+      (): AdbSnapshotMode => 'helper-first',
+      (error: unknown): AdbSnapshotMode => {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error(
+          `adb snapshot: the bundled snapshot helper is unavailable (${reason}). ` +
+            "Using snapshot mode 'dump'. Set snapshotMode or " +
+            'DEVICE_MCP_ADB_SNAPSHOT to choose a mode explicitly.',
+        );
+        return 'dump';
+      },
+    );
+    return this.#defaultSnapshotMode;
+  }
+
+  async #dumpUiHierarchy(): Promise<Capture> {
+    const mode = await this.#resolveSnapshotMode();
     const failures: string[] = [];
     const deadline = Date.now() + DUMP_DEADLINE_MS;
 
@@ -399,127 +466,141 @@ export class AdbBackend implements DeviceBackend {
         failures,
       );
       if (xml !== null) {
-        return xml;
+        return { xml, source: 'dump' };
       }
       throw new Error(this.#composeDumpFailure(failures));
+    }
+
+    let quickDumpFailed = false;
+    if (mode === 'auto' && !this.#autoSkipQuickDump) {
+      const quick = await this.#tryDumpViaUiautomator(
+        deadline,
+        AUTO_PROBE_DUMP_ATTEMPTS,
+        failures,
+      );
+      if (quick !== null) {
+        return { xml: quick, source: 'dump' };
+      }
+      quickDumpFailed = true;
+    }
+
+    const helper = await this.#dumpViaInstrumentation(deadline, failures);
+    if (helper.xml !== null) {
+      if (quickDumpFailed) {
+        this.#autoSkipQuickDump = true;
+      }
+      return { xml: helper.xml, source: 'instrument' };
     }
 
     if (mode === 'instrument') {
-      const xml = await this.#dumpViaInstrumentation(deadline, failures);
-      if (xml !== null) {
-        return xml;
-      }
       throw new Error(this.#composeDumpFailure(failures));
     }
 
-    // auto: a single fast dump wins instantly on idle screens; otherwise the
-    // instrumentation helper handles churn; the remaining dump retries are the
-    // last resort so a helper-side problem never leaves us worse than before.
-    const quick = await this.#tryDumpViaUiautomator(
-      deadline,
-      AUTO_PROBE_DUMP_ATTEMPTS,
-      failures,
-    );
-    if (quick !== null) {
-      return quick;
-    }
-
-    const instrumented = await this.#dumpViaInstrumentation(deadline, failures);
-    if (instrumented !== null) {
-      return instrumented;
-    }
-
+    const fallbackAttempts =
+      mode === 'helper-first' && helper.ran
+        ? HELPER_FIRST_FALLBACK_DUMP_ATTEMPTS
+        : DUMP_ATTEMPTS;
     const fallback = await this.#tryDumpViaUiautomator(
       deadline,
-      DUMP_ATTEMPTS,
+      fallbackAttempts,
       failures,
     );
     if (fallback !== null) {
-      return fallback;
+      this.#autoSkipQuickDump = false;
+      return { xml: fallback, source: 'dump' };
     }
 
     throw new Error(this.#composeDumpFailure(failures));
   }
 
   /**
-   * Capture the hierarchy with the instrumentation helper, installing it first
-   * when needed.
+   * Recover from transient captures and missing installs; propagate trust errors.
    *
    * @param deadline - Absolute time (ms) the overall snapshot must finish by.
    * @param failures - Accumulator for diagnostic messages across dump paths.
-   * @returns The hierarchy XML, or null when the helper path could not produce
-   * a valid capture (the caller then falls back to uiautomator dump).
+   * @returns XML or null, and whether instrumentation started before failure.
    */
   async #dumpViaInstrumentation(
     deadline: number,
     failures: string[],
-  ): Promise<string | null> {
-    try {
-      const xml = await this.#runInstrumentation(deadline);
-      if (isValidHierarchyXml(xml)) {
-        return xml;
-      }
-      failures.push('instrument: output was not complete hierarchy XML');
-    } catch (error) {
-      // A signer-trust failure means a possibly-malicious app squats the
-      // helper's package name. Fail closed: propagate, never fall back to dump.
-      if (isUntrustedHelperError(error)) {
-        throw error;
-      }
-      const message = error instanceof Error ? error.message : String(error);
+  ): Promise<{ xml: string | null; ran: boolean }> {
+    const run = { ran: false };
+    let reinstalled = false;
+    let incompleteRetries = 0;
 
-      // A mid-session uninstall/reboot invalidates the optimistic cache. Retry
-      // once through the ensure-install path before giving up on this path.
-      if (
-        this.#helperInstalled &&
-        message.includes(INSTRUMENTATION_NOT_FOUND_SIGNATURE)
-      ) {
-        this.#helperInstalled = false;
-        try {
-          const xml = await this.#runInstrumentation(deadline);
-          if (isValidHierarchyXml(xml)) {
-            return xml;
-          }
-          failures.push(
-            'instrument: output was not complete hierarchy XML after reinstall',
-          );
-        } catch (retryError) {
-          if (isUntrustedHelperError(retryError)) {
-            throw retryError;
-          }
-          failures.push(
-            `instrument: ${retryError instanceof Error ? retryError.message : String(retryError)}`,
-          );
+    for (;;) {
+      try {
+        const xml = await this.#runInstrumentation(deadline, run);
+        if (isValidHierarchyXml(xml)) {
+          return { xml, ran: run.ran };
         }
-      } else {
+        failures.push(
+          reinstalled
+            ? 'instrument: output was not complete hierarchy XML after reinstall'
+            : 'instrument: output was not complete hierarchy XML',
+        );
+        break;
+      } catch (error) {
+        // Never hide an untrusted helper behind a retry or dump fallback.
+        if (isUntrustedHelperError(error)) {
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+
+        if (
+          isHelperIncompleteCaptureError(error) &&
+          incompleteRetries < HELPER_INCOMPLETE_RETRIES &&
+          deadline - Date.now() >
+            HELPER_INCOMPLETE_RETRY_DELAY_MS + HELPER_RETRY_MIN_REMAINING_MS
+        ) {
+          incompleteRetries += 1;
+          failures.push(
+            `instrument: ${message} (retry ${incompleteRetries}/${HELPER_INCOMPLETE_RETRIES})`,
+          );
+          await new Promise((resolve) => {
+            setTimeout(resolve, HELPER_INCOMPLETE_RETRY_DELAY_MS);
+          });
+          continue;
+        }
+
+        const helperMissing =
+          !reinstalled &&
+          (isHelperNotInstalledError(error) ||
+            (this.#helperInstalled &&
+              message.includes(INSTRUMENTATION_NOT_FOUND_SIGNATURE)));
+        if (helperMissing) {
+          reinstalled = true;
+          this.#helperInstalled = false;
+          this.#helperTrust.forget();
+          continue;
+        }
+
         failures.push(`instrument: ${message}`);
+        break;
       }
     }
-    return null;
+    return { xml: null, ran: run.ran };
   }
 
   /**
    * Ensure the helper is installed, then run it and reassemble its output.
    *
    * @param deadline - Absolute time (ms) the overall snapshot must finish by.
+   * @param run - Set to `ran: true` once `am instrument` is started.
+   * @param run.ran - Whether `am instrument` has run.
    * @returns The reassembled hierarchy XML.
    */
-  async #runInstrumentation(deadline: number): Promise<string> {
+  async #runInstrumentation(
+    deadline: number,
+    run: { ran: boolean },
+  ): Promise<string> {
     if (!this.#helperInstalled) {
-      // Install/upgrade the helper by versionCode. Safe to cache per process:
-      // the install is idempotent and NOT a trust decision.
       await ensureHelperInstalled(this.#serial);
       this.#helperInstalled = true;
     }
 
-    // Trust invariant: re-verify the installed signer BEFORE EVERY am instrument,
-    // never cached. Package name / versionCode are attacker-controlled, so an
-    // actor who can install packages could swap a previously-trusted helper for
-    // a malicious same-package instrumentation between snapshots. Caching this as
-    // a boolean would degrade the signature pin to a one-time check; verifying
-    // per use (pm path + pull + hash) keeps it a per-use invariant. Throws
-    // UntrustedHelperError on a signer mismatch (caller fails closed).
-    await assertInstalledHelperTrusted(this.#serial);
+    // Per-use check: the helper can be replaced between snapshots or retries.
+    await assertInstalledHelperTrusted(this.#serial, this.#helperTrust);
 
     const remainingMs = deadline - Date.now();
     const timeoutMs = Math.max(
@@ -527,6 +608,7 @@ export class AdbBackend implements DeviceBackend {
       Math.min(INSTRUMENT_TIMEOUT_MS, remainingMs),
     );
 
+    run.ran = true;
     const { stdout } = await exec(
       'adb',
       [
@@ -1026,8 +1108,16 @@ function collectTextValues(elements: UIElement[], texts: string[]): void {
   }
 }
 
+/**
+ * Parse hierarchy XML, promoting children of invalid nodes to the nearest
+ * parsed ancestor.
+ *
+ * @param xml - The raw hierarchy XML.
+ * @returns The top-level elements (one per captured window root).
+ */
 export function parseAndroidHierarchy(xml: string): UIElement[] {
-  const stack: UIElement[][] = [[]];
+  const roots: UIElement[] = [];
+  const stack: UIElement[][] = [roots];
 
   // Matches all <node ...>, </node>, and <node .../> tags in document order
   const tagRegex = /<(\/?)node(?:\s+([^>]*?))?\s*(\/?)>/gu;
@@ -1037,29 +1127,38 @@ export function parseAndroidHierarchy(xml: string): UIElement[] {
     const isClosing = match[1] === '/';
     const attrs = match[2];
     const isSelfClosing = match[3] === '/';
+    const parent = stack[stack.length - 1];
 
     if (isClosing) {
       if (stack.length > 1) {
         stack.pop();
       }
-    } else if (isSelfClosing && attrs) {
-      const element = parseNodeAttributes(attrs);
-      if (element) {
-        stack[stack.length - 1].push(element);
-      }
-    } else if (attrs) {
-      const element = parseNodeAttributes(attrs);
-      if (element) {
+      continue;
+    }
+
+    const element = attrs ? parseNodeAttributes(attrs) : null;
+
+    if (element) {
+      if (!isSelfClosing) {
         element.children = [];
-        stack[stack.length - 1].push(element);
-        stack.push(element.children);
       }
+      parent.push(element);
+    }
+    if (!isSelfClosing) {
+      // Even invalid nodes need a frame, or their closing tag pops the parent.
+      stack.push(element?.children ?? parent);
     }
   }
 
-  return stack[0];
+  return roots;
 }
 
+/**
+ * Parse one node. Off-screen views can have negative or inverted bounds.
+ *
+ * @param attrs - The raw attribute string of the tag.
+ * @returns The element, or null when `bounds` is missing or malformed.
+ */
 export function parseNodeAttributes(attrs: string): UIElement | null {
   const get = (name: string): string | undefined => {
     const attrMatch = attrs.match(new RegExp(`${name}="([^"]*)"`, 'u'));
@@ -1071,8 +1170,10 @@ export function parseNodeAttributes(attrs: string): UIElement | null {
     return null;
   }
 
-  // bounds format: [x1,y1][x2,y2]
-  const boundsMatch = boundsStr.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/u);
+  // bounds format: [x1,y1][x2,y2]; any coordinate can be negative.
+  const boundsMatch = boundsStr.match(
+    /\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/u,
+  );
   if (!boundsMatch) {
     return null;
   }
@@ -1087,7 +1188,12 @@ export function parseNodeAttributes(attrs: string): UIElement | null {
     label: get('content-desc') || undefined,
     value: get('text') || undefined,
     identifier: get('resource-id') || undefined,
-    frame: { x: x1, y: y1, width: x2 - x1, height: y2 - y1 },
+    frame: {
+      x: x1,
+      y: y1,
+      width: Math.max(0, x2 - x1),
+      height: Math.max(0, y2 - y1),
+    },
     enabled: get('enabled') !== 'false',
   };
 }

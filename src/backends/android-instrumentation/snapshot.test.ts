@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
+import { HelperIncompleteCaptureError } from './errors.js';
 import {
   HELPER_INSTRUMENTATION,
   HELPER_PACKAGE,
@@ -152,7 +153,31 @@ describe('android-instrumentation/snapshot', () => {
         },
       });
       expect(() => reassembleInstrumentationXml(stdout)).toThrow(
-        /reported failure.*TimeoutException.*idle wait exceeded/u,
+        expect.objectContaining({
+          constructor: Error,
+          message: expect.stringMatching(
+            /reported failure.*TimeoutException.*idle wait exceeded/u,
+          ),
+        }),
+      );
+    });
+
+    it('throws HelperIncompleteCaptureError when the capture did not stabilize', () => {
+      const stdout = buildInstrumentOutput(SAMPLE_XML, {
+        chunkSize: 40,
+        ok: 'false',
+        extraResult: {
+          errorType:
+            'io.metamask.devicemcp.snapshothelper.AccessibilityCaptureStabilizer$IncompleteCaptureException',
+          message: 'Capture did not stabilize within 500ms',
+        },
+      });
+
+      expect(() => reassembleInstrumentationXml(stdout)).toThrow(
+        HelperIncompleteCaptureError,
+      );
+      expect(() => reassembleInstrumentationXml(stdout)).toThrow(
+        /reported failure.*Capture did not stabilize within 500ms/u,
       );
     });
 

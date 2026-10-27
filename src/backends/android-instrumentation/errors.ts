@@ -1,18 +1,6 @@
 /**
- * Error types for the Android snapshot-helper trust + install pipeline.
- *
- * Two failure classes are deliberately distinct because the ADB backend treats
- * them differently (see `adb-backend.ts`):
- *
- * - {@link SnapshotHelperError} — a *generic* failure (install failed, adb
- *   hiccup, malformed artifact). The `auto` snapshot strategy is allowed to fall
- *   back to `uiautomator dump` when one of these occurs.
- * - {@link UntrustedHelperError} — the installed helper's signing certificate
- *   does NOT match the pinned signer. This means a possibly-malicious app is
- *   squatting the helper's package name. The snapshot flow MUST fail closed:
- *   it is never swallowed and never triggers a dump fallback, because silently
- *   returning a dump snapshot would hide a compromised device from a wallet
- *   test harness.
+ * Recoverable helper errors may trigger retries or dump fallback.
+ * {@link UntrustedHelperError} must propagate without either.
  *
  * Structure adapted from agent-device (MIT, Copyright (c) Callstack); the
  * `UntrustedHelperError` trust class and messaging are ours.
@@ -25,8 +13,7 @@ export type SnapshotHelperErrorCode =
   | 'ARTIFACT_INVALID';
 
 /**
- * A generic, recoverable snapshot-helper failure. Callers in `auto` mode may
- * fall back to `uiautomator dump` after catching one of these.
+ * A recoverable helper failure; fallback depends on the snapshot mode.
  */
 export class SnapshotHelperError extends Error {
   public readonly code: SnapshotHelperErrorCode;
@@ -50,7 +37,59 @@ export class SnapshotHelperError extends Error {
 }
 
 /**
- * A trust failure: the installed helper is not signed by our pinned key.
+ * No installed APK path. Reinstall and verify before retrying.
+ */
+export class HelperNotInstalledError extends SnapshotHelperError {
+  public constructor(message: string, options?: ErrorOptions) {
+    super('COMMAND_FAILED', message, options);
+    this.name = 'HelperNotInstalledError';
+    Object.setPrototypeOf(this, HelperNotInstalledError.prototype);
+  }
+}
+
+/**
+ * Type guard for {@link HelperNotInstalledError}.
+ *
+ * @param error - The value to test.
+ * @returns True when `error` is a {@link HelperNotInstalledError}.
+ */
+export function isHelperNotInstalledError(
+  error: unknown,
+): error is HelperNotInstalledError {
+  return error instanceof HelperNotInstalledError;
+}
+
+/**
+ * The foreground root did not stabilize, usually during a screen transition.
+ * Retrying the capture may succeed.
+ */
+export class HelperIncompleteCaptureError extends SnapshotHelperError {
+  public constructor(message: string, options?: ErrorOptions) {
+    super('COMMAND_FAILED', message, options);
+    this.name = 'HelperIncompleteCaptureError';
+    Object.setPrototypeOf(this, HelperIncompleteCaptureError.prototype);
+  }
+}
+
+/**
+ * Type guard for {@link HelperIncompleteCaptureError}.
+ *
+ * @param error - The value to test.
+ * @returns True when `error` is a {@link HelperIncompleteCaptureError}.
+ */
+export function isHelperIncompleteCaptureError(
+  error: unknown,
+): error is HelperIncompleteCaptureError {
+  return error instanceof HelperIncompleteCaptureError;
+}
+
+export const UNTRUSTED_HELPER_REMEDY =
+  'To fix: run `adb uninstall io.metamask.devicemcp.snapshothelper` to remove ' +
+  'a helper signed with another key, so the bundled helper can be installed, ' +
+  "or use snapshotMode 'dump' (DEVICE_MCP_ADB_SNAPSHOT=dump) to skip the helper.";
+
+/**
+ * A trust failure: the installed helper's pinned signer could not be verified.
  *
  * This is a hard stop. It must propagate out of the snapshot flow — never be
  * converted to `null`, never be collected into a generic failure list, and

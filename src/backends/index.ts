@@ -1,4 +1,5 @@
 import { AdbBackend } from './adb-backend.js';
+import type { AdbBackendOptions } from './adb-backend.js';
 import { AppiumBackend } from './appium-backend.js';
 import { IdbBackend } from './idb-backend.js';
 import { readSessionFile } from './session-file.js';
@@ -30,6 +31,7 @@ import type { DetectedDevice } from '../utils/platform.js';
 
 export type { DeviceBackend } from './types.js';
 export { AdbBackend } from './adb-backend.js';
+export type { AdbBackendOptions, AdbSnapshotMode } from './adb-backend.js';
 export { AppiumBackend } from './appium-backend.js';
 export { IdbBackend } from './idb-backend.js';
 
@@ -38,9 +40,23 @@ export type LazyDeviceBackend = DeviceBackend & {
   listDevices(): Promise<DetectedDevice[]>;
 };
 
+export type CreateBackendOptions = {
+  /** Options for the ADB backend. Ignored for the other backends. */
+  adb?: AdbBackendOptions;
+};
+
+/**
+ * Connect to a device and create its backend.
+ *
+ * @param explicitDeviceId - The device to use. Detected when omitted.
+ * @param explicitPlatform - The platform to use. Detected when omitted.
+ * @param options - Optional per-backend options.
+ * @returns The connected backend.
+ */
 export async function createBackend(
   explicitDeviceId?: string,
   explicitPlatform?: Platform,
+  options: CreateBackendOptions = {},
 ): Promise<DeviceBackend> {
   const sessionConfig = await readSessionFile();
 
@@ -59,7 +75,9 @@ export async function createBackend(
   );
 
   const backend =
-    platform === 'ios' ? new IdbBackend(deviceId) : new AdbBackend(deviceId);
+    platform === 'ios'
+      ? new IdbBackend(deviceId)
+      : new AdbBackend(deviceId, options.adb);
 
   await backend.ensureConnected();
   return backend;
@@ -68,6 +86,7 @@ export async function createBackend(
 export function createLazyBackend(
   explicitDeviceId?: string,
   explicitPlatform?: Platform,
+  backendOptions: CreateBackendOptions = {},
 ): LazyDeviceBackend {
   let inner: DeviceBackend | null = null;
   let connecting: Promise<DeviceBackend> | null = null;
@@ -85,7 +104,7 @@ export function createLazyBackend(
 
     if (!connecting) {
       const deviceId = selectedOverride ?? explicitDeviceId;
-      connecting = createBackend(deviceId, explicitPlatform)
+      connecting = createBackend(deviceId, explicitPlatform, backendOptions)
         .then((backend) => {
           inner = backend;
           pendingDevices = null;

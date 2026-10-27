@@ -29,6 +29,14 @@ export type SnapshotResult = {
   hierarchy: UIElement[];
   raw: string;
   timestamp: number;
+  /**
+   * ADB only: stock uiautomator dump or the bundled instrumentation helper.
+   */
+  source?: 'dump' | 'instrument';
+  /**
+   * ADB capture time in ms, including retries and fallbacks, excluding queue wait.
+   */
+  captureMs?: number;
 };
 
 export type TapResult = {

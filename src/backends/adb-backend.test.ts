@@ -7,11 +7,17 @@ import {
   parseNodeAttributes,
   AdbBackend,
 } from './adb-backend.js';
-import { UntrustedHelperError } from './android-instrumentation/errors.js';
+import { loadHelperArtifact } from './android-instrumentation/artifact.js';
+import {
+  HelperNotInstalledError,
+  SnapshotHelperError,
+  UntrustedHelperError,
+} from './android-instrumentation/errors.js';
 import {
   assertInstalledHelperTrusted,
   ensureHelperInstalled,
 } from './android-instrumentation/installer.js';
+import type { UIElement } from './types.js';
 import * as webviewCdpModule from './webview-cdp.js';
 import { findElement } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
@@ -28,9 +34,18 @@ vi.mock('../utils/exec.js', () => ({
 }));
 
 vi.mock('./android-instrumentation/installer.js', () => ({
+  HelperTrustCache: class {
+    forget(): void {
+      // The real cache is covered by the installer tests.
+    }
+  },
   ensureHelperInstalled: vi.fn().mockResolvedValue(undefined),
   assertInstalledHelperTrusted: vi.fn().mockResolvedValue(undefined),
   INSTRUMENTATION_NOT_FOUND_SIGNATURE: 'INSTRUMENTATION_FAILED',
+}));
+
+vi.mock('./android-instrumentation/artifact.js', () => ({
+  loadHelperArtifact: vi.fn(),
 }));
 
 vi.mock('./webview-cdp.js', () => ({
@@ -45,6 +60,12 @@ const mockAssertInstalledHelperTrusted = vi.mocked(
   assertInstalledHelperTrusted,
 );
 const mockReaddir = vi.mocked(readdir);
+const mockLoadHelperArtifact = vi.mocked(loadHelperArtifact);
+const ARTIFACT_MISSING = new SnapshotHelperError(
+  'ARTIFACT_INVALID',
+  'Snapshot helper directory is missing',
+);
+mockLoadHelperArtifact.mockRejectedValue(ARTIFACT_MISSING);
 const mockRunWebViewCdp = vi.mocked(webviewCdpModule.runWebViewCdp);
 
 const SAMPLE_UIAUTOMATOR_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -60,6 +81,25 @@ function assertErr<Res extends { ok: boolean }>(
   value: Res,
 ): asserts value is Extract<Res, { ok: false }> {
   expect(value.ok).toBe(false);
+}
+
+async function withoutRetryDelay<Result>(
+  run: () => Promise<Result>,
+): Promise<Result> {
+  vi.useFakeTimers();
+  try {
+    // Handle rejection before draining timers to avoid an unhandled rejection.
+    const settled = run().then(
+      (value) => () => value,
+      (error: unknown) => () => {
+        throw error;
+      },
+    );
+    await vi.runAllTimersAsync();
+    return (await settled)();
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 describe('parseAndroidHierarchy', () => {
@@ -108,6 +148,182 @@ describe('parseAndroidHierarchy', () => {
     expect(elements[0].children).toHaveLength(1);
     expect(elements[0].children![0].children).toHaveLength(1);
     expect(elements[0].children![0].children![0].value).toBe('deep');
+  });
+
+  function depthsById(
+    elements: UIElement[],
+    depth = 0,
+    out: Record<string, number> = {},
+  ): Record<string, number> {
+    for (const element of elements) {
+      if (element.identifier) {
+        out[element.identifier] = depth;
+      }
+      depthsById(element.children ?? [], depth + 1, out);
+    }
+    return out;
+  }
+
+  it('parses a node with negative bounds and keeps its children', () => {
+    const xml = `<hierarchy>
+      <node resource-id="root" class="Root" bounds="[0,0][1080,2400]">
+        <node resource-id="offscreen" class="Pager" bounds="[-1080,0][0,2400]">
+          <node resource-id="page" class="Page" bounds="[-1080,100][-10,900]" />
+        </node>
+        <node resource-id="after" class="View" bounds="[0,0][10,10]" />
+      </node>
+    </hierarchy>`;
+
+    const elements = parseAndroidHierarchy(xml);
+
+    expect(elements).toHaveLength(1);
+    const [root] = elements;
+    expect(root.children!.map((child) => child.identifier)).toStrictEqual([
+      'offscreen',
+      'after',
+    ]);
+    expect(root.children![0].frame).toStrictEqual({
+      x: -1080,
+      y: 0,
+      width: 1080,
+      height: 2400,
+    });
+    expect(root.children![0].children![0].frame).toStrictEqual({
+      x: -1080,
+      y: 100,
+      width: 1070,
+      height: 800,
+    });
+  });
+
+  it('clamps inverted bounds to a zero width and height', () => {
+    const xml = `<hierarchy>
+      <node resource-id="below-fold" class="View" bounds="[0,2513][1080,2400]" />
+      <node resource-id="negative-x2" class="View" bounds="[84,5570][-647,2400]" />
+    </hierarchy>`;
+
+    const [belowFold, negativeX2] = parseAndroidHierarchy(xml);
+
+    expect(belowFold.frame).toStrictEqual({
+      x: 0,
+      y: 2513,
+      width: 1080,
+      height: 0,
+    });
+    expect(negativeX2.frame).toStrictEqual({
+      x: 84,
+      y: 5570,
+      width: 0,
+      height: 0,
+    });
+  });
+
+  it('attaches the children of an unparseable node to its nearest parsed ancestor', () => {
+    const xml = `<hierarchy>
+      <node resource-id="root" class="Root" bounds="[0,0][100,100]">
+        <node resource-id="broken" class="Broken" bounds="not-bounds">
+          <node resource-id="orphan-a" class="A" bounds="[0,0][1,1]" />
+          <node resource-id="orphan-b" class="B" bounds="[0,0][2,2]">
+            <node resource-id="grandchild" class="C" bounds="[0,0][1,1]" />
+          </node>
+        </node>
+        <node resource-id="sibling" class="S" bounds="[0,0][5,5]" />
+      </node>
+      <node resource-id="second-root" class="Root" bounds="[0,0][100,100]" />
+    </hierarchy>`;
+
+    const elements = parseAndroidHierarchy(xml);
+
+    expect(elements.map((element) => element.identifier)).toStrictEqual([
+      'root',
+      'second-root',
+    ]);
+    expect(
+      elements[0].children!.map((child) => child.identifier),
+    ).toStrictEqual(['orphan-a', 'orphan-b', 'sibling']);
+    expect(depthsById(elements)).toStrictEqual({
+      root: 0,
+      'orphan-a': 1,
+      'orphan-b': 1,
+      grandchild: 2,
+      sibling: 1,
+      'second-root': 0,
+    });
+  });
+
+  it('promotes the children of an unparseable top-level node to roots', () => {
+    const xml = `<hierarchy>
+      <node class="NoBounds">
+        <node resource-id="a" class="A" bounds="[0,0][1,1]" />
+      </node>
+      <node resource-id="b" class="B" bounds="[0,0][1,1]" />
+    </hierarchy>`;
+
+    const elements = parseAndroidHierarchy(xml);
+
+    expect(elements.map((element) => element.identifier)).toStrictEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('balances consecutive invalid parents without shifting later siblings', () => {
+    const xml = `<hierarchy>
+      <node resource-id="root" bounds="[0,0][100,100]">
+        <node><node bounds="invalid">
+          <node resource-id="promoted" bounds="[0,0][1,1]" />
+        </node></node>
+        <node resource-id="sibling" bounds="[0,0][1,1]" />
+      </node>
+      <node resource-id="other-root" bounds="[0,0][1,1]" />
+    </hierarchy>`;
+
+    expect(depthsById(parseAndroidHierarchy(xml))).toStrictEqual({
+      root: 0,
+      promoted: 1,
+      sibling: 1,
+      'other-root': 0,
+    });
+  });
+
+  it('keeps the window roots of a busy screen with negative and inverted bounds', () => {
+    const xml = `<hierarchy rotation="0">
+      <node resource-id="status-bar" bounds="[0,0][1080,63]">
+        <node resource-id="clock" text="10:52" bounds="[42,0][130,63]" />
+      </node>
+      <node resource-id="app-root" bounds="[0,0][1080,2400]">
+        <node resource-id="carousel" bounds="[0,400][1080,700]">
+          <node resource-id="previous-page" bounds="[84,5570][-647,2400]">
+            <node resource-id="card" text="Earn" bounds="[-600,450][-100,650]" />
+          </node>
+          <node resource-id="current-page" bounds="[0,400][1080,700]" />
+        </node>
+        <node resource-id="token-list" bounds="[0,700][1080,2400]">
+          <node resource-id="below-fold" bounds="[0,2513][1080,2400]" />
+        </node>
+        <node resource-id="tab-bar" bounds="[0,2274][1080,2400]" />
+      </node>
+    </hierarchy>`;
+
+    const elements = parseAndroidHierarchy(xml);
+
+    expect(elements).toHaveLength(2);
+    expect(depthsById(elements)).toStrictEqual({
+      'status-bar': 0,
+      clock: 1,
+      'app-root': 0,
+      carousel: 1,
+      'previous-page': 2,
+      card: 3,
+      'current-page': 2,
+      'token-list': 1,
+      'below-fold': 2,
+      'tab-bar': 1,
+    });
+    const rows = findElement(elements, { identifier: 'below-fold' });
+    expect(rows!.frame.height).toBe(0);
+    const prev = findElement(elements, { identifier: 'previous-page' });
+    expect(prev!.frame).toStrictEqual({ x: 84, y: 5570, width: 0, height: 0 });
   });
 });
 
@@ -199,33 +415,6 @@ describe('AdbBackend.snapshot', () => {
     });
 
     return dumpPaths;
-  }
-
-  /**
-   * Run a snapshot with retry backoff elided, so the suite does not truly sleep.
-   *
-   * @param run - Invokes the operation under test.
-   * @returns The settled promise of the operation.
-   */
-  async function withoutRetryDelay<Result>(
-    run: () => Promise<Result>,
-  ): Promise<Result> {
-    vi.useFakeTimers();
-    try {
-      // Convert to a settled result before draining timers. Awaiting the raw
-      // promise afterwards would leave it unhandled while `runAllTimersAsync`
-      // yields, which Vitest reports as an unhandled rejection.
-      const settled = run().then(
-        (value) => () => value,
-        (error: unknown) => () => {
-          throw error;
-        },
-      );
-      await vi.runAllTimersAsync();
-      return (await settled)();
-    } finally {
-      vi.useRealTimers();
-    }
   }
 
   it('never returns a stale hierarchy: dumps to a unique remote path each attempt', async () => {
@@ -498,30 +687,15 @@ describe('AdbBackend.screenshot', () => {
   });
 });
 
-/**
- * Encode hierarchy XML into the chunked base64 status stream that
- * `am instrument -w` emits, with CRLF line endings like adb shell.
- *
- * @param xml - The hierarchy XML the helper would stream.
- * @returns Raw `am instrument` stdout.
- */
 function buildInstrumentStdout(xml: string): string {
-  const bytes = Buffer.from(xml, 'utf8');
-  const chunkSize = 2048;
-  const chunkCount = Math.max(1, Math.ceil(bytes.length / chunkSize));
-  const lines: string[] = [];
-  for (let index = 0; index < chunkCount; index += 1) {
-    const slice = bytes.subarray(index * chunkSize, (index + 1) * chunkSize);
-    lines.push(`INSTRUMENTATION_STATUS: chunkCount=${chunkCount}`);
-    lines.push(`INSTRUMENTATION_STATUS: chunkIndex=${index}`);
-    lines.push(
-      `INSTRUMENTATION_STATUS: payloadBase64=${slice.toString('base64')}`,
-    );
-    lines.push('INSTRUMENTATION_STATUS_CODE: 2');
-  }
-  lines.push('INSTRUMENTATION_RESULT: ok=true');
-  lines.push('INSTRUMENTATION_CODE: -1');
-  return lines.join('\r\n');
+  return [
+    'INSTRUMENTATION_STATUS: chunkCount=1',
+    'INSTRUMENTATION_STATUS: chunkIndex=0',
+    `INSTRUMENTATION_STATUS: payloadBase64=${Buffer.from(xml).toString('base64')}`,
+    'INSTRUMENTATION_STATUS_CODE: 2',
+    'INSTRUMENTATION_RESULT: ok=true',
+    'INSTRUMENTATION_CODE: -1',
+  ].join('\r\n');
 }
 
 const INSTRUMENT_XML =
@@ -533,14 +707,22 @@ const INSTRUMENT_XML =
 describe('AdbBackend.snapshot snapshot-mode selection', () => {
   let backend: AdbBackend;
 
+  const IDLE_DUMP_XML =
+    '<hierarchy><node class="T" text="idle" bounds="[0,0][1,1]" /></hierarchy>';
+
+  const FAILED_INSTRUMENT_STDOUT =
+    'INSTRUMENTATION_RESULT: ok=false\r\nINSTRUMENTATION_CODE: 0';
+
+  const countExecCalls = (token: string): number =>
+    mockExec.mock.calls.filter((call) => call[1]?.includes(token)).length;
+
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     backend = new AdbBackend('emulator-5554');
-    // Install and signer-verify are separate concerns: install is version-gated
-    // and cacheable, while the signer check must run on every snapshot. Both are
-    // resolved stubs by default; the installer has its own tests.
     mockEnsureHelperInstalled.mockResolvedValue(undefined);
     mockAssertInstalledHelperTrusted.mockResolvedValue(undefined);
+    mockLoadHelperArtifact.mockRejectedValue(ARTIFACT_MISSING);
+    routeExec();
   });
 
   afterEach(() => {
@@ -548,21 +730,17 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
     mockExec.mockReset();
     mockExecStrict.mockReset();
     mockReaddir.mockReset();
+    mockAssertInstalledHelperTrusted.mockReset();
+    mockEnsureHelperInstalled.mockReset();
   });
 
-  /**
-   * Route `exec('adb', ...)` calls by their sub-command.
-   *
-   * @param overrides - Per-command stdout/exit overrides.
-   * @param overrides.dumpCat - stdout returned by `cat` of the dump file.
-   * @param overrides.helperInstalled - Whether `pm list packages` reports it.
-   * @param overrides.instrumentStdout - stdout returned by `am instrument`.
-   */
-  function routeExec(overrides: {
-    dumpCat?: string;
-    helperInstalled?: boolean;
-    instrumentStdout?: string;
-  }): void {
+  function routeExec(
+    overrides: {
+      dumpCat?: string;
+      instrumentStdout?: string | string[];
+    } = {},
+  ): void {
+    let instrumentIndex = 0;
     mockExecStrict.mockImplementation(async (_cmd, args) => {
       if (args?.includes('cat')) {
         return overrides.dumpCat ?? '';
@@ -571,25 +749,18 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
     });
     mockExec.mockImplementation(async (_cmd, args) => {
       if (args?.includes('instrument')) {
+        const output =
+          overrides.instrumentStdout ?? buildInstrumentStdout(INSTRUMENT_XML);
+        const stdout = Array.isArray(output)
+          ? output[Math.min(instrumentIndex, output.length - 1)]
+          : output;
+        instrumentIndex += 1;
         return {
-          stdout: overrides.instrumentStdout ?? '',
+          stdout,
           stderr: '',
           exitCode: 0,
         };
       }
-      if (args?.includes('packages')) {
-        return {
-          stdout: overrides.helperInstalled
-            ? 'package:io.metamask.devicemcp.snapshothelper'
-            : '',
-          stderr: '',
-          exitCode: 0,
-        };
-      }
-      if (args?.includes('install')) {
-        return { stdout: 'Success', stderr: '', exitCode: 0 };
-      }
-      // dump / cat / rm / other
       return { stdout: '', stderr: '', exitCode: 0 };
     });
   }
@@ -597,14 +768,12 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
   it('auto: returns the quick dump when the screen is idle', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
     routeExec({
-      dumpCat:
-        '<hierarchy><node class="T" text="idle" bounds="[0,0][1,1]" /></hierarchy>',
+      dumpCat: IDLE_DUMP_XML,
     });
 
     const snapshot = await backend.snapshot();
 
     expect(snapshot.hierarchy[0].value).toBe('idle');
-    // The instrumentation path must not run when the quick dump succeeds.
     expect(
       mockExec.mock.calls.some((call) => call[1]?.includes('instrument')),
     ).toBe(false);
@@ -612,11 +781,6 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
 
   it('auto: falls back to instrumentation when the dump never idles', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
-    routeExec({
-      dumpCat: '', // dump yields no hierarchy (churny screen)
-      helperInstalled: true,
-      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
-    });
 
     const snapshot = await backend.snapshot();
 
@@ -628,25 +792,18 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
 
   it('auto: ensures a trusted helper before instrumenting', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
-    routeExec({
-      dumpCat: '',
-      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
-    });
 
     await backend.snapshot();
 
     expect(mockEnsureHelperInstalled).toHaveBeenCalledWith('emulator-5554');
     expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledWith(
       'emulator-5554',
+      expect.any(Object),
     );
   });
 
   it('instrument: uses only the helper and never dumps', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
-    routeExec({
-      helperInstalled: true,
-      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
-    });
 
     const snapshot = await backend.snapshot();
 
@@ -658,61 +815,32 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
 
   it('instrument: surfaces a composed failure when the helper fails', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
-    mockExecStrict.mockResolvedValue('');
-    mockExec.mockImplementation(async (_cmd, args) => {
-      if (args?.includes('instrument')) {
-        return {
-          stdout: 'INSTRUMENTATION_RESULT: ok=false\r\nINSTRUMENTATION_CODE: 0',
-          stderr: '',
-          exitCode: 0,
-        };
-      }
-      if (args?.includes('packages')) {
-        return {
-          stdout: 'package:io.metamask.devicemcp.snapshothelper',
-          stderr: '',
-          exitCode: 0,
-        };
-      }
-      return { stdout: '', stderr: '', exitCode: 0 };
-    });
+    routeExec({ instrumentStdout: FAILED_INSTRUMENT_STDOUT });
 
     await expect(backend.snapshot()).rejects.toThrow(
       /Failed to capture the UI hierarchy[\s\S]*instrument:/u,
     );
+    expect(countExecCalls('instrument')).toBe(1);
+    expect(countExecCalls('uiautomator')).toBe(0);
   });
 
   it('caches the install but re-verifies the signer on every snapshot', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
-    routeExec({
-      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
-    });
 
     await backend.snapshot();
     await backend.snapshot();
 
-    // The install is version-gated and cached: it runs once per session.
     expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(1);
-    // The signer trust check is a per-use invariant: it must run on EVERY
-    // am instrument, never cached, so a mid-session same-package swap is caught.
     expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(2);
   });
 
   it('fails closed when the installed signer changes after an earlier trusted snapshot', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
-    routeExec({
-      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
-    });
 
-    // Snapshot 1: the installed helper is trusted and the capture succeeds.
     const first = await backend.snapshot();
     expect(first.hierarchy[0].identifier).toBe('tab-bar-item-Wallet');
 
-    // Between snapshots an attacker uninstalls the real helper and installs a
-    // malicious same-package instrumentation. The install stays cached, so only
-    // the per-use signer verification can catch the swap. It must fail closed
-    // and never fall back to a uiautomator dump — this is the exact exploit the
-    // per-use trust invariant closes.
+    // Replace the installed helper without invalidating the install cache.
     mockAssertInstalledHelperTrusted.mockRejectedValueOnce(
       new UntrustedHelperError('signer mismatch', {
         expectedSignerSha256: 'aaaa',
@@ -732,10 +860,6 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
 
   it('auto: fails closed on a trust error and never falls back to dump', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
-    routeExec({
-      dumpCat: '',
-      instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
-    });
     mockAssertInstalledHelperTrusted.mockRejectedValue(
       new UntrustedHelperError('signer mismatch', {
         expectedSignerSha256: 'aaaa',
@@ -746,17 +870,13 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
     await expect(backend.snapshot()).rejects.toBeInstanceOf(
       UntrustedHelperError,
     );
-    // The single quick probe may run first, but the trust error must abort
-    // BEFORE the multi-attempt dump fallback: only one uiautomator dump total.
-    const dumpCalls = mockExec.mock.calls.filter((call) =>
-      call[1]?.includes('uiautomator'),
-    );
-    expect(dumpCalls.length).toBeLessThanOrEqual(1);
+    expect(countExecCalls('uiautomator')).toBe(1);
+    expect(countExecCalls('instrument')).toBe(0);
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(1);
   });
 
   it('instrument: propagates a trust error unchanged', async () => {
     process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
-    routeExec({ instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML) });
     mockAssertInstalledHelperTrusted.mockRejectedValue(
       new UntrustedHelperError('signer mismatch', {
         expectedSignerSha256: 'aaaa',
@@ -766,6 +886,476 @@ describe('AdbBackend.snapshot snapshot-mode selection', () => {
     await expect(backend.snapshot()).rejects.toBeInstanceOf(
       UntrustedHelperError,
     );
+  });
+
+  describe('default mode', () => {
+    beforeEach(() => {
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('is helper-first when the bundled helper is available: no quick dump', async () => {
+      mockLoadHelperArtifact.mockResolvedValue(
+        {} as Awaited<ReturnType<typeof loadHelperArtifact>>,
+      );
+      routeExec({
+        dumpCat: IDLE_DUMP_XML,
+      });
+
+      const snapshot = await backend.snapshot();
+
+      expect(snapshot.source).toBe('instrument');
+      expect(snapshot.hierarchy[0].identifier).toBe('tab-bar-item-Wallet');
+      expect(countExecCalls('uiautomator')).toBe(0);
+      expect(console.error).not.toHaveBeenCalled();
+    });
+
+    it('uses dump when the helper is missing and warns once on stderr', async () => {
+      routeExec({ dumpCat: IDLE_DUMP_XML });
+
+      const first = await backend.snapshot();
+      const second = await backend.snapshot();
+
+      expect(first.source).toBe('dump');
+      expect(second.source).toBe('dump');
+      expect(countExecCalls('instrument')).toBe(0);
+      expect(mockEnsureHelperInstalled).not.toHaveBeenCalled();
+      expect(mockLoadHelperArtifact).toHaveBeenCalledTimes(1);
+      expect(console.error).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining(
+          `snapshot helper is unavailable (${ARTIFACT_MISSING.message}). Using snapshot mode 'dump'`,
+        ),
+      );
+      expect(console.log).not.toHaveBeenCalled();
+    });
+
+    it('does not probe or warn when a mode is explicit', async () => {
+      routeExec({ dumpCat: IDLE_DUMP_XML });
+      await new AdbBackend('emulator-5554', {
+        snapshotMode: 'dump',
+      }).snapshot();
+
+      expect(mockLoadHelperArtifact).not.toHaveBeenCalled();
+      expect(console.error).not.toHaveBeenCalled();
+    });
+
+    it('helper-first: falls back to dump on a non-trust helper failure', async () => {
+      mockLoadHelperArtifact.mockResolvedValue(
+        {} as Awaited<ReturnType<typeof loadHelperArtifact>>,
+      );
+      routeExec({
+        dumpCat: IDLE_DUMP_XML,
+        instrumentStdout: FAILED_INSTRUMENT_STDOUT,
+      });
+
+      const snapshot = await backend.snapshot();
+
+      expect(snapshot.source).toBe('dump');
+      expect(snapshot.hierarchy[0].value).toBe('idle');
+      expect(countExecCalls('instrument')).toBe(1);
+      expect(countExecCalls('uiautomator')).toBe(1);
+    });
+
+    it('helper-first: fails closed on a trust error and never dumps', async () => {
+      mockLoadHelperArtifact.mockResolvedValue(
+        {} as Awaited<ReturnType<typeof loadHelperArtifact>>,
+      );
+      routeExec({
+        dumpCat: IDLE_DUMP_XML,
+      });
+      mockAssertInstalledHelperTrusted.mockRejectedValue(
+        new UntrustedHelperError('signer mismatch', {
+          expectedSignerSha256: 'aaaa',
+        }),
+      );
+
+      await expect(backend.snapshot()).rejects.toBeInstanceOf(
+        UntrustedHelperError,
+      );
+      expect(countExecCalls('uiautomator')).toBe(0);
+      expect(countExecCalls('instrument')).toBe(0);
+      expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('mode precedence', () => {
+    it('uses the constructor option over the environment variable', async () => {
+      process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
+      const withOption = new AdbBackend('emulator-5554', {
+        snapshotMode: 'dump',
+      });
+      routeExec({
+        dumpCat: IDLE_DUMP_XML,
+      });
+
+      const snapshot = await withOption.snapshot();
+
+      expect(snapshot.source).toBe('dump');
+      expect(countExecCalls('instrument')).toBe(0);
+    });
+
+    it('accepts helper-first from the environment variable', async () => {
+      process.env.DEVICE_MCP_ADB_SNAPSHOT = 'helper-first';
+      routeExec({
+        dumpCat: IDLE_DUMP_XML,
+      });
+
+      const snapshot = await backend.snapshot();
+
+      expect(snapshot.source).toBe('instrument');
+      expect(mockLoadHelperArtifact).not.toHaveBeenCalled();
+    });
+
+    it('ignores an unknown environment value and uses the default', async () => {
+      process.env.DEVICE_MCP_ADB_SNAPSHOT = 'bogus';
+      routeExec({ dumpCat: IDLE_DUMP_XML });
+
+      const snapshot = await backend.snapshot();
+
+      expect(snapshot.source).toBe('dump');
+      expect(mockLoadHelperArtifact).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects an unknown constructor option', () => {
+      expect(
+        () =>
+          new AdbBackend('emulator-5554', {
+            snapshotMode: 'bogus' as unknown as 'dump',
+          }),
+      ).toThrow(/Unknown ADB snapshot mode "bogus"/u);
+    });
+  });
+
+  describe('auto: sticky quick-dump skip', () => {
+    it('skips the quick dump after it lost to the helper', async () => {
+      const auto = new AdbBackend('emulator-5554', { snapshotMode: 'auto' });
+
+      const first = await auto.snapshot();
+      expect(first.source).toBe('instrument');
+      expect(countExecCalls('uiautomator')).toBe(1);
+
+      const second = await auto.snapshot();
+      const third = await auto.snapshot();
+
+      expect(second.source).toBe('instrument');
+      expect(third.source).toBe('instrument');
+      expect(countExecCalls('uiautomator')).toBe(1);
+      expect(countExecCalls('instrument')).toBe(3);
+    });
+
+    it('is per backend instance', async () => {
+      const first = new AdbBackend('emulator-5554', { snapshotMode: 'auto' });
+      await first.snapshot();
+
+      const other = new AdbBackend('emulator-5554', { snapshotMode: 'auto' });
+      await other.snapshot();
+
+      expect(countExecCalls('uiautomator')).toBe(2);
+    });
+
+    it('does not become sticky when the quick dump wins', async () => {
+      const auto = new AdbBackend('emulator-5554', { snapshotMode: 'auto' });
+      routeExec({
+        dumpCat: IDLE_DUMP_XML,
+      });
+
+      await auto.snapshot();
+      await auto.snapshot();
+
+      expect(countExecCalls('uiautomator')).toBe(2);
+      expect(countExecCalls('instrument')).toBe(0);
+    });
+
+    it('resets when the helper fails and the dump fallback succeeds', async () => {
+      const auto = new AdbBackend('emulator-5554', { snapshotMode: 'auto' });
+      const device = {
+        dumpCat: '',
+        instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
+      };
+      routeExec(device);
+
+      // Quick dump fails; helper wins.
+      await auto.snapshot();
+      expect(countExecCalls('uiautomator')).toBe(1);
+
+      // Helper fails; dump rescues the capture and clears stickiness.
+      device.dumpCat = IDLE_DUMP_XML;
+      device.instrumentStdout = FAILED_INSTRUMENT_STDOUT;
+      const second = await auto.snapshot();
+      expect(second.source).toBe('dump');
+      expect(countExecCalls('uiautomator')).toBe(2);
+      expect(countExecCalls('instrument')).toBe(2);
+
+      // Quick dump wins again.
+      const third = await auto.snapshot();
+      expect(third.source).toBe('dump');
+      expect(countExecCalls('uiautomator')).toBe(3);
+      expect(countExecCalls('instrument')).toBe(2);
+    });
+
+    it('stays fail-closed on a trust error while sticky', async () => {
+      const auto = new AdbBackend('emulator-5554', { snapshotMode: 'auto' });
+      await auto.snapshot();
+
+      mockAssertInstalledHelperTrusted.mockRejectedValueOnce(
+        new UntrustedHelperError('signer mismatch', {
+          expectedSignerSha256: 'aaaa',
+        }),
+      );
+
+      await expect(auto.snapshot()).rejects.toBeInstanceOf(
+        UntrustedHelperError,
+      );
+      expect(countExecCalls('uiautomator')).toBe(1);
+    });
+  });
+
+  describe('helper uninstalled mid-session', () => {
+    const notInstalled = (): HelperNotInstalledError =>
+      new HelperNotInstalledError('Snapshot helper is not installed');
+
+    it.each(['helper-first', 'instrument'] as const)(
+      '%s: reinstalls and retries once when pm path finds no helper',
+      async (snapshotMode) => {
+        const helperBackend = new AdbBackend('emulator-5554', {
+          snapshotMode,
+        });
+        routeExec({
+          dumpCat: IDLE_DUMP_XML,
+        });
+
+        await helperBackend.snapshot();
+        expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(1);
+
+        mockAssertInstalledHelperTrusted.mockRejectedValueOnce(notInstalled());
+
+        const second = await helperBackend.snapshot();
+
+        expect(second.source).toBe('instrument');
+        expect(second.hierarchy[0].identifier).toBe('tab-bar-item-Wallet');
+        expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(2);
+        expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(3);
+        expect(countExecCalls('uiautomator')).toBe(0);
+      },
+    );
+
+    it('instrument: reports a composed failure, not a trust error, when the reinstall does not help', async () => {
+      const helperBackend = new AdbBackend('emulator-5554', {
+        snapshotMode: 'instrument',
+      });
+      mockAssertInstalledHelperTrusted
+        .mockRejectedValueOnce(notInstalled())
+        .mockRejectedValueOnce(notInstalled());
+
+      const error = await helperBackend.snapshot().then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+
+      expect(error).not.toBeInstanceOf(UntrustedHelperError);
+      expect(String(error)).toMatch(
+        /Failed to capture the UI hierarchy[\s\S]*not installed/u,
+      );
+      expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(2);
+      expect(countExecCalls('uiautomator')).toBe(0);
+    });
+
+    it('helper-first: falls back to dump when the reinstall does not help', async () => {
+      const helperBackend = new AdbBackend('emulator-5554', {
+        snapshotMode: 'helper-first',
+      });
+      routeExec({
+        dumpCat: IDLE_DUMP_XML,
+      });
+      mockAssertInstalledHelperTrusted
+        .mockRejectedValueOnce(notInstalled())
+        .mockRejectedValueOnce(notInstalled());
+
+      const snapshot = await helperBackend.snapshot();
+
+      expect(snapshot.source).toBe('dump');
+      expect(countExecCalls('uiautomator')).toBe(1);
+    });
+
+    it('helper-first: still fails closed when the reinstalled helper is untrusted', async () => {
+      const helperBackend = new AdbBackend('emulator-5554', {
+        snapshotMode: 'helper-first',
+      });
+      routeExec({
+        dumpCat: IDLE_DUMP_XML,
+      });
+      mockAssertInstalledHelperTrusted
+        .mockRejectedValueOnce(notInstalled())
+        .mockRejectedValueOnce(
+          new UntrustedHelperError('signer mismatch', {
+            expectedSignerSha256: 'aaaa',
+          }),
+        );
+
+      await expect(helperBackend.snapshot()).rejects.toBeInstanceOf(
+        UntrustedHelperError,
+      );
+      expect(countExecCalls('uiautomator')).toBe(0);
+    });
+  });
+
+  describe('helper incomplete capture', () => {
+    const INCOMPLETE_STDOUT = [
+      'INSTRUMENTATION_RESULT: errorType=io.metamask.devicemcp.snapshothelper.AccessibilityCaptureStabilizer$IncompleteCaptureException',
+      'INSTRUMENTATION_RESULT: message=Capture did not stabilize within 500ms',
+      'INSTRUMENTATION_RESULT: ok=false',
+      'INSTRUMENTATION_CODE: -1',
+    ].join('\r\n');
+
+    it.each(['helper-first', 'instrument', 'auto'] as const)(
+      '%s: retries the helper after an incomplete capture and succeeds',
+      async (snapshotMode) => {
+        const target = new AdbBackend('emulator-5554', { snapshotMode });
+        routeExec({
+          instrumentStdout: [
+            INCOMPLETE_STDOUT,
+            buildInstrumentStdout(INSTRUMENT_XML),
+          ],
+        });
+
+        const snapshot = await withoutRetryDelay(async () => target.snapshot());
+
+        expect(snapshot.source).toBe('instrument');
+        expect(snapshot.hierarchy[0].identifier).toBe('tab-bar-item-Wallet');
+        expect(countExecCalls('instrument')).toBe(2);
+        expect(countExecCalls('uiautomator')).toBe(
+          snapshotMode === 'auto' ? 1 : 0,
+        );
+        expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it('helper-first: after 3 incomplete captures, makes one dump attempt only', async () => {
+      const target = new AdbBackend('emulator-5554', {
+        snapshotMode: 'helper-first',
+      });
+      routeExec({ instrumentStdout: INCOMPLETE_STDOUT });
+
+      await expect(
+        withoutRetryDelay(async () => target.snapshot()),
+      ).rejects.toThrow(
+        /Failed to capture the UI hierarchy[\s\S]*Capture did not stabilize[\s\S]*dump attempt 1/u,
+      );
+      expect(countExecCalls('instrument')).toBe(3);
+      expect(countExecCalls('uiautomator')).toBe(1);
+    });
+
+    it('helper-first: the single dump attempt can still rescue the snapshot', async () => {
+      const target = new AdbBackend('emulator-5554', {
+        snapshotMode: 'helper-first',
+      });
+      routeExec({
+        instrumentStdout: INCOMPLETE_STDOUT,
+        dumpCat: IDLE_DUMP_XML,
+      });
+
+      const snapshot = await withoutRetryDelay(async () => target.snapshot());
+
+      expect(snapshot.source).toBe('dump');
+      expect(countExecCalls('instrument')).toBe(3);
+      expect(countExecCalls('uiautomator')).toBe(1);
+    });
+
+    it('helper-first: keeps 3 dump attempts when the helper never ran', async () => {
+      const target = new AdbBackend('emulator-5554', {
+        snapshotMode: 'helper-first',
+      });
+      mockEnsureHelperInstalled.mockRejectedValue(
+        new Error('Failed to install snapshot helper APK'),
+      );
+
+      await expect(
+        withoutRetryDelay(async () => target.snapshot()),
+      ).rejects.toThrow(/dump attempt 3/u);
+      expect(countExecCalls('instrument')).toBe(0);
+      expect(countExecCalls('uiautomator')).toBe(3);
+    });
+
+    it('instrument: fails after 3 incomplete captures and never dumps', async () => {
+      const target = new AdbBackend('emulator-5554', {
+        snapshotMode: 'instrument',
+      });
+      routeExec({ instrumentStdout: INCOMPLETE_STDOUT });
+
+      await expect(
+        withoutRetryDelay(async () => target.snapshot()),
+      ).rejects.toThrow(
+        /retry 1\/2[\s\S]*retry 2\/2[\s\S]*Capture did not stabilize/u,
+      );
+      expect(countExecCalls('instrument')).toBe(3);
+      expect(countExecCalls('uiautomator')).toBe(0);
+    });
+
+    it('fails closed when the signer changes between incomplete-capture retries', async () => {
+      const target = new AdbBackend('emulator-5554', {
+        snapshotMode: 'helper-first',
+      });
+      routeExec({ instrumentStdout: INCOMPLETE_STDOUT });
+      mockAssertInstalledHelperTrusted
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(
+          new UntrustedHelperError('signer mismatch', {
+            expectedSignerSha256: 'aaaa',
+          }),
+        );
+
+      await expect(
+        withoutRetryDelay(async () => target.snapshot()),
+      ).rejects.toBeInstanceOf(UntrustedHelperError);
+      expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(2);
+      expect(countExecCalls('instrument')).toBe(1);
+      expect(countExecCalls('uiautomator')).toBe(0);
+    });
+  });
+
+  describe('observability', () => {
+    it('reports the source and capture time of an instrument snapshot', async () => {
+      process.env.DEVICE_MCP_ADB_SNAPSHOT = 'instrument';
+
+      const snapshot = await backend.snapshot();
+
+      expect(snapshot.source).toBe('instrument');
+      expect(typeof snapshot.captureMs).toBe('number');
+      expect(snapshot.captureMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('reports the capture time including failed attempts', async () => {
+      vi.useFakeTimers();
+      try {
+        process.env.DEVICE_MCP_ADB_SNAPSHOT = 'auto';
+        routeExec({
+          dumpCat: '',
+          instrumentStdout: buildInstrumentStdout(INSTRUMENT_XML),
+        });
+        const routed = mockExec.getMockImplementation()!;
+        mockExec.mockImplementation(async (cmd, args, options) => {
+          // The quick dump burns 11 s before it fails, like on wallet home.
+          if (args?.includes('uiautomator')) {
+            vi.advanceTimersByTime(11_000);
+          }
+          if (args?.includes('instrument')) {
+            vi.advanceTimersByTime(2_500);
+          }
+          return routed(cmd, args, options);
+        });
+
+        const snapshot = await backend.snapshot();
+
+        expect(snapshot.source).toBe('instrument');
+        expect(snapshot.captureMs).toBe(13_500);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
 
