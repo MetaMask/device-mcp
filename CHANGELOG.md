@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add optional backend disposal and private, session-owned IDB companions. Release owned resources on stdio close, stdin EOF, SIGINT, and SIGTERM.
+
+### Changed
+
+- `LazyDeviceBackend.selectDevice()` now returns a promise and disposes the previous backend before switching. Programmatic callers must await it.
+
 ## [0.6.0]
 
 ### Added

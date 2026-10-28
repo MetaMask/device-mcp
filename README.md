@@ -63,6 +63,25 @@ The server selects a backend in this order:
 
 When multiple devices are connected and no `DEVICE_ID` is set, the server enters an "awaiting selection" state. Any tool call returns the list of available devices. Use `device_list_devices` to enumerate them and `device_select_device` to choose one.
 
+### Connection lifecycle
+
+IDB backends start a private `idb_companion` child with a unique Unix socket and route their commands through `IDB_COMPANION`. They do not register, reuse, or disconnect the global UDID connection. This isolates teardown across simulators and across backend instances targeting the same simulator.
+
+Programmatic callers should release their backend after use:
+
+```typescript
+const backend = await createBackend(deviceId, 'ios');
+try {
+  await backend.snapshot();
+} finally {
+  await backend.dispose?.();
+}
+```
+
+`dispose()` is idempotent and stops only that backend's companion and active recording, then removes its socket directory. It does not close apps or shut down simulators. Existing shared companions and other sessions remain running. Other backends can omit this optional lifecycle hook. The stdio server disposes its backend on transport close, SIGINT, and SIGTERM; an uncatchable process kill cannot run disposal.
+
+`await lazyBackend.selectDevice(deviceId)` releases the previous backend before switching. Device selection now returns a promise; callers must await it. Disposing an unused lazy backend does not connect to a device.
+
 ### Device Discovery
 
 - **iOS simulators** are discovered via `xcrun simctl list devices booted --json` — no IDB needed for discovery

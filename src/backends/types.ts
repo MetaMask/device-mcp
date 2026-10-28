@@ -113,6 +113,9 @@ export type DeviceBackend = {
 
   readonly platform: Platform;
 
+  /** Release only resources owned by this backend. Idempotent; never shuts down a device. */
+  dispose?(): Promise<void>;
+
   getDeviceInfo(): Promise<DeviceInfo>;
 
   snapshot(): Promise<SnapshotResult>;

@@ -21,6 +21,8 @@ device_select_device        # Pick the one you want to use
 
 If only one device is connected, it's auto-selected. If `DEVICE_ID` is set, this step is skipped.
 
+Each iOS backend owns a private IDB companion. Device selection releases the previous connection. Closing stdio (including stdin EOF), SIGINT, or SIGTERM releases that server's companion and recording without shutting down the simulator or disconnecting other sessions. Programmatic callers must `await backend.dispose?.()` when finished and `await lazyBackend.selectDevice(deviceId)` when switching. Use explicit device IDs for independent sessions; app state is still shared if two sessions target the same simulator.
+
 ## Core Loop
 
 ```

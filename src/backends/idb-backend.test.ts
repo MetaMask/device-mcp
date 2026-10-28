@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -8,6 +10,22 @@ import type { UIElement } from './types.js';
 import { findElement, generateLocators } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
 import * as platformModule from '../utils/platform.js';
+
+const connectionMocks = vi.hoisted(() => ({
+  connect: vi.fn().mockResolvedValue(undefined),
+  dispose: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('./idb-connection.js', () => ({
+  IdbConnection: vi.fn().mockImplementation(() => ({
+    ...connectionMocks,
+    env: { IDB_COMPANION: '/tmp/private-companion.sock' },
+  })),
+}));
+const connectionOptions = {
+  env: { IDB_COMPANION: '/tmp/private-companion.sock' },
+};
+
+vi.mock('node:child_process', () => ({ spawn: vi.fn(), execFile: vi.fn() }));
 
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
@@ -299,12 +317,11 @@ describe('IdbBackend simctl fallback', () => {
 
       await backend.openApp('io.metamask');
 
-      expect(mockExecStrict).toHaveBeenCalledWith('/usr/local/bin/idb', [
-        'launch',
-        'io.metamask',
-        '--udid',
-        udid,
-      ]);
+      expect(mockExecStrict).toHaveBeenCalledWith(
+        '/usr/local/bin/idb',
+        ['launch', 'io.metamask', '--udid', udid],
+        connectionOptions,
+      );
       expect(mockExecStrict).toHaveBeenCalledTimes(1);
     });
 
@@ -331,12 +348,11 @@ describe('IdbBackend simctl fallback', () => {
 
       await backend.closeApp('io.metamask');
 
-      expect(mockExecStrict).toHaveBeenCalledWith('/usr/local/bin/idb', [
-        'terminate',
-        'io.metamask',
-        '--udid',
-        udid,
-      ]);
+      expect(mockExecStrict).toHaveBeenCalledWith(
+        '/usr/local/bin/idb',
+        ['terminate', 'io.metamask', '--udid', udid],
+        connectionOptions,
+      );
     });
 
     it('falls back to simctl terminate when idb fails', async () => {
@@ -482,12 +498,11 @@ describe('IdbBackend.screenshot', () => {
 
     const result = await backend.screenshot('/tmp/shot.png');
 
-    expect(mockExecStrict).toHaveBeenCalledWith('/usr/local/bin/idb', [
-      'screenshot',
-      '/tmp/shot.png',
-      '--udid',
-      udid,
-    ]);
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      ['screenshot', '/tmp/shot.png', '--udid', udid],
+      connectionOptions,
+    );
     expect(mockReadFile).toHaveBeenCalledWith('/tmp/shot.png', 'base64');
     expect(result).toStrictEqual({
       data: 'ZmFrZS1wbmc=',
@@ -597,18 +612,22 @@ describe('IdbBackend.swipe and getWindowSize', () => {
 
     // start: (round(402/2), round(874/2)) = (201, 437);
     // distance: round(874 * 0.4) = 350 -> end y = 87.
-    expect(mockExecStrict).toHaveBeenCalledWith('/usr/local/bin/idb', [
-      'ui',
-      'swipe',
-      '201',
-      '437',
-      '201',
-      '87',
-      '--duration',
-      '0.3',
-      '--udid',
-      udid,
-    ]);
+    expect(mockExecStrict).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      [
+        'ui',
+        'swipe',
+        '201',
+        '437',
+        '201',
+        '87',
+        '--duration',
+        '0.3',
+        '--udid',
+        udid,
+      ],
+      connectionOptions,
+    );
   });
 
   it('keeps a computed default endpoint inside the viewport', async () => {
@@ -625,6 +644,7 @@ describe('IdbBackend.swipe and getWindowSize', () => {
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       expect.arrayContaining(['201', '100', '201', '1']),
+      connectionOptions,
     );
   });
 
@@ -642,6 +662,7 @@ describe('IdbBackend.swipe and getWindowSize', () => {
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       expect.arrayContaining(['200', '400', '200', '-100']),
+      connectionOptions,
     );
   });
 
@@ -659,6 +680,7 @@ describe('IdbBackend.swipe and getWindowSize', () => {
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       expect.arrayContaining(['201', '437', '40', '437']),
+      connectionOptions,
     );
   });
 
@@ -738,6 +760,7 @@ describe('IdbBackend.tapElement and longPress viewport handling', () => {
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       expect.arrayContaining(['ui', 'tap', '60', '42']),
+      connectionOptions,
     );
   });
 
@@ -775,6 +798,7 @@ describe('IdbBackend.tapElement and longPress viewport handling', () => {
     expect(mockExecStrict).not.toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       expect.arrayContaining(['ui', 'tap']),
+      connectionOptions,
     );
   });
 
@@ -808,10 +832,7 @@ describe('IdbBackend.ensureConnected', () => {
   it('connects and enables the simulator accessibility bridge', async () => {
     await backend.ensureConnected();
 
-    expect(mockExec).toHaveBeenCalledWith('/usr/local/bin/idb', [
-      'connect',
-      udid,
-    ]);
+    expect(connectionMocks.connect).toHaveBeenCalledWith('/usr/local/bin/idb');
     expect(mockExec).toHaveBeenCalledWith('xcrun', [
       'simctl',
       'spawn',
@@ -845,10 +866,79 @@ describe('IdbBackend.ensureConnected', () => {
     });
 
     expect(await backend.ensureConnected()).toBeUndefined();
-    expect(mockExec).toHaveBeenCalledWith('/usr/local/bin/idb', [
-      'connect',
-      udid,
-    ]);
+    expect(connectionMocks.connect).toHaveBeenCalledWith('/usr/local/bin/idb');
+  });
+
+  it('shares in-flight initialization and waits for it before disposal', async () => {
+    let ready!: () => void;
+    connectionMocks.connect.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        ready = resolve;
+      }),
+    );
+    const first = backend.ensureConnected();
+    const second = backend.ensureConnected();
+    // Let path/capability probes finish before ending the session.
+    await vi.waitFor(() =>
+      expect(connectionMocks.connect).toHaveBeenCalledTimes(1),
+    );
+    const firstRejected = first.catch((error: unknown) => error);
+    const secondRejected = second.catch((error: unknown) => error);
+    const disposing = backend.dispose();
+    expect(connectionMocks.dispose).not.toHaveBeenCalled();
+    ready();
+    await Promise.all([disposing, backend.dispose()]);
+    expect(await firstRejected).toMatchObject({
+      message: 'IDB backend has been disposed',
+    });
+    expect(await secondRejected).toMatchObject({
+      message: 'IDB backend has been disposed',
+    });
+    expect(connectionMocks.dispose).toHaveBeenCalledTimes(1);
+    await expect(backend.snapshot()).rejects.toThrow('disposed');
+  });
+
+  it('releases a partially started connection after initialization fails', async () => {
+    connectionMocks.connect.mockRejectedValueOnce(new Error('startup failed'));
+    await expect(backend.ensureConnected()).rejects.toThrow('startup failed');
+    expect(connectionMocks.dispose).toHaveBeenCalledTimes(1);
+    await backend.ensureConnected();
+    expect(connectionMocks.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for an owned recording to exit before disposing its companion', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 123,
+      exitCode: null,
+      signalCode: null,
+      kill: vi.fn().mockReturnValue(true),
+    });
+    vi.mocked(spawn).mockReturnValue(
+      child as unknown as ReturnType<typeof spawn>,
+    );
+    await backend.startScreenRecording('/tmp/session-recording.mp4');
+    expect(spawn).toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      ['record-video', '/tmp/session-recording.mp4', '--udid', udid],
+      connectionOptions,
+    );
+    const disposing = backend.dispose();
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGINT'));
+    expect(connectionMocks.dispose).not.toHaveBeenCalled();
+    child.emit('exit', 0);
+    await disposing;
+    expect(connectionMocks.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries failed disposal without allowing new device commands', async () => {
+    await backend.ensureConnected();
+    connectionMocks.dispose.mockRejectedValueOnce(new Error('stop failed'));
+    await expect(backend.dispose()).rejects.toThrow(
+      'IDB backend disposal failed',
+    );
+    await expect(backend.snapshot()).rejects.toThrow('disposed');
+    await backend.dispose();
+    expect(connectionMocks.dispose).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -880,10 +970,12 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       describeArgs(),
+      connectionOptions,
     );
     expect(mockExecStrict).not.toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       expect.arrayContaining(['--api']),
+      connectionOptions,
     );
   });
 
@@ -903,6 +995,7 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       describeArgs(['--api', 'axbridge']),
+      connectionOptions,
     );
   });
 
@@ -924,10 +1017,12 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       describeArgs(['--api', 'axbridge']),
+      connectionOptions,
     );
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       describeArgs(['--api', 'ax']),
+      connectionOptions,
     );
   });
 
@@ -1005,11 +1100,13 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
         1,
         '/usr/local/bin/idb',
         describeArgs(supported ? ['--nested'] : []),
+        connectionOptions,
       );
       expect(mockExecStrict).toHaveBeenNthCalledWith(
         2,
         '/usr/local/bin/idb',
         describeArgs(supported ? ['--nested'] : []),
+        connectionOptions,
       );
       expect(mockSupportsNested).toHaveBeenCalledExactlyOnceWith(
         '/usr/local/bin/idb',
@@ -1036,10 +1133,12 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       describeArgs(['--api', 'axbridge', '--nested']),
+      connectionOptions,
     );
     expect(mockExecStrict).toHaveBeenCalledWith(
       '/usr/local/bin/idb',
       describeArgs(['--api', 'ax', '--nested']),
+      connectionOptions,
     );
   });
 

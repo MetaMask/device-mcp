@@ -36,7 +36,7 @@ export { AppiumBackend } from './appium-backend.js';
 export { IdbBackend } from './idb-backend.js';
 
 export type LazyDeviceBackend = DeviceBackend & {
-  selectDevice(deviceId: string): void;
+  selectDevice(deviceId: string): Promise<void>;
   listDevices(): Promise<DetectedDevice[]>;
 };
 
@@ -74,12 +74,17 @@ export async function createBackend(
     explicitPlatform,
   );
 
-  const backend =
+  const backend: DeviceBackend & { ensureConnected(): Promise<void> } =
     platform === 'ios'
       ? new IdbBackend(deviceId)
       : new AdbBackend(deviceId, options.adb);
 
-  await backend.ensureConnected();
+  try {
+    await backend.ensureConnected();
+  } catch (error) {
+    await backend.dispose?.();
+    throw error;
+  }
   return backend;
 }
 
@@ -92,8 +97,15 @@ export function createLazyBackend(
   let connecting: Promise<DeviceBackend> | null = null;
   let pendingDevices: DetectedDevice[] | null = null;
   let selectedOverride: string | null = null;
+  let disposed = false;
+  let disposing: Promise<void> | null = null;
+  let selecting: Promise<void> | null = null;
 
   async function resolve(): Promise<DeviceBackend> {
+    await selecting;
+    if (disposed) {
+      throw new Error('Device backend has been disposed');
+    }
     if (inner) {
       return inner;
     }
@@ -118,7 +130,14 @@ export function createLazyBackend(
           throw error;
         });
     }
-    return connecting;
+    const backend = await connecting;
+    if (disposed) {
+      throw new Error('Device backend has been disposed');
+    }
+    if (selecting) {
+      return resolve();
+    }
+    return backend;
   }
 
   function screenshot(
@@ -149,10 +168,44 @@ export function createLazyBackend(
       return inner?.platform ?? 'ios';
     },
 
-    selectDevice(deviceId: string): void {
-      selectedOverride = deviceId;
-      inner = null;
-      connecting = null;
+    async selectDevice(deviceId: string): Promise<void> {
+      if (disposed) {
+        throw new Error('Device backend has been disposed');
+      }
+      const previous = selecting;
+      const selection = (async (): Promise<void> => {
+        await previous;
+        const backend = inner ?? (await connecting?.catch(() => null));
+        await backend?.dispose?.();
+        selectedOverride = deviceId;
+        // resolve waits for selecting; no new connection can race these resets.
+        inner = null; // eslint-disable-line require-atomic-updates
+        connecting = null; // eslint-disable-line require-atomic-updates
+      })();
+      selecting = selection;
+      try {
+        await selection;
+      } finally {
+        if (selecting === selection) {
+          selecting = null;
+        }
+      }
+    },
+
+    async dispose(): Promise<void> {
+      disposed = true;
+      disposing ??= (async (): Promise<void> => {
+        await selecting?.catch(() => undefined);
+        const backend = inner ?? (await connecting?.catch(() => null));
+        await backend?.dispose?.();
+        // disposed prevents new connections while the current one is drained.
+        inner = null; // eslint-disable-line require-atomic-updates
+        connecting = null; // eslint-disable-line require-atomic-updates
+      })().catch((error: unknown) => {
+        disposing = null;
+        throw error;
+      });
+      await disposing;
     },
 
     async listDevices(): Promise<DetectedDevice[]> {
