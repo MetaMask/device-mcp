@@ -1,0 +1,66 @@
+src/backends/types.ts
+  s_daf37610a9dbe8::t_48a0170501dfcf 119-125
+SKILL.md
+  s_daf37610a9dbe8::t_ace700e6c0cfa7 26-27
+src/backends/idb-connection.test.ts
+  s_daf37610a9dbe8::t_dde0dd74a0f3b7 3,7,12-16,18-21,44-45
+  s_daf37610a9dbe8::t_89ceb2a8faa3fa 89-152
+  s_daf37610a9dbe8::t_aa6782869e8dad 153
+src/backends/idb-backend.ts
+  s_daf37610a9dbe8::t_4d74298e3c6de2 6,29,55-58,89-94,106-133,136-143,158,180-188,191-219,221,224,232,235-239,246-260,270-279,370-373,957-958,960-961,966-972,974-995
+  s_daf37610a9dbe8::t_fb9ada1cae21aa 226-230
+  s_daf37610a9dbe8::t_40cc9945016ec3 59-61,87-88,146,231,233-234,240-245,261-269
+  s_daf37610a9dbe8::t_fb6d8fdb6adea3 220,222-223,225,956,959,962-965,973
+  s_daf37610a9dbe8::t_f002db99e87f01 996
+src/backends/idb-connection.ts
+  s_daf37610a9dbe8::t_dde0dd74a0f3b7 87-89,180
+  s_daf37610a9dbe8::t_bc7d629042d5b2 3,6-13,19-25,34-35,42-52,81-84,86,93-104,110-116,179,181-186,197
+  s_daf37610a9dbe8::t_40cc9945016ec3 187-193
+src/backends/idb-errors.test.ts
+  s_daf37610a9dbe8::t_8c947e452b5e07 1-79
+src/index.test.ts
+  s_daf37610a9dbe8::t_8c947e452b5e07 30-35
+src/backends/lazy-backend.test.ts
+  s_daf37610a9dbe8::t_294c051859bd46 26,32,125-147
+  s_daf37610a9dbe8::t_35e72684b38ef3 148
+README.md
+  s_daf37610a9dbe8::t_ace700e6c0cfa7 85-86,93-101
+  s_daf37610a9dbe8::t_c71144caf5a0f4 87-92
+src/backends/idb-companion-sweep.ts
+  s_daf37610a9dbe8::t_fb6d8fdb6adea3 2,64,187-196
+  s_daf37610a9dbe8::t_e83cbb585a86a2 149-150,154
+  s_daf37610a9dbe8::t_da4a269d9fbc6a 1,3-63,65-148,151-153,155-186,197-203,205-206,211-215
+  s_daf37610a9dbe8::t_8c947e452b5e07 204,207-210
+src/backends/idb-companion-sweep.test.ts
+  s_daf37610a9dbe8::t_19bb57646bbfd7 1-2,11-31,38-161,164,168-221,225,228,231-232
+  s_daf37610a9dbe8::t_1159edc2fa2d9e 162-163,165-167
+  s_daf37610a9dbe8::t_8c947e452b5e07 224,226-227,229-230
+  s_daf37610a9dbe8::t_294c051859bd46 3-10,32-37,222-223
+src/index.ts
+  s_daf37610a9dbe8::t_b9030cd8b997dd 11-12
+src/backends/index.ts
+  s_daf37610a9dbe8::t_48a0170501dfcf 211-215
+src/backends/idb-backend.test.ts
+  s_daf37610a9dbe8::t_fb9ada1cae21aa 1375-1376,1378-1381
+  s_daf37610a9dbe8::t_79d4d028e7eee3 9,19,23-25,1187-1374,1377,1382-1445
+  s_daf37610a9dbe8::t_e36aed9b77e2d5 1446
+src/backends/idb-errors.ts
+  s_daf37610a9dbe8::t_a69f8e913a82dc 1-21,23-40,42-92
+  s_daf37610a9dbe8::t_fb6d8fdb6adea3 22,41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "145b0e120fe40381ad08378e35fb9daf8774af35",
+  "prompts": {},
+  "sessions": {
+    "s_daf37610a9dbe8": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e7c4d23dcffe76TYXjnKuXeXcq",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
