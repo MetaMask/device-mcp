@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0]
+
+### Added
+
+- feat: faster, correct Android snapshots on busy screens ([#39](https://github.com/MetaMask/device-mcp/pull/39))
+- feat: read idb describe-all nested format ([#38](https://github.com/MetaMask/device-mcp/pull/38))
+
 ## [0.5.0]
 
 ### Fixed
@@ -88,7 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.device-session` file for attaching to existing Appium sessions or creating new ones
 - 16 MCP tools: `device_snapshot`, `device_screenshot`, `device_info`, `device_tap_element`, `device_tap_coordinates`, `device_type`, `device_swipe`, `device_long_press`, `device_wait_for`, `device_app_state`, `device_open_app`, `device_close_app`, `device_press_button`, `device_dismiss_keyboard`, `device_dismiss_alert`, `device_logs`
 
-[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/MetaMask/device-mcp/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MetaMask/device-mcp/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/MetaMask/device-mcp/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/MetaMask/device-mcp/compare/v0.4.0...v0.4.1
