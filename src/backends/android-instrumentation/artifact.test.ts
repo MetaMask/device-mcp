@@ -157,4 +157,35 @@ describe('loadHelperArtifact', () => {
 
     await expect(loadHelperArtifact()).rejects.toThrow(/not valid JSON/u);
   });
+
+  it('reads the clipboard runner when the manifest declares it', async () => {
+    wireFs(
+      validManifest({
+        clipboardInstrumentationRunner:
+          'io.metamask.devicemcp.snapshothelper/.ClipboardInstrumentation',
+      }),
+    );
+
+    const artifact = await loadHelperArtifact();
+
+    expect(artifact.clipboardInstrumentationRunner).toBe(
+      'io.metamask.devicemcp.snapshothelper/.ClipboardInstrumentation',
+    );
+  });
+
+  it('leaves the clipboard runner unset for a helper built before clipboard support', async () => {
+    wireFs(validManifest());
+
+    const artifact = await loadHelperArtifact();
+
+    expect(artifact.clipboardInstrumentationRunner).toBeUndefined();
+  });
+
+  it('rejects a clipboard runner that is not a string', async () => {
+    wireFs(validManifest({ clipboardInstrumentationRunner: 42 }));
+
+    await expect(loadHelperArtifact()).rejects.toThrow(
+      /clipboardInstrumentationRunner/u,
+    );
+  });
 });

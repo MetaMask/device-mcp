@@ -15,7 +15,7 @@ export function registerClipboardTool(
       description:
         'Read or write the device clipboard. ' +
         'Use action=get to read clipboard text, action=set to write. ' +
-        'On Android, clipboard access requires the Appium backend.',
+        'On Android (adb), only action=set is supported; reading requires the Appium backend.',
       inputSchema: {
         action: z
           .enum(['get', 'set'])

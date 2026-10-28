@@ -14,6 +14,10 @@ import {
 } from './adb-forward.js';
 import { loadHelperArtifact } from './android-instrumentation/artifact.js';
 import {
+  assertClipboardWriteSucceeded,
+  buildClipboardInstrumentArgs,
+} from './android-instrumentation/clipboard.js';
+import {
   isHelperIncompleteCaptureError,
   isHelperNotInstalledError,
   isUntrustedHelperError,
@@ -22,6 +26,7 @@ import {
   assertInstalledHelperTrusted,
   ensureHelperInstalled,
   HelperTrustCache,
+  installHelper,
   INSTRUMENTATION_NOT_FOUND_SIGNATURE,
 } from './android-instrumentation/installer.js';
 import {
@@ -81,6 +86,9 @@ const INSTRUMENT_TIMEOUT_MS = 8_000;
 // tree can produce a few hundred KB, so raise the exec buffer above the default
 // 10MB guard to keep an overflow from masquerading as a helper crash.
 const INSTRUMENT_MAX_BUFFER = 16 * 1024 * 1024;
+
+// Writing the clipboard is a single binder call; bound it like a snapshot.
+const CLIPBOARD_TIMEOUT_MS = 15_000;
 
 // In `auto` mode, try a single fast uiautomator dump first (it wins instantly
 // on idle screens) before paying for the instrumentation path.
@@ -1024,17 +1032,63 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async getClipboard(): Promise<string> {
+    // Reading back is intentionally unsupported: callers write secrets (e.g. a
+    // recovery phrase) and must not be able to echo them.
     throw new Error(
-      'Clipboard access via ADB is not supported on modern Android. ' +
-        'Use the Appium backend for clipboard operations.',
+      'Reading the clipboard via ADB is not supported. ' +
+        'Use the Appium backend to read clipboard contents.',
     );
   }
 
-  async setClipboard(_text: string): Promise<void> {
-    throw new Error(
-      'Clipboard access via ADB is not supported on modern Android. ' +
-        'Use the Appium backend for clipboard operations.',
-    );
+  /**
+   * Write text to the device clipboard through the helper's clipboard
+   * instrumentation, so an app's own Paste control can read it. The text is
+   * never logged or included in errors.
+   *
+   * @param text - The text to place on the clipboard.
+   */
+  async setClipboard(text: string): Promise<void> {
+    await this.#serializeCapture(async () => {
+      let reinstalled = false;
+      for (;;) {
+        const artifact = await loadHelperArtifact();
+        const runner = artifact.clipboardInstrumentationRunner;
+        if (!runner) {
+          throw new Error(
+            'The bundled Android helper predates clipboard support. ' +
+              'Rebuild device-mcp with build:android-helper.',
+          );
+        }
+
+        // Freshness: upgrades a helper installed before clipboard support.
+        await ensureHelperInstalled(this.#serial);
+        this.#helperInstalled = true;
+        // Trust: per use, as for snapshots. Never write through a squatter.
+        await assertInstalledHelperTrusted(this.#serial, this.#helperTrust);
+
+        const { stdout, stderr } = await exec(
+          'adb',
+          ['-s', this.#serial, ...buildClipboardInstrumentArgs(runner, text)],
+          { timeoutMs: CLIPBOARD_TIMEOUT_MS },
+        );
+
+        // `am` reports a missing runner as an exception on stderr.
+        if (
+          !reinstalled &&
+          `${stdout}\n${stderr}`.includes(INSTRUMENTATION_NOT_FOUND_SIGNATURE)
+        ) {
+          // A same-versionCode helper without the clipboard runner: reinstall.
+          reinstalled = true;
+          this.#helperInstalled = false;
+          this.#helperTrust.forget();
+          await installHelper(this.#serial, artifact);
+          continue;
+        }
+
+        assertClipboardWriteSucceeded(stdout, text.length);
+        return;
+      }
+    });
   }
 
   async startScreenRecording(outputPath?: string): Promise<void> {

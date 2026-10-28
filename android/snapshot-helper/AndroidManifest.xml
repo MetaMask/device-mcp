@@ -30,4 +30,11 @@
         android:targetPackage="io.metamask.devicemcp.snapshothelper"
         android:label="Device MCP Snapshot Helper"
         android:functionalTest="true" />
+
+    <!-- Writes the device clipboard for an app's own Paste control. -->
+    <instrumentation
+        android:name=".ClipboardInstrumentation"
+        android:targetPackage="io.metamask.devicemcp.snapshothelper"
+        android:label="Device MCP Clipboard Helper"
+        android:functionalTest="true" />
 </manifest>
