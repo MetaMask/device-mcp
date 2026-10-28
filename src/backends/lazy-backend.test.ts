@@ -23,11 +23,13 @@ vi.mock('../utils/platform.js', async () => {
 
 const mockEnsureConnected = vi.fn().mockResolvedValue(undefined);
 const mockDispose = vi.fn().mockResolvedValue(undefined);
+const mockReconnect = vi.fn().mockResolvedValue(undefined);
 vi.mock('./idb-backend.js', () => ({
   IdbBackend: vi.fn().mockImplementation((deviceId: string) => ({
     ...createMockBackendFields('ios', deviceId),
     ensureConnected: mockEnsureConnected,
     dispose: mockDispose,
+    reconnect: mockReconnect,
   })),
 }));
 
@@ -119,6 +121,30 @@ describe('createLazyBackend', () => {
     const { createLazyBackend } = await import('./index.js');
     return createLazyBackend;
   }
+
+  describe('reconnect', () => {
+    it('forwards reconnect to the resolved backend', async () => {
+      const createLazyBackend = await getLazyBackend();
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'ios',
+        deviceId: 'sim-a',
+      });
+      const lazy = createLazyBackend();
+      await lazy.reconnect?.();
+      expect(mockReconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('is a no-op for backends without reconnect', async () => {
+      const createLazyBackend = await getLazyBackend();
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'android',
+        deviceId: 'emulator-5554',
+      });
+      const lazy = createLazyBackend();
+      expect(await lazy.reconnect?.()).toBeUndefined();
+      expect(mockReconnect).not.toHaveBeenCalled();
+    });
+  });
 
   describe('disposal', () => {
     it('does not resolve an unused lazy backend during teardown', async () => {

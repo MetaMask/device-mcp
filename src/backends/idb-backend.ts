@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import { IdbConnection } from './idb-connection.js';
+import { classifyIdbFailure, IdbUnavailableError } from './idb-errors.js';
 import type {
   DeviceBackend,
   DeviceButton,
@@ -25,6 +26,7 @@ import {
   computeSwipeEnd,
 } from '../utils/element.js';
 import { execStrict, exec } from '../utils/exec.js';
+import type { ExecResult } from '../utils/exec.js';
 import {
   hardenArtifactFile,
   resolveArtifactPath,
@@ -49,6 +51,13 @@ export class IdbBackend implements DeviceBackend {
   #disposed = false;
 
   #disposing: Promise<void> | undefined;
+
+  #reconnecting: Promise<void> | undefined;
+
+  #probed = false;
+
+  /** Incremented on every successful connect; detects reconnects by others. */
+  #generation = 0;
 
   readonly #connection: IdbConnection;
 
@@ -75,6 +84,14 @@ export class IdbBackend implements DeviceBackend {
     if (this.#disposed) {
       throw new Error('IDB backend has been disposed');
     }
+    // Never start a second connection while a reconnect owns the companion.
+    await this.#reconnecting?.catch(() => undefined);
+    if (this.#connected && !this.#connection.alive) {
+      // The private companion exited after readiness (crash, simulator
+      // shutdown, idle shutdown, external kill). Start a fresh one.
+      await this.reconnect();
+      return;
+    }
     if (this.#connected) {
       return;
     }
@@ -86,15 +103,47 @@ export class IdbBackend implements DeviceBackend {
     }
   }
 
+  /**
+   * Replace this backend's private companion with a fresh one. Concurrent
+   * callers share one reconnect. Only the companion owned by this backend is
+   * stopped; shared companions and other sessions are not touched.
+   */
+  async reconnect(): Promise<void> {
+    if (this.#disposed) {
+      throw new Error('IDB backend has been disposed');
+    }
+    this.#reconnecting ??= (async (): Promise<void> => {
+      await this.#connecting?.catch(() => undefined);
+      this.#connected = false;
+      this.#connecting = undefined;
+      await this.#connection.dispose();
+      if (this.#disposed) {
+        return;
+      }
+      this.#connecting = this.#connect();
+      await this.#connecting;
+    })().finally(() => {
+      this.#reconnecting = undefined;
+    });
+    await this.#reconnecting;
+    if (this.#disposed) {
+      throw new Error('IDB backend has been disposed');
+    }
+  }
+
   async #connect(): Promise<void> {
     try {
-      this.#idbPath = await resolveIdbPath();
-      [this.#idbSupportsApi, this.#idbSupportsNested] = await Promise.all([
-        idbSupportsApiSelection(this.#idbPath),
-        idbSupportsNestedDescribe(this.#idbPath),
-      ]);
+      if (!this.#probed) {
+        this.#idbPath = await resolveIdbPath();
+        [this.#idbSupportsApi, this.#idbSupportsNested] = await Promise.all([
+          idbSupportsApiSelection(this.#idbPath),
+          idbSupportsNestedDescribe(this.#idbPath),
+        ]);
+        this.#probed = true;
+      }
       await this.#connection.connect(this.#idbPath);
       await this.#enableSimulatorAccessibility();
+      this.#generation += 1;
       this.#connected = true;
     } catch (error) {
       await this.#connection.dispose();
@@ -106,6 +155,7 @@ export class IdbBackend implements DeviceBackend {
   async dispose(): Promise<void> {
     this.#disposed = true;
     this.#disposing ??= (async (): Promise<void> => {
+      await this.#reconnecting?.catch(() => undefined);
       await this.#connecting?.catch(() => undefined);
       const errors: unknown[] = [];
       // Finalize the recording while its companion can still serve it.
@@ -127,15 +177,106 @@ export class IdbBackend implements DeviceBackend {
   }
 
   async #execStrict(command: string, args: string[]): Promise<string> {
-    return command === this.#idbPath
-      ? execStrict(command, args, { env: this.#connection.env })
-      : execStrict(command, args);
+    if (command !== this.#idbPath) {
+      return execStrict(command, args);
+    }
+    return this.#idb(
+      args,
+      async () => execStrict(command, args, { env: this.#connection.env }),
+      () => undefined,
+      true,
+    );
   }
 
-  async #exec(command: string, args: string[]): ReturnType<typeof exec> {
-    return command === this.#idbPath
-      ? exec(command, args, { env: this.#connection.env })
-      : exec(command, args);
+  async #exec(command: string, args: string[]): Promise<ExecResult> {
+    if (command !== this.#idbPath) {
+      return exec(command, args);
+    }
+    // Non-strict callers keep their semantics: a failure that survives the
+    // retry is returned, not thrown.
+    return this.#idb(
+      args,
+      async () => exec(command, args, { env: this.#connection.env }),
+      (result) => (result.exitCode === 0 ? undefined : result.stderr),
+      false,
+    );
+  }
+
+  /**
+   * Run one idb command through this backend's private companion and recover
+   * once from a lost companion or an invalidated simulator HID connection:
+   * classify the failure, start a fresh private companion, and send the
+   * command once more. HID events sent on an invalidated dtuhidd connection
+   * are discarded and an unreachable companion received nothing, so the
+   * retry cannot repeat an action. When delivery is uncertain
+   * (`StatusCode.UNAVAILABLE`), mutating `ui` commands are not resent.
+   *
+   * @param args - The idb arguments (used to decide whether a resend is safe).
+   * @param run - Sends the command once.
+   * @param failureOf - Failure text of a resolved run, if it failed.
+   * @param strict - Throw a typed error when recovery does not help.
+   * @returns The result of the first successful (or unrecoverable) run.
+   */
+  async #idb<Result>(
+    args: string[],
+    run: () => Promise<Result>,
+    failureOf: (value: Result) => string | undefined,
+    strict: boolean,
+  ): Promise<Result> {
+    if (!this.#connected || !this.#connection.alive) {
+      // The companion died (or a reconnect failed) since this method's own
+      // ensureConnected(); start a fresh one before sending.
+      await this.ensureConnected();
+    }
+    const generation = this.#generation;
+    const first = await attempt(run, failureOf);
+    const failure =
+      first.text === undefined ? undefined : classifyIdbFailure(first.text);
+    if (!failure) {
+      return first.settle();
+    }
+    const resend = failure.notDelivered || !isMutatingIdbCommand(args);
+    try {
+      if (this.#generation === generation) {
+        await this.reconnect();
+      } else {
+        // A concurrent call already replaced the companion; use the new one.
+        await this.ensureConnected();
+      }
+    } catch (error) {
+      if (!strict) {
+        return first.settle();
+      }
+      throw new IdbUnavailableError(
+        'IDB_COMPANION_UNAVAILABLE',
+        this.#udid,
+        error instanceof Error ? error.message : String(error),
+        { cause: error, mayHaveRun: !resend },
+      );
+    }
+    if (!resend) {
+      if (!strict) {
+        return first.settle();
+      }
+      throw new IdbUnavailableError(
+        failure.code,
+        this.#udid,
+        first.text ?? '',
+        {
+          cause: first.error,
+          mayHaveRun: true,
+        },
+      );
+    }
+    const second = await attempt(run, failureOf);
+    const again =
+      second.text === undefined ? undefined : classifyIdbFailure(second.text);
+    if (!again || !strict) {
+      return second.settle();
+    }
+    throw new IdbUnavailableError(again.code, this.#udid, second.text ?? '', {
+      cause: second.error,
+    });
   }
 
   /**
@@ -226,6 +367,10 @@ export class IdbBackend implements DeviceBackend {
       try {
         return await this.#execStrict(this.#idbPath, args);
       } catch (error) {
+        if (error instanceof IdbUnavailableError) {
+          // Already reconnected and retried; another --api will not help.
+          throw error;
+        }
         lastError = error;
       }
     }
@@ -806,6 +951,47 @@ export class IdbBackend implements DeviceBackend {
       this.#stoppingRecording = undefined;
     }
   }
+}
+
+type Attempt<Result> = {
+  text: string | undefined;
+  error: unknown;
+  settle: () => Result;
+};
+
+async function attempt<Result>(
+  run: () => Promise<Result>,
+  failureOf: (value: Result) => string | undefined,
+): Promise<Attempt<Result>> {
+  try {
+    const value = await run();
+    return { text: failureOf(value), error: undefined, settle: () => value };
+  } catch (error) {
+    return {
+      text: error instanceof Error ? error.message : String(error),
+      error,
+      settle: (): never => {
+        throw error;
+      },
+    };
+  }
+}
+
+const READ_ONLY_UI_COMMANDS = new Set([
+  'describe-all',
+  'describe-point',
+  'describe',
+  'wait',
+]);
+
+/**
+ * Whether an idb command can change the device (a resend could repeat it).
+ *
+ * @param args - The idb arguments.
+ * @returns True for `ui` input commands (tap, swipe, text, key, ...).
+ */
+function isMutatingIdbCommand(args: string[]): boolean {
+  return args[0] === 'ui' && !READ_ONLY_UI_COMMANDS.has(args[1] ?? '');
 }
 
 function collectAlertTexts(elements: UIElement[]): string[] {

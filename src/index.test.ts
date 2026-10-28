@@ -27,4 +27,10 @@ describe('public API surface', () => {
       confidence: 'high',
     });
   });
+
+  it('exports the typed idb transport error', () => {
+    expect(
+      new publicApi.IdbUnavailableError('IDB_HID_UNAVAILABLE', 'u', 'x').code,
+    ).toBe('IDB_HID_UNAVAILABLE');
+  });
 });

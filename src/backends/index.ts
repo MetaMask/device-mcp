@@ -208,6 +208,11 @@ export function createLazyBackend(
       await disposing;
     },
 
+    async reconnect(): Promise<void> {
+      const backend = await resolve();
+      await backend.reconnect?.();
+    },
+
     async listDevices(): Promise<DetectedDevice[]> {
       if (pendingDevices) {
         return pendingDevices;

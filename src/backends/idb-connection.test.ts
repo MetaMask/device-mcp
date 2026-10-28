@@ -1,15 +1,24 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { sweepStaleCompanionDirsOnce } from './idb-companion-sweep.js';
 import { IdbConnection } from './idb-connection.js';
 import { exec } from '../utils/exec.js';
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
-vi.mock('node:fs/promises', () => ({ mkdtemp: vi.fn(), rm: vi.fn() }));
+vi.mock('node:fs/promises', () => ({
+  mkdtemp: vi.fn(),
+  rm: vi.fn(),
+  writeFile: vi.fn(),
+}));
 vi.mock('../utils/exec.js', () => ({ exec: vi.fn() }));
+vi.mock('./idb-companion-sweep.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./idb-companion-sweep.js')>()),
+  sweepStaleCompanionDirsOnce: vi.fn(),
+}));
 
 function childProcess() {
   const child = Object.assign(new EventEmitter(), {
@@ -32,6 +41,8 @@ describe('IdbConnection', () => {
     vi.resetAllMocks();
     vi.mocked(exec).mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
     vi.mocked(rm).mockResolvedValue(undefined);
+    vi.mocked(writeFile).mockResolvedValue(undefined);
+    vi.mocked(sweepStaleCompanionDirsOnce).mockResolvedValue(undefined);
     let counter = 0;
     vi.mocked(mkdtemp).mockImplementation(async () => {
       counter += 1;
@@ -73,6 +84,71 @@ describe('IdbConnection', () => {
       force: true,
     });
     await second.dispose();
+  });
+
+  it('starts the companion with lifetime flags so orphans exit on their own', async () => {
+    const connection = new IdbConnection('sim-a');
+    await connection.connect('/opt/homebrew/bin/idb');
+    const args = vi.mocked(spawn).mock.calls[0][1];
+    expect(args).toStrictEqual([
+      '--udid',
+      'sim-a',
+      '--grpc-domain-sock',
+      '/tmp/device-mcp-idb-1/companion.sock',
+      '--terminate-offline',
+      'true',
+      '--idle-shutdown-time',
+      '3600',
+    ]);
+    expect(sweepStaleCompanionDirsOnce).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(sweepStaleCompanionDirsOnce).mock.invocationCallOrder[0],
+    ).toBeLessThan(vi.mocked(mkdtemp).mock.invocationCallOrder[0]);
+    await connection.dispose();
+  });
+
+  it('records the owner and companion pids in the private directory', async () => {
+    const connection = new IdbConnection('sim-a');
+    await connection.connect('idb');
+    expect(writeFile).toHaveBeenLastCalledWith(
+      '/tmp/device-mcp-idb-1/owner.json',
+      JSON.stringify({ ownerPid: process.pid, companionPid: 123 }),
+      { mode: 0o600 },
+    );
+    await connection.dispose();
+  });
+
+  it('reports a companion that exits after readiness as not alive', async () => {
+    const connection = new IdbConnection('sim-a');
+    expect(connection.alive).toBe(false);
+    await connection.connect('idb');
+    expect(connection.alive).toBe(true);
+    const child = vi.mocked(spawn).mock.results[0].value;
+    child.exitCode = 0;
+    child.emit('exit', 0, null);
+    expect(connection.alive).toBe(false);
+    // The socket stays known until disposal so commands fail fast and get classified.
+    expect(connection.env.IDB_COMPANION).toBe(
+      '/tmp/device-mcp-idb-1/companion.sock',
+    );
+    await connection.dispose();
+    expect(rm).toHaveBeenCalledWith('/tmp/device-mcp-idb-1', {
+      recursive: true,
+      force: true,
+    });
+  });
+
+  it('ignores a late exit from a replaced companion', async () => {
+    const connection = new IdbConnection('sim-a');
+    await connection.connect('idb');
+    const first = vi.mocked(spawn).mock.results[0].value;
+    await connection.dispose();
+    await connection.connect('idb');
+    expect(connection.alive).toBe(true);
+    first.emit('exit', 0, null);
+    expect(connection.alive).toBe(true);
+    await connection.dispose();
+    expect(connection.alive).toBe(false);
   });
 
   it('does not start resources when disposing an unused connection', async () => {

@@ -1,12 +1,27 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import {
+  COMPANION_DIR_PREFIX,
+  COMPANION_OWNER_FILE,
+  COMPANION_ROOT,
+  COMPANION_SOCKET,
+  sweepStaleCompanionDirsOnce,
+} from './idb-companion-sweep.js';
+import type { CompanionOwner } from './idb-companion-sweep.js';
 import { exec } from '../utils/exec.js';
 import { stopChildProcess } from '../utils/stop-child-process.js';
 
 const START_TIMEOUT_MS = 10_000;
+
+/**
+ * The companion exits after this many seconds without gRPC requests, so an
+ * orphan (owner killed with SIGKILL) does not live forever. The backend
+ * reconnects transparently on the next call when the companion is gone.
+ */
+export const COMPANION_IDLE_SHUTDOWN_SECONDS = 3600;
 
 /** A private companion. Never registers or disconnects a shared UDID mapping. */
 export class IdbConnection {
@@ -16,10 +31,23 @@ export class IdbConnection {
 
   #socket: string | undefined;
 
+  #alive = false;
+
   readonly #udid: string;
 
   constructor(udid: string) {
     this.#udid = udid;
+  }
+
+  /**
+   * Whether the companion child is running. Becomes false when the child
+   * exits for any reason after readiness (crash, simulator shutdown with
+   * `--terminate-offline`, idle shutdown, external kill).
+   *
+   * @returns True while the private companion can serve requests.
+   */
+  get alive(): boolean {
+    return this.#alive;
   }
 
   get env(): NodeJS.ProcessEnv {
@@ -50,18 +78,42 @@ export class IdbConnection {
       );
     }
 
+    // Remove directories left by device-mcp processes that died without
+    // disposal. Runs once per process; never touches shared companions.
+    await sweepStaleCompanionDirsOnce();
+
     // macOS Unix sockets have a short path limit; the normal TMPDIR can be too long.
-    this.#directory = await mkdtemp('/tmp/device-mcp-idb-');
-    this.#socket = join(this.#directory, 'companion.sock');
+    this.#directory = await mkdtemp(join(COMPANION_ROOT, COMPANION_DIR_PREFIX));
+    const directory = this.#directory;
+    await this.#writeOwner(directory);
+    this.#socket = join(directory, COMPANION_SOCKET);
     const socket = this.#socket;
     const child = spawn(
       executable,
-      ['--udid', this.#udid, '--grpc-domain-sock', socket],
+      [
+        '--udid',
+        this.#udid,
+        '--grpc-domain-sock',
+        socket,
+        // Exit when the simulator shuts down (its HID connection is gone for
+        // good); the backend then starts a fresh companion on the next call.
+        '--terminate-offline',
+        'true',
+        '--idle-shutdown-time',
+        String(COMPANION_IDLE_SHUTDOWN_SECONDS),
+      ],
       {
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
     this.#child = child;
+    // Permanent listener: a companion that dies after readiness must be
+    // noticed, or every later call fails on a dead socket.
+    child.once('exit', () => {
+      if (this.#child === child) {
+        this.#alive = false;
+      }
+    });
 
     await new Promise<void>((resolve, reject) => {
       let output = '';
@@ -124,9 +176,25 @@ export class IdbConnection {
     // Keep draining output so a chatty companion cannot block on a full pipe.
     child.stdout?.resume();
     child.stderr?.resume();
+    this.#alive = child.exitCode === null && child.signalCode === null;
+    await this.#writeOwner(directory, child.pid);
+  }
+
+  async #writeOwner(directory: string, companionPid?: number): Promise<void> {
+    const owner: CompanionOwner = { ownerPid: process.pid, companionPid };
+    // Best effort: the sweep treats a directory without a record as unknown
+    // and leaves it alone for a grace period.
+    await writeFile(
+      join(directory, COMPANION_OWNER_FILE),
+      JSON.stringify(owner),
+      {
+        mode: 0o600,
+      },
+    ).catch(() => undefined);
   }
 
   async dispose(): Promise<void> {
+    this.#alive = false;
     const child = this.#child;
     if (child) {
       await stopChildProcess(child);

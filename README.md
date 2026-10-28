@@ -82,6 +82,23 @@ try {
 
 `await lazyBackend.selectDevice(deviceId)` releases the previous backend before switching. Device selection now returns a promise; callers must await it. Disposing an unused lazy backend does not connect to a device.
 
+#### Recovery and lifetime
+
+| Condition                                                                                                                                                                  | What the IDB backend does                                                                                                                                                                                                                                                                   |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The private companion exits after it started (crash, external kill, idle shutdown, simulator shutdown)                                                                     | The next call starts a fresh private companion, then runs the command.                                                                                                                                                                                                                      |
+| A command fails with a lost companion (`Failed to connect to companion`) or an invalid simulator HID connection (`dtuhidd ... invalidated / interrupted / did not answer`) | The backend replaces its private companion and sends the command **once** more. The companion discards HID events sent on an invalid connection, and an unreachable companion received nothing, so the resend cannot repeat a tap.                                                          |
+| The channel fails after the request may have been sent (`StatusCode.UNAVAILABLE`), or idb prints `retry: unsafe`                                                           | Read-only commands are resent once. Input commands (`tap`, `swipe`, `text`, `key`, ...) are not resent; the error says the action may have run.                                                                                                                                             |
+| The retry also fails                                                                                                                                                       | The call rejects with `IdbUnavailableError` (exported). `err.code` is `IDB_HID_UNAVAILABLE` (HID connection still invalid; usually the simulator rebooted during the session) or `IDB_COMPANION_UNAVAILABLE` (companion cannot be reached or started). The message ends with a remediation. |
+
+`backend.reconnect?.()` replaces the backend's own connection on demand (iOS: its private companion). It is optional on `DeviceBackend`; the lazy backend forwards it. It never reboots or shuts down a device.
+
+Each private companion starts with `--terminate-offline true` (it exits when the simulator shuts down) and `--idle-shutdown-time 3600` (it exits after one hour without requests). An orphan left by a killed host process therefore exits on its own. The backend reconnects transparently when the companion is gone.
+
+Each private directory (`/tmp/device-mcp-idb-*`) holds an `owner.json` with the host and companion pids. Before the first companion starts, each process removes stale directories: the owner process is gone **and** the socket does not accept a connection. It stops a leftover companion only when that process's command line names the directory's socket. It never touches `/tmp/idb/state`, shared companions, or directories of a live owner.
+
+Resolving an explicit simulator ID uses `simctl`, not `idb describe`, so device detection does not start a shared companion.
+
 ### Device Discovery
 
 - **iOS simulators** are discovered via `xcrun simctl list devices booted --json` — no IDB needed for discovery
