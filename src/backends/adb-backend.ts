@@ -1061,8 +1061,10 @@ export class AdbBackend implements DeviceBackend {
         }
 
         // Freshness: upgrades a helper installed before clipboard support.
-        await ensureHelperInstalled(this.#serial);
-        this.#helperInstalled = true;
+        if (!this.#helperInstalled) {
+          await ensureHelperInstalled(this.#serial);
+          this.#helperInstalled = true;
+        }
         // Trust: per use, as for snapshots. Never write through a squatter.
         await assertInstalledHelperTrusted(this.#serial, this.#helperTrust);
 

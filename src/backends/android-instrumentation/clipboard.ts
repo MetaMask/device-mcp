@@ -16,9 +16,6 @@ import { parseInstrumentationOutput } from './snapshot.js';
 /** Instrumentation argument carrying the base64-encoded clipboard text. */
 export const CLIPBOARD_TEXT_ARG = 'textB64';
 
-/** Lowest `helperApiVersion` that ships the clipboard instrumentation. */
-export const CLIPBOARD_MIN_HELPER_API_VERSION = 2;
-
 /**
  * `INSTRUMENTATION_CODE: -1` is `Activity.RESULT_OK`, the helper's success code.
  */
