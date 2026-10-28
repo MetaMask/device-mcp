@@ -89,7 +89,15 @@ async function detectFromExplicitId(deviceId: string): Promise<DetectedDevice> {
     isCommandAvailable('adb'),
   ]);
 
+  // Identify a simulator through simctl first: `idb describe` runs outside
+  // any session and can spawn and register a shared companion
+  // (`/tmp/idb/state`) that no session owns.
+  if (await isKnownIOSSimulator(deviceId)) {
+    return { platform: 'ios', deviceId };
+  }
+
   if (hasIdb) {
+    // Physical iOS devices still need idb to be identified.
     const result = await exec('idb', ['describe', '--udid', deviceId]);
     if (result.exitCode === 0) {
       return { platform: 'ios', deviceId };
@@ -115,6 +123,28 @@ type SimctlDevice = {
   state: string;
   isAvailable: boolean;
 };
+
+async function isKnownIOSSimulator(deviceId: string): Promise<boolean> {
+  const result = await exec('xcrun', [
+    'simctl',
+    'list',
+    'devices',
+    '--json',
+  ]).catch(() => null);
+  if (result?.exitCode !== 0) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as {
+      devices: Record<string, SimctlDevice[]>;
+    };
+    return Object.values(parsed.devices).some((devices) =>
+      devices.some((device) => device.udid === deviceId),
+    );
+  } catch {
+    return false;
+  }
+}
 
 async function findAllBootedIOSSimulators(): Promise<DetectedDevice[]> {
   const result = await exec('xcrun', [
