@@ -15,12 +15,14 @@ const mockGetPageSource = vi.fn();
 const mockUpdateSettings = vi.fn();
 
 vi.mock('./webdriver-client.js', () => ({
-  WebDriverClient: vi.fn().mockImplementation(() => ({
-    getStatus: mockGetStatus,
-    execute: mockExecute,
-    getPageSource: mockGetPageSource,
-    updateSettings: mockUpdateSettings,
-  })),
+  WebDriverClient: vi.fn().mockImplementation(function mockWebDriverClient() {
+    return {
+      getStatus: mockGetStatus,
+      execute: mockExecute,
+      getPageSource: mockGetPageSource,
+      updateSettings: mockUpdateSettings,
+    };
+  }),
   createSession: vi.fn(),
 }));
 

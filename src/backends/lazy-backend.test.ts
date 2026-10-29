@@ -25,19 +25,27 @@ const mockEnsureConnected = vi.fn().mockResolvedValue(undefined);
 const mockDispose = vi.fn().mockResolvedValue(undefined);
 const mockReconnect = vi.fn().mockResolvedValue(undefined);
 vi.mock('./idb-backend.js', () => ({
-  IdbBackend: vi.fn().mockImplementation((deviceId: string) => ({
-    ...createMockBackendFields('ios', deviceId),
-    ensureConnected: mockEnsureConnected,
-    dispose: mockDispose,
-    reconnect: mockReconnect,
-  })),
+  IdbBackend: vi.fn().mockImplementation(function mockIdbBackend(
+    deviceId: string,
+  ) {
+    return {
+      ...createMockBackendFields('ios', deviceId),
+      ensureConnected: mockEnsureConnected,
+      dispose: mockDispose,
+      reconnect: mockReconnect,
+    };
+  }),
 }));
 
 vi.mock('./adb-backend.js', () => ({
-  AdbBackend: vi.fn().mockImplementation((deviceId: string) => ({
-    ...createMockBackendFields('android', deviceId),
-    ensureConnected: mockEnsureConnected,
-  })),
+  AdbBackend: vi.fn().mockImplementation(function mockAdbBackend(
+    deviceId: string,
+  ) {
+    return {
+      ...createMockBackendFields('android', deviceId),
+      ensureConnected: mockEnsureConnected,
+    };
+  }),
 }));
 
 function createMockBackendFields(

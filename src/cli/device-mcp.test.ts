@@ -20,7 +20,7 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
 }));
 
 describe('device-mcp CLI shutdown', () => {
-  const callbacks = new Map<string, () => void>();
+  const callbacks = new Map<string | symbol, () => void>();
 
   beforeEach(() => {
     vi.resetModules();
