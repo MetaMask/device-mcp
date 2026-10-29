@@ -2,6 +2,8 @@ import { execFile as execFileCb, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
+import { IdbConnection } from './idb-connection.js';
+import { classifyIdbFailure, IdbUnavailableError } from './idb-errors.js';
 import type {
   DeviceBackend,
   DeviceButton,
@@ -24,6 +26,7 @@ import {
   computeSwipeEnd,
 } from '../utils/element.js';
 import { execStrict, exec } from '../utils/exec.js';
+import type { ExecResult } from '../utils/exec.js';
 import {
   hardenArtifactFile,
   resolveArtifactPath,
@@ -34,6 +37,7 @@ import {
   idbSupportsNestedDescribe,
   resolveIdbPath,
 } from '../utils/platform.js';
+import { stopChildProcess } from '../utils/stop-child-process.js';
 
 export class IdbBackend implements DeviceBackend {
   readonly kind = 'idb' as const;
@@ -41,6 +45,21 @@ export class IdbBackend implements DeviceBackend {
   readonly platform = 'ios' as const;
 
   #connected = false;
+
+  #connecting: Promise<void> | undefined;
+
+  #disposed = false;
+
+  #disposing: Promise<void> | undefined;
+
+  #reconnecting: Promise<void> | undefined;
+
+  #probed = false;
+
+  /** Incremented on every successful connect; detects reconnects by others. */
+  #generation = 0;
+
+  readonly #connection: IdbConnection;
 
   readonly #udid: string;
 
@@ -54,23 +73,210 @@ export class IdbBackend implements DeviceBackend {
 
   #recordingPath: string | null = null;
 
+  #stoppingRecording: Promise<string> | undefined;
+
   constructor(udid: string) {
     this.#udid = udid;
+    this.#connection = new IdbConnection(udid);
   }
 
   async ensureConnected(): Promise<void> {
+    if (this.#disposed) {
+      throw new Error('IDB backend has been disposed');
+    }
+    // Never start a second connection while a reconnect owns the companion.
+    await this.#reconnecting?.catch(() => undefined);
+    if (this.#connected && !this.#connection.alive) {
+      // The private companion exited after readiness (crash, simulator
+      // shutdown, idle shutdown, external kill). Start a fresh one.
+      await this.reconnect();
+      return;
+    }
     if (this.#connected) {
       return;
     }
 
-    this.#idbPath = await resolveIdbPath();
-    [this.#idbSupportsApi, this.#idbSupportsNested] = await Promise.all([
-      idbSupportsApiSelection(this.#idbPath),
-      idbSupportsNestedDescribe(this.#idbPath),
-    ]);
-    await exec(this.#idbPath, ['connect', this.#udid]);
-    await this.#enableSimulatorAccessibility();
-    this.#connected = true;
+    this.#connecting ??= this.#connect();
+    await this.#connecting;
+    if (this.#disposed) {
+      throw new Error('IDB backend has been disposed');
+    }
+  }
+
+  /**
+   * Replace this backend's private companion with a fresh one. Concurrent
+   * callers share one reconnect. Only the companion owned by this backend is
+   * stopped; shared companions and other sessions are not touched.
+   */
+  async reconnect(): Promise<void> {
+    if (this.#disposed) {
+      throw new Error('IDB backend has been disposed');
+    }
+    this.#reconnecting ??= (async (): Promise<void> => {
+      await this.#connecting?.catch(() => undefined);
+      this.#connected = false;
+      this.#connecting = undefined;
+      await this.#connection.dispose();
+      if (this.#disposed) {
+        return;
+      }
+      this.#connecting = this.#connect();
+      await this.#connecting;
+    })().finally(() => {
+      this.#reconnecting = undefined;
+    });
+    await this.#reconnecting;
+    if (this.#disposed) {
+      throw new Error('IDB backend has been disposed');
+    }
+  }
+
+  async #connect(): Promise<void> {
+    try {
+      if (!this.#probed) {
+        this.#idbPath = await resolveIdbPath();
+        [this.#idbSupportsApi, this.#idbSupportsNested] = await Promise.all([
+          idbSupportsApiSelection(this.#idbPath),
+          idbSupportsNestedDescribe(this.#idbPath),
+        ]);
+        this.#probed = true;
+      }
+      await this.#connection.connect(this.#idbPath);
+      await this.#enableSimulatorAccessibility();
+      this.#generation += 1;
+      this.#connected = true;
+    } catch (error) {
+      await this.#connection.dispose();
+      this.#connecting = undefined;
+      throw error;
+    }
+  }
+
+  async dispose(): Promise<void> {
+    this.#disposed = true;
+    this.#disposing ??= (async (): Promise<void> => {
+      await this.#reconnecting?.catch(() => undefined);
+      await this.#connecting?.catch(() => undefined);
+      const errors: unknown[] = [];
+      // Finalize the recording while its companion can still serve it.
+      if (this.#recordingProcess) {
+        await this.stopScreenRecording().catch((error: unknown) =>
+          errors.push(error),
+        );
+      }
+      await this.#connection
+        .dispose()
+        .catch((error: unknown) => errors.push(error));
+      this.#connected = false;
+      if (errors.length) {
+        this.#disposing = undefined;
+        throw new AggregateError(errors, 'IDB backend disposal failed');
+      }
+    })();
+    await this.#disposing;
+  }
+
+  async #execStrict(command: string, args: string[]): Promise<string> {
+    if (command !== this.#idbPath) {
+      return execStrict(command, args);
+    }
+    return this.#idb(
+      args,
+      async () => execStrict(command, args, { env: this.#connection.env }),
+      () => undefined,
+      true,
+    );
+  }
+
+  async #exec(command: string, args: string[]): Promise<ExecResult> {
+    if (command !== this.#idbPath) {
+      return exec(command, args);
+    }
+    // Non-strict callers keep their semantics: a failure that survives the
+    // retry is returned, not thrown.
+    return this.#idb(
+      args,
+      async () => exec(command, args, { env: this.#connection.env }),
+      (result) => (result.exitCode === 0 ? undefined : result.stderr),
+      false,
+    );
+  }
+
+  /**
+   * Run one idb command through this backend's private companion and recover
+   * once from a lost companion or an invalidated simulator HID connection:
+   * classify the failure, start a fresh private companion, and send the
+   * command once more. HID events sent on an invalidated dtuhidd connection
+   * are discarded and an unreachable companion received nothing, so the
+   * retry cannot repeat an action. When delivery is uncertain
+   * (`StatusCode.UNAVAILABLE`), mutating `ui` commands are not resent.
+   *
+   * @param args - The idb arguments (used to decide whether a resend is safe).
+   * @param run - Sends the command once.
+   * @param failureOf - Failure text of a resolved run, if it failed.
+   * @param strict - Throw a typed error when recovery does not help.
+   * @returns The result of the first successful (or unrecoverable) run.
+   */
+  async #idb<Result>(
+    args: string[],
+    run: () => Promise<Result>,
+    failureOf: (value: Result) => string | undefined,
+    strict: boolean,
+  ): Promise<Result> {
+    if (!this.#connected || !this.#connection.alive) {
+      // The companion died (or a reconnect failed) since this method's own
+      // ensureConnected(); start a fresh one before sending.
+      await this.ensureConnected();
+    }
+    const generation = this.#generation;
+    const first = await attempt(run, failureOf);
+    const failure =
+      first.text === undefined ? undefined : classifyIdbFailure(first.text);
+    if (!failure) {
+      return first.settle();
+    }
+    const resend = failure.notDelivered || !isMutatingIdbCommand(args);
+    try {
+      if (this.#generation === generation) {
+        await this.reconnect();
+      } else {
+        // A concurrent call already replaced the companion; use the new one.
+        await this.ensureConnected();
+      }
+    } catch (error) {
+      if (!strict) {
+        return first.settle();
+      }
+      throw new IdbUnavailableError(
+        'IDB_COMPANION_UNAVAILABLE',
+        this.#udid,
+        error instanceof Error ? error.message : String(error),
+        { cause: error, mayHaveRun: !resend },
+      );
+    }
+    if (!resend) {
+      if (!strict) {
+        return first.settle();
+      }
+      throw new IdbUnavailableError(
+        failure.code,
+        this.#udid,
+        first.text ?? '',
+        {
+          cause: first.error,
+          mayHaveRun: true,
+        },
+      );
+    }
+    const second = await attempt(run, failureOf);
+    const again =
+      second.text === undefined ? undefined : classifyIdbFailure(second.text);
+    if (!again || !strict) {
+      return second.settle();
+    }
+    throw new IdbUnavailableError(again.code, this.#udid, second.text ?? '', {
+      cause: second.error,
+    });
   }
 
   /**
@@ -85,7 +291,7 @@ export class IdbBackend implements DeviceBackend {
    */
   async #enableSimulatorAccessibility(): Promise<void> {
     try {
-      await exec('xcrun', [
+      await this.#exec('xcrun', [
         'simctl',
         'spawn',
         this.#udid,
@@ -104,7 +310,7 @@ export class IdbBackend implements DeviceBackend {
 
   async getDeviceInfo(): Promise<DeviceInfo> {
     await this.ensureConnected();
-    const raw = await execStrict(this.#idbPath, [
+    const raw = await this.#execStrict(this.#idbPath, [
       'describe',
       '--udid',
       this.#udid,
@@ -159,8 +365,12 @@ export class IdbBackend implements DeviceBackend {
         args.push('--nested');
       }
       try {
-        return await execStrict(this.#idbPath, args);
+        return await this.#execStrict(this.#idbPath, args);
       } catch (error) {
+        if (error instanceof IdbUnavailableError) {
+          // Already reconnected and retried; another --api will not help.
+          throw error;
+        }
         lastError = error;
       }
     }
@@ -255,7 +465,7 @@ export class IdbBackend implements DeviceBackend {
 
   async tapCoordinates(x: number, y: number): Promise<void> {
     await this.ensureConnected();
-    await execStrict(this.#idbPath, [
+    await this.#execStrict(this.#idbPath, [
       'ui',
       'tap',
       String(x),
@@ -267,7 +477,7 @@ export class IdbBackend implements DeviceBackend {
 
   async typeText(text: string): Promise<void> {
     await this.ensureConnected();
-    await exec(this.#idbPath, [
+    await this.#exec(this.#idbPath, [
       'ui',
       'key-sequence',
       '--',
@@ -275,8 +485,20 @@ export class IdbBackend implements DeviceBackend {
       '--udid',
       this.#udid,
     ]);
-    await exec(this.#idbPath, ['ui', 'key', 'DELETE', '--udid', this.#udid]);
-    await execStrict(this.#idbPath, ['ui', 'text', text, '--udid', this.#udid]);
+    await this.#exec(this.#idbPath, [
+      'ui',
+      'key',
+      'DELETE',
+      '--udid',
+      this.#udid,
+    ]);
+    await this.#execStrict(this.#idbPath, [
+      'ui',
+      'text',
+      text,
+      '--udid',
+      this.#udid,
+    ]);
   }
 
   async swipe(
@@ -322,7 +544,7 @@ export class IdbBackend implements DeviceBackend {
       endY = Math.min(Math.max(endY, 1), height - 2);
     }
 
-    await execStrict(this.#idbPath, [
+    await this.#execStrict(this.#idbPath, [
       'ui',
       'swipe',
       String(sx),
@@ -358,7 +580,7 @@ export class IdbBackend implements DeviceBackend {
   async getAppState(bundleId: string): Promise<AppStateResult> {
     await this.ensureConnected();
     try {
-      const raw = await execStrict(this.#idbPath, [
+      const raw = await this.#execStrict(this.#idbPath, [
         'list-apps',
         '--udid',
         this.#udid,
@@ -391,7 +613,11 @@ export class IdbBackend implements DeviceBackend {
   }
 
   async #getAppStateViaSimctl(bundleId: string): Promise<AppStateResult> {
-    const result = await exec('xcrun', ['simctl', 'listapps', this.#udid]);
+    const result = await this.#exec('xcrun', [
+      'simctl',
+      'listapps',
+      this.#udid,
+    ]);
     if (result.exitCode === 0 && result.stdout.includes(bundleId)) {
       return { bundleId, state: 'Running' };
     }
@@ -419,7 +645,12 @@ export class IdbBackend implements DeviceBackend {
   ): Promise<ScreenshotResult | ScreenshotFileResult> {
     await this.ensureConnected();
     const path = resolveArtifactPath(outputPath, 'screenshot');
-    await execStrict(this.#idbPath, ['screenshot', path, '--udid', this.#udid]);
+    await this.#execStrict(this.#idbPath, [
+      'screenshot',
+      path,
+      '--udid',
+      this.#udid,
+    ]);
     hardenArtifactFile(path);
     if (options?.encode === false) {
       return { data: undefined, format: 'png', path };
@@ -431,28 +662,38 @@ export class IdbBackend implements DeviceBackend {
   async openApp(bundleId: string): Promise<void> {
     await this.ensureConnected();
     try {
-      await execStrict(this.#idbPath, [
+      await this.#execStrict(this.#idbPath, [
         'launch',
         bundleId,
         '--udid',
         this.#udid,
       ]);
     } catch {
-      await execStrict('xcrun', ['simctl', 'launch', this.#udid, bundleId]);
+      await this.#execStrict('xcrun', [
+        'simctl',
+        'launch',
+        this.#udid,
+        bundleId,
+      ]);
     }
   }
 
   async closeApp(bundleId: string): Promise<void> {
     await this.ensureConnected();
     try {
-      await execStrict(this.#idbPath, [
+      await this.#execStrict(this.#idbPath, [
         'terminate',
         bundleId,
         '--udid',
         this.#udid,
       ]);
     } catch {
-      await execStrict('xcrun', ['simctl', 'terminate', this.#udid, bundleId]);
+      await this.#execStrict('xcrun', [
+        'simctl',
+        'terminate',
+        this.#udid,
+        bundleId,
+      ]);
     }
   }
 
@@ -464,7 +705,7 @@ export class IdbBackend implements DeviceBackend {
       back: 'HOME',
       enter: 'RETURN',
     };
-    await execStrict(this.#idbPath, [
+    await this.#execStrict(this.#idbPath, [
       'ui',
       'key',
       keyMap[button],
@@ -475,7 +716,7 @@ export class IdbBackend implements DeviceBackend {
 
   async dismissKeyboard(): Promise<void> {
     await this.ensureConnected();
-    await execStrict(this.#idbPath, [
+    await this.#execStrict(this.#idbPath, [
       'ui',
       'key',
       'RETURN',
@@ -515,7 +756,7 @@ export class IdbBackend implements DeviceBackend {
     if (filter) {
       args.push('--predicate', `eventMessage CONTAINS "${filter}"`);
     }
-    const raw = await execStrict(this.#idbPath, args);
+    const raw = await this.#execStrict(this.#idbPath, args);
     const entries = raw
       .trim()
       .split('\n')
@@ -540,7 +781,7 @@ export class IdbBackend implements DeviceBackend {
     }
 
     const { x: cx, y: cy } = await this.#visibleTapPoint(element);
-    await execStrict(this.#idbPath, [
+    await this.#execStrict(this.#idbPath, [
       'ui',
       'tap',
       String(cx),
@@ -601,7 +842,7 @@ export class IdbBackend implements DeviceBackend {
 
   async getWindowSize(): Promise<WindowSize> {
     await this.ensureConnected();
-    const raw = await execStrict(this.#idbPath, [
+    const raw = await this.#execStrict(this.#idbPath, [
       'describe',
       '--udid',
       this.#udid,
@@ -652,7 +893,7 @@ export class IdbBackend implements DeviceBackend {
 
   async getClipboard(): Promise<string> {
     await this.ensureConnected();
-    return execStrict('xcrun', ['simctl', 'pbpaste', this.#udid]);
+    return this.#execStrict('xcrun', ['simctl', 'pbpaste', this.#udid]);
   }
 
   async setClipboard(text: string): Promise<void> {
@@ -675,30 +916,82 @@ export class IdbBackend implements DeviceBackend {
     }
     const path = resolveArtifactPath(outputPath, 'recording');
     this.#recordingPath = path;
-    this.#recordingProcess = spawn(this.#idbPath, [
-      'record-video',
-      path,
-      '--udid',
-      this.#udid,
-    ]);
+    this.#recordingProcess = spawn(
+      this.#idbPath,
+      ['record-video', path, '--udid', this.#udid],
+      { env: this.#connection.env },
+    );
     this.#recordingProcess.on('error', () => {
       this.#recordingProcess = null;
       this.#recordingPath = null;
     });
+    this.#recordingProcess.stdout?.resume();
+    this.#recordingProcess.stderr?.resume();
   }
 
   async stopScreenRecording(): Promise<string> {
+    if (this.#stoppingRecording) {
+      return this.#stoppingRecording;
+    }
     if (!this.#recordingProcess || !this.#recordingPath) {
       throw new Error('No screen recording in progress');
     }
     const path = this.#recordingPath;
-    this.#recordingProcess.kill('SIGINT');
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    this.#recordingProcess = null;
-    this.#recordingPath = null;
-    hardenArtifactFile(path);
-    return path;
+    const child = this.#recordingProcess;
+    this.#stoppingRecording = (async (): Promise<string> => {
+      await stopChildProcess(child, 'SIGINT');
+      this.#recordingProcess = null;
+      this.#recordingPath = null;
+      hardenArtifactFile(path);
+      return path;
+    })();
+    try {
+      return await this.#stoppingRecording;
+    } finally {
+      this.#stoppingRecording = undefined;
+    }
   }
+}
+
+type Attempt<Result> = {
+  text: string | undefined;
+  error: unknown;
+  settle: () => Result;
+};
+
+async function attempt<Result>(
+  run: () => Promise<Result>,
+  failureOf: (value: Result) => string | undefined,
+): Promise<Attempt<Result>> {
+  try {
+    const value = await run();
+    return { text: failureOf(value), error: undefined, settle: () => value };
+  } catch (error) {
+    return {
+      text: error instanceof Error ? error.message : String(error),
+      error,
+      settle: (): never => {
+        throw error;
+      },
+    };
+  }
+}
+
+const READ_ONLY_UI_COMMANDS = new Set([
+  'describe-all',
+  'describe-point',
+  'describe',
+  'wait',
+]);
+
+/**
+ * Whether an idb command can change the device (a resend could repeat it).
+ *
+ * @param args - The idb arguments.
+ * @returns True for `ui` input commands (tap, swipe, text, key, ...).
+ */
+function isMutatingIdbCommand(args: string[]): boolean {
+  return args[0] === 'ui' && !READ_ONLY_UI_COMMANDS.has(args[1] ?? '');
 }
 
 function collectAlertTexts(elements: UIElement[]): string[] {

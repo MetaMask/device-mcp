@@ -22,7 +22,41 @@ async function main(): Promise<void> {
   const backend = createLazyBackend(deviceId, devicePlatform);
   const server = createMcpServer(backend);
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  let stopping: Promise<void> | undefined;
+  const shutdown = async (): Promise<void> => {
+    stopping ??= (async (): Promise<void> => {
+      try {
+        await backend.dispose?.();
+      } finally {
+        await server.close();
+      }
+    })();
+    return stopping;
+  };
+  server.server.onclose = (): void => {
+    backend
+      .dispose?.()
+      .catch((error: unknown) => console.error('Cleanup failed:', error));
+  };
+  const exit = (): void => {
+    shutdown()
+      .then(() => process.exit(0))
+      .catch((error: unknown) => {
+        console.error('Cleanup failed:', error);
+        process.exit(1);
+      });
+  };
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, exit);
+  }
+  // The SDK stdio transport does not turn stdin EOF into an onclose callback.
+  process.stdin.once('end', exit);
+  try {
+    await server.connect(transport);
+  } catch (error) {
+    await shutdown();
+    throw error;
+  }
 
   console.error('@metamask/device-mcp ready on stdio');
 }

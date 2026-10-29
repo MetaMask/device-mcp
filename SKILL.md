@@ -21,6 +21,10 @@ device_select_device        # Pick the one you want to use
 
 If only one device is connected, it's auto-selected. If `DEVICE_ID` is set, this step is skipped.
 
+Each iOS backend owns a private IDB companion. Device selection releases the previous connection. Closing stdio (including stdin EOF), SIGINT, or SIGTERM releases that server's companion and recording without shutting down the simulator or disconnecting other sessions. Programmatic callers must `await backend.dispose?.()` when finished and `await lazyBackend.selectDevice(deviceId)` when switching. Use explicit device IDs for independent sessions; app state is still shared if two sessions target the same simulator.
+
+iOS recovers by itself from a dead private companion or an invalid simulator HID connection (for example after the simulator rebooted): it starts a fresh companion and sends the command once more. If that also fails, the tool error starts with `IDB_HID_UNAVAILABLE` or `IDB_COMPANION_UNAVAILABLE` and ends with a remediation. Do not repeat the action in a loop: check the screen with `device_snapshot`, then recreate the session (or reboot the simulator if the error says so). If the error says the action may have run, check the screen before you repeat it.
+
 ## Core Loop
 
 ```

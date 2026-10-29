@@ -113,6 +113,16 @@ export type DeviceBackend = {
 
   readonly platform: Platform;
 
+  /** Release only resources owned by this backend. Idempotent; never shuts down a device. */
+  dispose?(): Promise<void>;
+
+  /**
+   * Replace the backend's own device connection (for iOS, its private
+   * companion) with a fresh one. Optional; callers use it to recover after a
+   * typed transport error. Never shuts down or reboots a device.
+   */
+  reconnect?(): Promise<void>;
+
   getDeviceInfo(): Promise<DeviceInfo>;
 
   snapshot(): Promise<SnapshotResult>;
