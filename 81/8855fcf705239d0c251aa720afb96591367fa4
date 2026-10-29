@@ -1,0 +1,24 @@
+CHANGELOG.md
+  h_d6a04d82b61d5e 10-17
+README.md
+  h_d6a04d82b61d5e 187,231-232,236-237
+src/backends/idb-backend.test.ts
+  h_d6a04d82b61d5e 1190-1283,1499-1501,1504,1506-1512,1515,1517-1521,1524,1526-1528,1530,1533-1539,1541-1542,1545-1553,1555-1556,1558-1559,1561-1566
+src/backends/idb-backend.ts
+  h_d6a04d82b61d5e 42-68,211-212,216-223,225,244-245,247,254,270,281,294,297,501-509,512,514-516,520,523,732-738,740-748,750-754,757-760,763-766,770,1015,1028-1029,1033,1035-1036
+src/tools/dismiss-keyboard.ts
+  h_d6a04d82b61d5e 16-18
+src/tools/press-button.ts
+  h_d6a04d82b61d5e 16-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "818855fcf705239d0c251aa720afb96591367fa4",
+  "prompts": {},
+  "humans": {
+    "h_d6a04d82b61d5e": {
+      "author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
