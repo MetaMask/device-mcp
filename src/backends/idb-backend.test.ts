@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { parseIdbHierarchy, mapIdbElement, IdbBackend } from './idb-backend.js';
 import { IdbUnavailableError } from './idb-errors.js';
@@ -823,6 +823,185 @@ describe('IdbBackend.tapElement and longPress viewport handling', () => {
     await expect(
       backend.longPress({ identifier: 'hidden-btn' }),
     ).rejects.toThrow('outside the 402x874 viewport');
+  });
+
+  it('taps a caller-resolved element without a new snapshot', async () => {
+    mockScreen([]);
+
+    const result = await backend.tapElement(
+      { identifier: 'submit-btn' },
+      {
+        element: {
+          type: 'Button',
+          identifier: 'submit-btn',
+          frame: { x: 10, y: 20, width: 100, height: 44 },
+          enabled: true,
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ success: true, x: 60, y: 42 });
+    expect(mockExecStrict).not.toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      expect.arrayContaining(['describe-all']),
+      connectionOptions,
+    );
+  });
+
+  it('keeps the viewport check for a caller-resolved element', async () => {
+    mockScreen([]);
+
+    await expect(
+      backend.tapElement(
+        { identifier: 'hidden-btn' },
+        {
+          element: {
+            type: 'Button',
+            identifier: 'hidden-btn',
+            frame: { x: 0, y: 1000, width: 402, height: 100 },
+            enabled: true,
+          },
+        },
+      ),
+    ).rejects.toThrow('outside the 402x874 viewport');
+  });
+});
+
+describe('IdbBackend device description cache', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  const screenInfo = {
+    name: 'iPhone 17 Pro',
+    os_version: '26.5',
+    state: 'Booted',
+    screen_dimensions: { width_points: 402, height_points: 874 },
+  };
+  const button = {
+    type: 'Button',
+    AXLabel: 'Submit',
+    AXUniqueId: 'submit-btn',
+    frame: { x: 10, y: 20, width: 100, height: 44 },
+    enabled: true,
+  };
+
+  const describeJsonCalls = (): number =>
+    mockExecStrict.mock.calls.filter(
+      ([, args]) => args?.includes('describe') && args?.includes('--json'),
+    ).length;
+  const describeAllCalls = (): number =>
+    mockExecStrict.mock.calls.filter(([, args]) =>
+      args?.includes('describe-all'),
+    ).length;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSupportsApi.mockResolvedValue(true);
+    mockChooseAxApi.mockReturnValue('axbridge');
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify(screenInfo);
+      }
+      if (args?.includes('describe-all')) {
+        return JSON.stringify([button]);
+      }
+      return '';
+    });
+    backend = new IdbBackend(udid);
+  });
+
+  afterEach(() => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockChooseAxApi.mockReturnValue(null);
+  });
+
+  it('reads idb describe once per connection for snapshots and taps', async () => {
+    const element = await backend.waitForElement({ identifier: 'submit-btn' });
+    await backend.tapElement({ identifier: 'submit-btn' }, { element });
+    await backend.snapshot();
+    await backend.tapElement({ identifier: 'submit-btn' });
+    await backend.swipe('up');
+
+    expect(describeJsonCalls()).toBe(1);
+    // waitForElement, snapshot, and the second (unresolved) tap.
+    expect(describeAllCalls()).toBe(3);
+  });
+
+  it('shares one describe read between concurrent first calls', async () => {
+    await Promise.all([backend.snapshot(), backend.getWindowSize()]);
+
+    expect(describeJsonCalls()).toBe(1);
+  });
+
+  it('reads the description again after a reconnect', async () => {
+    await backend.snapshot();
+    await backend.reconnect();
+    await backend.snapshot();
+
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('does not cache a failed read', async () => {
+    let failures = 1;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error('companion busy');
+        }
+        return JSON.stringify(screenInfo);
+      }
+      return JSON.stringify([button]);
+    });
+
+    await expect(backend.getWindowSize()).rejects.toThrow('companion busy');
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 402,
+      height: 874,
+    });
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('getDeviceInfo reads fresh and refreshes the cache', async () => {
+    await backend.getWindowSize();
+    const info = await backend.getDeviceInfo();
+    await backend.getWindowSize();
+
+    expect(info).toStrictEqual({
+      platform: 'ios',
+      deviceId: udid,
+      name: 'iPhone 17 Pro',
+      osVersion: '26.5',
+      state: 'Booted',
+    });
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('falls back to the snapshot root when describe is not JSON', async () => {
+    // Without --api support the snapshot does not need the OS version.
+    mockSupportsApi.mockResolvedValue(false);
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return 'not json';
+      }
+      return JSON.stringify([
+        { type: 'Application', frame: { x: 0, y: 0, width: 390, height: 844 } },
+      ]);
+    });
+
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 390,
+      height: 844,
+    });
+  });
+
+  it('getDeviceInfo rejects a non-JSON description', async () => {
+    mockExecStrict.mockResolvedValue('not json');
+
+    await expect(backend.getDeviceInfo()).rejects.toThrow(
+      `idb describe returned invalid JSON for device ${udid}: not json`,
+    );
   });
 });
 

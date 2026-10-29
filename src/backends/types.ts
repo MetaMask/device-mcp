@@ -46,6 +46,14 @@ export type TapResult = {
   targetDescription: string;
 };
 
+export type TapElementOptions = {
+  /**
+   * The element to tap, already resolved by the caller. Its frame is used as
+   * is; the backend does not check that it still matches `query`.
+   */
+  element?: UIElement;
+};
+
 export type AppStateResult = {
   bundleId: string;
   state: string;
@@ -127,7 +135,15 @@ export type DeviceBackend = {
 
   snapshot(): Promise<SnapshotResult>;
 
-  tapElement(query: ElementQuery): Promise<TapResult>;
+  /**
+   * Taps the element that matches `query`. Pass `options.element` (an element
+   * the caller already resolved, for example from `waitForElement`) to tap it
+   * without taking a new snapshot.
+   */
+  tapElement(
+    query: ElementQuery,
+    options?: TapElementOptions,
+  ): Promise<TapResult>;
 
   tapCoordinates(x: number, y: number): Promise<void>;
 

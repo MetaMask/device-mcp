@@ -24,6 +24,7 @@ export type {
   ScreenshotFileResult,
   ScreenshotOptions,
   LogsResult,
+  TapElementOptions,
   TapResult,
   AppStateResult,
   Platform,

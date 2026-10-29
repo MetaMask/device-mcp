@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tapElement(query, { element })` taps an element the caller already resolved (for example from `waitForElement`) without taking a second snapshot
+
+### Changed
+
+- iOS (idb): read `idb describe --json` once per companion connection for the OS version and window size, instead of before every snapshot, tap and swipe. `getDeviceInfo()` still reads it fresh
+
 ## [0.7.0]
 
 ### Added
