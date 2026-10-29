@@ -1,0 +1,19 @@
+CHANGELOG.md
+  s_8e6f929d038d62::t_3ce27cd8f9e50e 19-20,24-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2cb3354c5b920602d6d5ccb909fa0ed33909d66d",
+  "prompts": {},
+  "sessions": {
+    "s_8e6f929d038d62": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e78389440ffeSjySlpc1IE5i5s",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
