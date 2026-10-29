@@ -16,13 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **BREAKING:** `LazyDeviceBackend.selectDevice()` now returns `Promise<void>` instead of `void` and disposes the previous backend before switching. Programmatic callers must await it ([#43](https://github.com/MetaMask/device-mcp/pull/43))
-- iOS: when delivery is uncertain (`StatusCode.UNAVAILABLE`), resend only known read-only idb commands. `launch`, `terminate` and any other command not on the read-only list are no longer resent
-- iOS: stop matching the `dtuhidd ... interrupted` and `did not answer` companion log lines, which never reach idb stderr, and drop the unreachable `retry: unsafe` verdict check
+- iOS: when delivery is uncertain (`StatusCode.UNAVAILABLE`), resend only known read-only idb commands. `launch`, `terminate` and any other command not on the read-only list are no longer resent ([#44](https://github.com/MetaMask/device-mcp/pull/44))
+- iOS: stop matching the `dtuhidd ... interrupted` and per-attempt `did not answer` companion log lines, which never reach idb stderr, and drop the unreachable `retry: unsafe` verdict check ([#44](https://github.com/MetaMask/device-mcp/pull/44))
 
 ### Fixed
 
-- iOS: a command that fails while the backend is being disposed now rejects with `IDB command interrupted: the backend was disposed during the call` instead of an `IDB_COMPANION_UNAVAILABLE` error with install advice, and it is never resent
-- Keep the original connection error when the cleanup after a failed connect also fails
+- iOS: a command that fails while the backend is being disposed now rejects with `IDB command interrupted: the backend was disposed during the call` instead of an `IDB_COMPANION_UNAVAILABLE` error with install advice, and it is never resent ([#44](https://github.com/MetaMask/device-mcp/pull/44))
+- Keep the original connection error when the cleanup after a failed connect also fails ([#44](https://github.com/MetaMask/device-mcp/pull/44))
 
 ## [0.6.0]
 
