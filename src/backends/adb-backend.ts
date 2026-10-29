@@ -34,21 +34,22 @@ import {
   reassembleInstrumentationXml,
 } from './android-instrumentation/snapshot.js';
 import type {
+  AppStateResult,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,
-  SnapshotResult,
-  ScreenshotResult,
+  ElementQuery,
+  LogsResult,
   ScreenshotFileResult,
   ScreenshotOptions,
-  LogsResult,
+  ScreenshotResult,
+  SnapshotResult,
+  TapElementOptions,
   TapResult,
-  AppStateResult,
-  ElementQuery,
   UIElement,
-  WindowSize,
   WebViewCdpInput,
   WebViewCdpOutcome,
+  WindowSize,
 } from './types.js';
 import { runWebViewCdp } from './webview-cdp.js';
 import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
@@ -296,9 +297,12 @@ export class AdbBackend implements DeviceBackend {
     };
   }
 
-  async tapElement(query: ElementQuery): Promise<TapResult> {
-    const snapshot = await this.snapshot();
-    const element = findElement(snapshot.hierarchy, query);
+  async tapElement(
+    query: ElementQuery,
+    options?: TapElementOptions,
+  ): Promise<TapResult> {
+    const element =
+      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +
