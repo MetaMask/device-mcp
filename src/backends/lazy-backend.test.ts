@@ -22,10 +22,14 @@ vi.mock('../utils/platform.js', async () => {
 });
 
 const mockEnsureConnected = vi.fn().mockResolvedValue(undefined);
+const mockDispose = vi.fn().mockResolvedValue(undefined);
+const mockReconnect = vi.fn().mockResolvedValue(undefined);
 vi.mock('./idb-backend.js', () => ({
   IdbBackend: vi.fn().mockImplementation((deviceId: string) => ({
     ...createMockBackendFields('ios', deviceId),
     ensureConnected: mockEnsureConnected,
+    dispose: mockDispose,
+    reconnect: mockReconnect,
   })),
 }));
 
@@ -110,12 +114,135 @@ function createMockBackendFields(
 describe('createLazyBackend', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDispose.mockReset().mockResolvedValue(undefined);
   });
 
   async function getLazyBackend() {
     const { createLazyBackend } = await import('./index.js');
     return createLazyBackend;
   }
+
+  describe('reconnect', () => {
+    it('forwards reconnect to the resolved backend', async () => {
+      const createLazyBackend = await getLazyBackend();
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'ios',
+        deviceId: 'sim-a',
+      });
+      const lazy = createLazyBackend();
+      await lazy.reconnect?.();
+      expect(mockReconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('is a no-op for backends without reconnect', async () => {
+      const createLazyBackend = await getLazyBackend();
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'android',
+        deviceId: 'emulator-5554',
+      });
+      const lazy = createLazyBackend();
+      expect(await lazy.reconnect?.()).toBeUndefined();
+      expect(mockReconnect).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('disposal', () => {
+    it('does not resolve an unused lazy backend during teardown', async () => {
+      const createLazyBackend = await getLazyBackend();
+      const lazy = createLazyBackend();
+      await lazy.dispose?.();
+      expect(mockDetectPlatform).not.toHaveBeenCalled();
+      expect(mockDispose).not.toHaveBeenCalled();
+      await expect(lazy.snapshot()).rejects.toThrow('disposed');
+    });
+
+    it('releases the old backend before selecting another device', async () => {
+      const createLazyBackend = await getLazyBackend();
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'ios',
+        deviceId: 'sim-a',
+      });
+      const lazy = createLazyBackend();
+      await lazy.snapshot();
+      await lazy.selectDevice('sim-b');
+      expect(mockDispose).toHaveBeenCalledTimes(1);
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'ios',
+        deviceId: 'sim-b',
+      });
+      await lazy.snapshot();
+      expect(mockDetectPlatform).toHaveBeenLastCalledWith('sim-b', undefined);
+      await Promise.all([lazy.dispose?.(), lazy.dispose?.()]);
+      expect(mockDispose).toHaveBeenCalledTimes(2);
+    });
+
+    it('waits for an in-flight backend connection during teardown', async () => {
+      const createLazyBackend = await getLazyBackend();
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'ios',
+        deviceId: 'sim-a',
+      });
+      let ready!: () => void;
+      mockEnsureConnected.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          ready = resolve;
+        }),
+      );
+      const lazy = createLazyBackend();
+      const snapshot = lazy.snapshot();
+      await vi.waitFor(() =>
+        expect(mockEnsureConnected).toHaveBeenCalledTimes(1),
+      );
+      const disposing = lazy.dispose?.();
+      const rejected = snapshot.catch((error: unknown) => error);
+      expect(mockDispose).not.toHaveBeenCalled();
+      ready();
+      await disposing;
+      expect(await rejected).toMatchObject({
+        message: 'Device backend has been disposed',
+      });
+      expect(mockDispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for selection teardown before disposing', async () => {
+      const createLazyBackend = await getLazyBackend();
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'ios',
+        deviceId: 'sim-a',
+      });
+      const lazy = createLazyBackend();
+      await lazy.snapshot();
+      let release!: () => void;
+      mockDispose.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
+      const selection = lazy.selectDevice('sim-b');
+      const disposing = lazy.dispose?.();
+      await vi.waitFor(() => expect(mockDispose).toHaveBeenCalledTimes(1));
+      expect(mockDetectPlatform).toHaveBeenCalledTimes(1);
+      release();
+      await selection;
+      await disposing;
+      await expect(lazy.snapshot()).rejects.toThrow('disposed');
+      expect(mockDispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('retains the backend when disposal fails so cleanup can retry', async () => {
+      const createLazyBackend = await getLazyBackend();
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'ios',
+        deviceId: 'sim-a',
+      });
+      const lazy = createLazyBackend();
+      await lazy.snapshot();
+      mockDispose.mockRejectedValueOnce(new Error('stop failed'));
+      await expect(lazy.dispose?.()).rejects.toThrow('stop failed');
+      await lazy.dispose?.();
+      expect(mockDispose).toHaveBeenCalledTimes(2);
+    });
+  });
 
   describe('single device resolution', () => {
     it('defers backend creation until first tool call', async () => {
@@ -240,7 +367,7 @@ describe('createLazyBackend', () => {
 
       await expect(lazy.getDeviceInfo()).rejects.toThrow(MultipleDevicesError);
 
-      lazy.selectDevice('udid-1');
+      await lazy.selectDevice('udid-1');
       const info = await lazy.getDeviceInfo();
 
       expect(info.deviceId).toBe('udid-1');
@@ -263,7 +390,7 @@ describe('createLazyBackend', () => {
         deviceId: 'emulator-5554',
       });
 
-      lazy.selectDevice('emulator-5554');
+      await lazy.selectDevice('emulator-5554');
       await lazy.getDeviceInfo();
 
       expect(mockDetectPlatform).toHaveBeenCalledTimes(2);

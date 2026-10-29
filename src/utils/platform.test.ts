@@ -531,6 +531,41 @@ describe('detectPlatform', () => {
     ]);
   });
 
+  it('identifies a known simulator through simctl without running idb', async () => {
+    mockIsCommandAvailable.mockResolvedValue(true);
+    mockExec.mockImplementation(async (cmd) =>
+      cmd === 'xcrun'
+        ? {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              devices: { r: [{ udid: 'odd_sim.id', state: 'Shutdown' }] },
+            }),
+            stderr: '',
+          }
+        : { exitCode: 1, stdout: '', stderr: '' },
+    );
+
+    expect(await detectPlatform('odd_sim.id')).toStrictEqual({
+      platform: 'ios',
+      deviceId: 'odd_sim.id',
+    });
+    expect(mockExec).not.toHaveBeenCalledWith('idb', expect.anything());
+  });
+
+  it('falls back to idb when simctl output is unusable', async () => {
+    mockIsCommandAvailable.mockResolvedValue(true);
+    mockExec.mockImplementation(async (cmd) =>
+      cmd === 'xcrun'
+        ? { exitCode: 0, stdout: 'not json', stderr: '' }
+        : { exitCode: 0, stdout: '{}', stderr: '' },
+    );
+
+    expect(await detectPlatform('device:1')).toStrictEqual({
+      platform: 'ios',
+      deviceId: 'device:1',
+    });
+  });
+
   it('falls back to adb probe when idb fails for ambiguous device ID', async () => {
     mockIsCommandAvailable.mockResolvedValue(true);
     mockExec.mockImplementation(async (cmd) => {

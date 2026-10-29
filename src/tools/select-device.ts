@@ -22,7 +22,7 @@ export function registerSelectDeviceTool(
     },
     async ({ deviceId }) => {
       try {
-        backend.selectDevice(deviceId);
+        await backend.selectDevice(deviceId);
         const info = await backend.getDeviceInfo();
 
         return {
