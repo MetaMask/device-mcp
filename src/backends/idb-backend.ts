@@ -146,7 +146,8 @@ export class IdbBackend implements DeviceBackend {
       this.#generation += 1;
       this.#connected = true;
     } catch (error) {
-      await this.#connection.dispose();
+      // Best-effort cleanup: a failed stop must not hide the connect error.
+      await this.#connection.dispose().catch(() => undefined);
       this.#connecting = undefined;
       throw error;
     }
@@ -206,10 +207,16 @@ export class IdbBackend implements DeviceBackend {
    * Run one idb command through this backend's private companion and recover
    * once from a lost companion or an invalidated simulator HID connection:
    * classify the failure, start a fresh private companion, and send the
-   * command once more. HID events sent on an invalidated dtuhidd connection
-   * are discarded and an unreachable companion received nothing, so the
-   * retry cannot repeat an action. When delivery is uncertain
-   * (`StatusCode.UNAVAILABLE`), mutating `ui` commands are not resent.
+   * command once more.
+   *
+   * The companion refuses the HID event that hits an invalidated dtuhidd
+   * connection, so that event was not delivered, and an unreachable companion
+   * received nothing. When the HID connection was already stale (the observed
+   * failure), the first event fails and the resend is safe. If the simulator
+   * died partway through a multi-event command (`ui text`, `ui swipe`), a
+   * leading part of it may already have landed. When delivery is uncertain
+   * (`StatusCode.UNAVAILABLE`), only read-only commands are resent. A command
+   * is never resent after the backend is disposed.
    *
    * @param args - The idb arguments (used to decide whether a resend is safe).
    * @param run - Sends the command once.
@@ -244,6 +251,9 @@ export class IdbBackend implements DeviceBackend {
         await this.ensureConnected();
       }
     } catch (error) {
+      if (this.#disposed) {
+        return interrupted(first, strict);
+      }
       if (!strict) {
         return first.settle();
       }
@@ -253,6 +263,10 @@ export class IdbBackend implements DeviceBackend {
         error instanceof Error ? error.message : String(error),
         { cause: error, mayHaveRun: !resend },
       );
+    }
+    if (this.#disposed) {
+      // Disposal started while another call's reconnect was finishing.
+      return interrupted(first, strict);
     }
     if (!resend) {
       if (!strict) {
@@ -977,6 +991,34 @@ async function attempt<Result>(
   }
 }
 
+/**
+ * Settle a failed first attempt when the backend was disposed before the
+ * recovery could run. Disposal is a teardown, not a device fault, so the
+ * command is not resent and no device remediation is given.
+ *
+ * @param first - The failed first attempt.
+ * @param strict - Throw instead of returning the failed result.
+ * @returns The first result, for non-strict callers.
+ */
+function interrupted<Result>(first: Attempt<Result>, strict: boolean): Result {
+  if (!strict) {
+    return first.settle();
+  }
+  throw new Error(
+    'IDB command interrupted: the backend was disposed during the call',
+    { cause: first.error },
+  );
+}
+
+/** Top-level idb commands that only read device state. */
+const READ_ONLY_COMMANDS = new Set([
+  'describe',
+  'list-apps',
+  'screenshot',
+  'log',
+]);
+
+/** `idb ui` subcommands that only read device state. */
 const READ_ONLY_UI_COMMANDS = new Set([
   'describe-all',
   'describe-point',
@@ -986,12 +1028,18 @@ const READ_ONLY_UI_COMMANDS = new Set([
 
 /**
  * Whether an idb command can change the device (a resend could repeat it).
+ * Only commands listed as read-only are safe; any other command, including
+ * one added later, counts as mutating.
  *
  * @param args - The idb arguments.
- * @returns True for `ui` input commands (tap, swipe, text, key, ...).
+ * @returns False only for known read-only commands.
  */
 function isMutatingIdbCommand(args: string[]): boolean {
-  return args[0] === 'ui' && !READ_ONLY_UI_COMMANDS.has(args[1] ?? '');
+  const [command = '', subcommand = ''] = args;
+  if (command === 'ui') {
+    return !READ_ONLY_UI_COMMANDS.has(subcommand);
+  }
+  return !READ_ONLY_COMMANDS.has(command);
 }
 
 function collectAlertTexts(elements: UIElement[]): string[] {

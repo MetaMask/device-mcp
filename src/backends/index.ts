@@ -82,7 +82,8 @@ export async function createBackend(
   try {
     await backend.ensureConnected();
   } catch (error) {
-    await backend.dispose?.();
+    // Best-effort cleanup: a failed dispose must not hide the connect error.
+    await backend.dispose?.().catch(() => undefined);
     throw error;
   }
   return backend;

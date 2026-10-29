@@ -9,13 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Add optional backend disposal and private, session-owned IDB companions. Release owned resources on stdio close, stdin EOF, SIGINT, and SIGTERM.
-- Recover iOS sessions from a lost private companion or an invalidated simulator HID connection: reconnect once and resend only when the command was not delivered. Add optional `DeviceBackend.reconnect()` and export `IdbUnavailableError` (`IDB_HID_UNAVAILABLE`, `IDB_COMPANION_UNAVAILABLE`).
-- Start private companions with `--terminate-offline true` and a one-hour idle shutdown, and remove private companion directories left by dead processes.
+- Add optional backend disposal and private, session-owned IDB companions. Release owned resources on stdio close, stdin EOF, SIGINT, and SIGTERM ([#43](https://github.com/MetaMask/device-mcp/pull/43))
+- Recover iOS sessions from a lost private companion or an invalidated simulator HID connection: reconnect once and resend only when the command was not delivered. Add optional `DeviceBackend.reconnect()` and export `IdbUnavailableError` (`IDB_HID_UNAVAILABLE`, `IDB_COMPANION_UNAVAILABLE`) ([#43](https://github.com/MetaMask/device-mcp/pull/43))
+- Start private companions with `--terminate-offline true` and a one-hour idle shutdown, and remove private companion directories left by dead processes ([#43](https://github.com/MetaMask/device-mcp/pull/43))
 
 ### Changed
 
-- `LazyDeviceBackend.selectDevice()` now returns a promise and disposes the previous backend before switching. Programmatic callers must await it.
+- **BREAKING:** `LazyDeviceBackend.selectDevice()` now returns `Promise<void>` instead of `void` and disposes the previous backend before switching. Programmatic callers must await it ([#43](https://github.com/MetaMask/device-mcp/pull/43))
+- iOS: when delivery is uncertain (`StatusCode.UNAVAILABLE`), resend only known read-only idb commands. `launch`, `terminate` and any other command not on the read-only list are no longer resent
+- iOS: stop matching the `dtuhidd ... interrupted` and `did not answer` companion log lines, which never reach idb stderr, and drop the unreachable `retry: unsafe` verdict check
+
+### Fixed
+
+- iOS: a command that fails while the backend is being disposed now rejects with `IDB command interrupted: the backend was disposed during the call` instead of an `IDB_COMPANION_UNAVAILABLE` error with install advice, and it is never resent
+- Keep the original connection error when the cleanup after a failed connect also fails
 
 ## [0.6.0]
 

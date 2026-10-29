@@ -4,24 +4,40 @@ export type IdbErrorCode = 'IDB_HID_UNAVAILABLE' | 'IDB_COMPANION_UNAVAILABLE';
 export type IdbFailure = {
   code: IdbErrorCode;
   /**
-   * True when the failure proves the command was not delivered, so sending
-   * it again cannot repeat an action. HID events sent on an invalidated
-   * dtuhidd connection are discarded, and a companion that cannot be reached
-   * received nothing.
+   * True when the failing event or request was refused before delivery.
+   *
+   * - HID: the companion refuses the event that hits an invalidated dtuhidd
+   * connection, so that event was not delivered. An idb command can be a
+   * stream of events (`ui text` sends one down/up pair per character,
+   * `ui swipe` sends many touches). When the connection was already stale,
+   * the first event fails and nothing landed; this is the observed failure,
+   * and a resend through a fresh companion is safe. When the simulator dies
+   * partway through a command, a leading part of it (some characters or
+   * touches) may already have landed.
+   * - Companion not reached: the request was never sent.
    */
   notDelivered: boolean;
 };
 
+// Thrown errors of the idb_companion HID transport (facebook/idb v1.7.1,
+// FBSimulatorControl/HID/SimulatorHIDError.swift). Companion log lines (for
+// example "was interrupted" or a single failed liveness probe) never reach
+// idb stderr, so they are not matched.
 const HID_PATTERNS = [
-  /dtuhidd .*(?:invalidated|interrupted|did not answer)/iu,
+  // dtuhidConnectionInvalidated, thrown by SimulatorDTUHIDConnection.write():
+  // "The dtuhidd connection (<name>) has been invalidated; events sent on it
+  // would be discarded".
+  /dtuhidd connection .*has been invalidated/iu,
+  // The invalidated error above, and dtuhidUnresponsive, thrown by
+  // SimulatorDTUHIDConnection.connect() before any event is written:
+  // "dtuhidd did not answer a liveness probe in 5 attempts ... every HID event
+  // sent to it would be discarded without error".
   /events? sent (?:on|to) it would be discarded/iu,
 ];
 
 const COMPANION_NOT_REACHED = /Failed to connect to companion/iu;
 
 const COMPANION_UNAVAILABLE = 'StatusCode.UNAVAILABLE';
-
-const UNSAFE_VERDICT = /^retry: unsafe\b/mu;
 
 /**
  * Classify an idb failure from its stderr (or an execStrict error message).
@@ -30,13 +46,11 @@ const UNSAFE_VERDICT = /^retry: unsafe\b/mu;
  * @returns The failure kind, or undefined for any other error.
  */
 export function classifyIdbFailure(text: string): IdbFailure | undefined {
-  // An explicit companion verdict (idb --retry-verdict) always wins.
-  const unsafe = UNSAFE_VERDICT.test(text);
   if (HID_PATTERNS.some((pattern) => pattern.test(text))) {
-    return { code: 'IDB_HID_UNAVAILABLE', notDelivered: !unsafe };
+    return { code: 'IDB_HID_UNAVAILABLE', notDelivered: true };
   }
   if (COMPANION_NOT_REACHED.test(text)) {
-    return { code: 'IDB_COMPANION_UNAVAILABLE', notDelivered: !unsafe };
+    return { code: 'IDB_COMPANION_UNAVAILABLE', notDelivered: true };
   }
   if (text.includes(COMPANION_UNAVAILABLE)) {
     // The channel failed, but possibly after the request was sent.

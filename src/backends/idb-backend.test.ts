@@ -1302,16 +1302,29 @@ describe('IdbBackend companion recovery', () => {
     expect(connectionMocks.connect).toHaveBeenCalledTimes(2);
   });
 
-  it('honours an explicit unsafe retry verdict', async () => {
-    mockExecStrict.mockRejectedValue(
-      new Error(`${hidInvalidated}\nretry: unsafe (outcome_unknown)`),
-    );
+  it.each([
+    ['launch', async (): Promise<void> => backend.openApp('io.metamask')],
+    ['terminate', async (): Promise<void> => backend.closeApp('io.metamask')],
+  ])(
+    'does not resend idb %s when delivery is uncertain',
+    async (command, run) => {
+      mockExecStrict.mockImplementation(async (cmd) => {
+        if (cmd === 'xcrun') {
+          return '';
+        }
+        throw new Error('stderr: StatusCode.UNAVAILABLE: Socket closed');
+      });
 
-    await expect(backend.tapCoordinates(1, 1)).rejects.toMatchObject({
-      code: 'IDB_HID_UNAVAILABLE',
-    });
-    expect(tapCalls()).toHaveLength(1);
-  });
+      await run();
+
+      const idbCalls = mockExecStrict.mock.calls.filter(
+        ([cmd, args]) => cmd !== 'xcrun' && args?.[0] === command,
+      );
+      expect(idbCalls).toHaveLength(1);
+      // The companion was still replaced for the next command.
+      expect(connectionMocks.connect).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('resends a read-only command when delivery is uncertain', async () => {
     mockExecStrict
@@ -1321,6 +1334,145 @@ describe('IdbBackend companion recovery', () => {
     await backend.snapshot();
 
     expect(connectionMocks.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [
+      'describe',
+      async (): Promise<unknown> => backend.getDeviceInfo(),
+      '{"name":"iPhone"}',
+    ],
+    [
+      'list-apps',
+      async (): Promise<unknown> => backend.getAppState('io.metamask'),
+      '',
+    ],
+    [
+      'screenshot',
+      async (): Promise<unknown> =>
+        backend.screenshot('/tmp/shot.png', { encode: false }),
+      '',
+    ],
+    ['log', async (): Promise<unknown> => backend.getLogs(5), ''],
+  ])(
+    'resends read-only idb %s when delivery is uncertain',
+    async (command, run, output) => {
+      mockExecStrict
+        .mockRejectedValueOnce(new Error('StatusCode.UNAVAILABLE'))
+        .mockResolvedValueOnce(output);
+
+      await run();
+
+      const idbCalls = mockExecStrict.mock.calls.filter(
+        ([, args]) => args?.[0] === command,
+      );
+      expect(idbCalls).toHaveLength(2);
+      expect(connectionMocks.connect).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('reports disposal during a command as an interruption, without a resend', async () => {
+    await backend.ensureConnected();
+    let fail!: (error: Error) => void;
+    mockExecStrict.mockReturnValueOnce(
+      new Promise<string>((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    const tapping = backend.tapCoordinates(1, 2).catch((e: unknown) => e);
+    await vi.waitFor(() => expect(tapCalls()).toHaveLength(1));
+
+    await backend.dispose();
+    const cause = new Error(companionGone);
+    fail(cause);
+    const error = await tapping;
+
+    expect(error).not.toBeInstanceOf(IdbUnavailableError);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      'IDB command interrupted: the backend was disposed during the call',
+    );
+    expect((error as Error).message).not.toContain(
+      'idb_companion is installed',
+    );
+    expect((error as Error).cause).toBe(cause);
+    expect(tapCalls()).toHaveLength(1);
+    expect(connectionMocks.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the first non-strict failure when disposed during a command', async () => {
+    await backend.ensureConnected();
+    let finish!: (result: execModule.ExecResult) => void;
+    mockExec.mockImplementation(async (cmd, args) =>
+      cmd !== 'xcrun' && args?.[1] === 'key-sequence'
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : { exitCode: 0, stdout: '', stderr: '' },
+    );
+    const typing = backend.typeText('abc').catch((e: unknown) => e);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+
+    await backend.dispose();
+    finish({ exitCode: 1, stdout: '', stderr: hidInvalidated });
+
+    // The failed key-sequence is returned, not resent; the next idb command
+    // then fails fast because the backend is disposed.
+    expect(await typing).toMatchObject({
+      message: 'IDB backend has been disposed',
+    });
+    expect(
+      mockExec.mock.calls.filter(([, args]) => args?.[1] === 'key-sequence'),
+    ).toHaveLength(1);
+    expect(connectionMocks.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resend when disposed after joining a newer companion', async () => {
+    await backend.ensureConnected();
+    let fail!: (error: Error) => void;
+    mockExecStrict.mockReturnValueOnce(
+      new Promise<string>((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    const tapping = backend.tapCoordinates(1, 2).catch((e: unknown) => e);
+    await vi.waitFor(() => expect(tapCalls()).toHaveLength(1));
+    // Another caller replaces the companion while the tap is in flight.
+    await backend.reconnect();
+    // Dispose exactly when the failed tap checks the new companion, so
+    // ensureConnected() itself succeeds.
+    let disposing: Promise<void> | undefined;
+    Object.defineProperty(connectionState, 'alive', {
+      configurable: true,
+      get: (): boolean => {
+        disposing ??= backend.dispose();
+        return true;
+      },
+    });
+    try {
+      fail(new Error(hidInvalidated));
+      expect(await tapping).toMatchObject({
+        message:
+          'IDB command interrupted: the backend was disposed during the call',
+      });
+      await disposing;
+    } finally {
+      Object.defineProperty(connectionState, 'alive', {
+        configurable: true,
+        writable: true,
+        value: true,
+      });
+    }
+    expect(disposing).toBeDefined();
+    expect(tapCalls()).toHaveLength(1);
+  });
+
+  it('keeps the connect error when cleanup after a failed connect also fails', async () => {
+    connectionMocks.connect.mockRejectedValueOnce(new Error('startup failed'));
+    connectionMocks.dispose.mockRejectedValueOnce(new Error('stop failed'));
+
+    await expect(backend.ensureConnected()).rejects.toThrow('startup failed');
+    expect(connectionMocks.dispose).toHaveBeenCalledTimes(1);
   });
 
   it('reports a failed reconnect as IDB_COMPANION_UNAVAILABLE', async () => {
