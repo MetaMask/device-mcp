@@ -1,0 +1,32 @@
+CHANGELOG.md
+  h_d6a04d82b61d5e 10-13,21
+src/backends/adb-backend.test.ts
+  h_d6a04d82b61d5e 624-670
+src/backends/adb-backend.ts
+  h_d6a04d82b61d5e 37,41-42,45-47,52,300-305
+src/backends/appium-backend.test.ts
+  h_d6a04d82b61d5e 16-17,26-27,240-270
+src/backends/appium-backend.ts
+  h_d6a04d82b61d5e 3,7-9,12-14,100-105
+src/backends/idb-backend.test.ts
+  h_d6a04d82b61d5e 6,827-1005
+src/backends/idb-backend.ts
+  h_d6a04d82b61d5e 8,12-13,16-18,70-79,116-124,193,355-401,404,470-471,477-480,482-483,952-959,961
+src/backends/index.ts
+  h_d6a04d82b61d5e 7,12,14,17,19,24,233-237
+src/backends/types.ts
+  h_d6a04d82b61d5e 49-56,138-146
+src/index.ts
+  h_d6a04d82b61d5e 27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f0ce417eee05b6805d20e924703f80c19a29d813",
+  "prompts": {},
+  "humans": {
+    "h_d6a04d82b61d5e": {
+      "author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
