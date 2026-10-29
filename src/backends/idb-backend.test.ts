@@ -701,9 +701,9 @@ describe('IdbBackend.swipe and getWindowSize', () => {
         snapshotCount += 1;
         return JSON.stringify([
           {
-            type: snapshotCount === 3 ? 'Button' : 'StaticText',
-            AXLabel: snapshotCount === 3 ? 'Settings' : `Page ${snapshotCount}`,
-            frame: { x: 10, y: 20, width: 100, height: 44 },
+            type: snapshotCount >= 3 ? 'Button' : 'StaticText',
+            AXLabel: snapshotCount >= 3 ? 'Settings' : `Page ${snapshotCount}`,
+            frame: { x: 10, y: 200, width: 100, height: 44 },
             enabled: true,
           },
         ]);
