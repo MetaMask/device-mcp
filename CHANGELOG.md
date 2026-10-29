@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING:** fix: iOS key presses, `back` and text clearing ([#48](https://github.com/MetaMask/device-mcp/pull/48))
+  - iOS `pressButton('enter')` and `dismissKeyboard()` send the integer HID key code (`idb ui key 40`); `home` and `lock` use `idb ui button`. Both failed before because `idb ui key` takes only integer codes.
+  - iOS `pressButton('back')` now throws `UNSUPPORTED_ON_IOS` instead of pressing Home (which put the app in the background).
+  - iOS `dismissKeyboard()` does nothing when no keyboard is shown.
+  - iOS `typeText` clears the field with Command+A and Backspace through strict execution. Before, the clear failed silently and the text was appended to the old value.
+
 ## [0.7.0]
 
 ### Added

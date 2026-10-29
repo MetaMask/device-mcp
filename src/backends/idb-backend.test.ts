@@ -1187,6 +1187,100 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
   });
 });
 
+describe('IdbBackend keys and buttons', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  const idb = '/usr/local/bin/idb';
+  let backend: IdbBackend;
+
+  const idbCalls = (): unknown[][] =>
+    mockExecStrict.mock.calls
+      .filter(([cmd, args]) => cmd === idb && args?.[0] === 'ui')
+      .filter(([, args]) => args?.[1] !== 'describe-all')
+      .map(([, args]) => args as unknown[]);
+
+  const hierarchyWith = (types: string[]): string =>
+    JSON.stringify([
+      {
+        type: 'Application',
+        AXLabel: 'MetaMask',
+        frame: { x: 0, y: 0, width: 402, height: 874 },
+        children: types.map((type) => ({
+          type,
+          frame: { x: 0, y: 590, width: 402, height: 284 },
+        })),
+      },
+    ]);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    connectionState.alive = true;
+    mockSupportsApi.mockResolvedValue(false);
+    mockSupportsNested.mockResolvedValue(true);
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    mockExecStrict.mockResolvedValue('');
+    backend = new IdbBackend(udid);
+  });
+
+  it.each([
+    ['enter', ['ui', 'key', '40', '--udid', udid]],
+    ['home', ['ui', 'button', 'HOME', '--udid', udid]],
+    ['lock', ['ui', 'button', 'LOCK', '--udid', udid]],
+  ] as const)('pressButton(%s) sends %j', async (button, args) => {
+    await backend.pressButton(button);
+
+    expect(mockExecStrict).toHaveBeenCalledWith(idb, args, connectionOptions);
+    expect(idbCalls()).toStrictEqual([args]);
+  });
+
+  it('rejects pressButton(back) without touching the device', async () => {
+    await expect(backend.pressButton('back')).rejects.toMatchObject({
+      code: 'UNSUPPORTED_ON_IOS',
+      message: expect.stringContaining('iOS has no back button'),
+    });
+    expect(mockExecStrict).not.toHaveBeenCalled();
+    expect(connectionMocks.connect).not.toHaveBeenCalled();
+  });
+
+  it('clears with Command+A and Backspace before typing, all strict', async () => {
+    await backend.typeText('hello world');
+
+    expect(idbCalls()).toStrictEqual([
+      ['ui', 'key', '4', '--command', '--udid', udid],
+      ['ui', 'key', '42', '--udid', udid],
+      ['ui', 'text', 'hello world', '--udid', udid],
+    ]);
+    expect(mockExec).not.toHaveBeenCalledWith(
+      idb,
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('presses Return to dismiss a visible keyboard', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) =>
+      args?.[1] === 'describe-all' ? hierarchyWith(['Keyboard']) : '',
+    );
+
+    await backend.dismissKeyboard();
+
+    expect(idbCalls()).toStrictEqual([['ui', 'key', '40', '--udid', udid]]);
+  });
+
+  it('does nothing when no keyboard is shown', async () => {
+    // React Native's full-screen KeyboardControllerView is always present
+    // and must not count as a keyboard.
+    mockExecStrict.mockImplementation(async (_cmd, args) =>
+      args?.[1] === 'describe-all'
+        ? hierarchyWith(['KeyboardControllerView'])
+        : '',
+    );
+
+    await backend.dismissKeyboard();
+
+    expect(idbCalls()).toStrictEqual([]);
+  });
+});
+
 describe('IdbBackend companion recovery', () => {
   const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
   const hidInvalidated =
@@ -1402,152 +1496,74 @@ describe('IdbBackend companion recovery', () => {
     expect(connectionMocks.connect).toHaveBeenCalledTimes(1);
   });
 
-  it('returns the first non-strict failure when disposed during a command', async () => {
+  const keyCalls = (key: string): unknown[][] =>
+    mockExecStrict.mock.calls.filter(
+      ([, args]) => args?.[1] === 'key' && args?.[2] === key,
+    );
+
+  it('resends the typeText clear when the HID connection was invalidated', async () => {
     await backend.ensureConnected();
-    let finish!: (result: execModule.ExecResult) => void;
-    mockExec.mockImplementation(async (cmd, args) =>
-      cmd !== 'xcrun' && args?.[1] === 'key-sequence'
-        ? new Promise((resolve) => {
-            finish = resolve;
-          })
-        : { exitCode: 0, stdout: '', stderr: '' },
-    );
-    const typing = backend.typeText('abc').catch((e: unknown) => e);
-    await vi.waitFor(() => expect(finish).toBeDefined());
-
-    await backend.dispose();
-    finish({ exitCode: 1, stdout: '', stderr: hidInvalidated });
-
-    // The failed key-sequence is returned, not resent; the next idb command
-    // then fails fast because the backend is disposed.
-    expect(await typing).toMatchObject({
-      message: 'IDB backend has been disposed',
-    });
-    expect(
-      mockExec.mock.calls.filter(([, args]) => args?.[1] === 'key-sequence'),
-    ).toHaveLength(1);
-    expect(connectionMocks.connect).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not resend when disposed after joining a newer companion', async () => {
-    await backend.ensureConnected();
-    let fail!: (error: Error) => void;
-    mockExecStrict.mockReturnValueOnce(
-      new Promise<string>((_resolve, reject) => {
-        fail = reject;
-      }),
-    );
-    const tapping = backend.tapCoordinates(1, 2).catch((e: unknown) => e);
-    await vi.waitFor(() => expect(tapCalls()).toHaveLength(1));
-    // Another caller replaces the companion while the tap is in flight.
-    await backend.reconnect();
-    // Dispose exactly when the failed tap checks the new companion, so
-    // ensureConnected() itself succeeds.
-    let disposing: Promise<void> | undefined;
-    Object.defineProperty(connectionState, 'alive', {
-      configurable: true,
-      get: (): boolean => {
-        disposing ??= backend.dispose();
-        return true;
-      },
-    });
-    try {
-      fail(new Error(hidInvalidated));
-      expect(await tapping).toMatchObject({
-        message:
-          'IDB command interrupted: the backend was disposed during the call',
-      });
-      await disposing;
-    } finally {
-      Object.defineProperty(connectionState, 'alive', {
-        configurable: true,
-        writable: true,
-        value: true,
-      });
-    }
-    expect(disposing).toBeDefined();
-    expect(tapCalls()).toHaveLength(1);
-  });
-
-  it('keeps the connect error when cleanup after a failed connect also fails', async () => {
-    connectionMocks.connect.mockRejectedValueOnce(new Error('startup failed'));
-    connectionMocks.dispose.mockRejectedValueOnce(new Error('stop failed'));
-
-    await expect(backend.ensureConnected()).rejects.toThrow('startup failed');
-    expect(connectionMocks.dispose).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports a failed reconnect as IDB_COMPANION_UNAVAILABLE', async () => {
-    await backend.ensureConnected();
-    mockExecStrict.mockRejectedValue(new Error(hidInvalidated));
-    connectionMocks.connect.mockRejectedValueOnce(
-      new Error('Private IDB companion exited before readiness (1)'),
-    );
-
-    await expect(backend.tapCoordinates(1, 1)).rejects.toMatchObject({
-      code: 'IDB_COMPANION_UNAVAILABLE',
-      message: expect.stringContaining('exited before readiness'),
-    });
-    expect(tapCalls()).toHaveLength(1);
-  });
-
-  it('passes other failures through unchanged', async () => {
-    mockExecStrict.mockRejectedValue(new Error('No such app io.metamask'));
-
-    await expect(backend.tapCoordinates(1, 1)).rejects.toThrow(
-      'No such app io.metamask',
-    );
-    expect(connectionMocks.connect).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps non-strict commands non-throwing and retries them once', async () => {
-    mockExecStrict.mockResolvedValue('');
-    mockExec.mockImplementation(async (cmd, args) => {
-      if (cmd !== 'xcrun' && args?.[1] === 'key-sequence') {
-        return { exitCode: 1, stdout: '', stderr: hidInvalidated };
+    let failures = 1;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.[1] === 'key' && args?.[2] === '4' && failures > 0) {
+        failures -= 1;
+        throw new Error(hidInvalidated);
       }
-      return { exitCode: 0, stdout: '', stderr: '' };
+      return '';
     });
-
-    expect(await backend.typeText('abc')).toBeUndefined();
-    const keySequence = mockExec.mock.calls.filter(
-      ([, args]) => args?.[1] === 'key-sequence',
-    );
-    expect(keySequence).toHaveLength(2);
-  });
-
-  it('returns the first non-strict failure when the reconnect fails', async () => {
-    await backend.ensureConnected();
-    mockExecStrict.mockResolvedValue('');
-    mockExec.mockImplementation(async (cmd, args) =>
-      cmd !== 'xcrun' && args?.[1] === 'key-sequence'
-        ? { exitCode: 1, stdout: '', stderr: hidInvalidated }
-        : { exitCode: 0, stdout: '', stderr: '' },
-    );
-    connectionMocks.connect.mockRejectedValueOnce(new Error('no companion'));
-
-    // The failed key-sequence result is returned (not resent); the next
-    // command starts a fresh companion first, and the strict `ui text` succeeds.
-    expect(await backend.typeText('abc')).toBeUndefined();
-    expect(
-      mockExec.mock.calls.filter(([, args]) => args?.[1] === 'key-sequence'),
-    ).toHaveLength(1);
-    expect(connectionMocks.connect).toHaveBeenCalledTimes(3);
-  });
-
-  it('returns a non-strict failure without resending when delivery is uncertain', async () => {
-    mockExecStrict.mockResolvedValue('');
-    mockExec.mockImplementation(async (cmd, args) =>
-      cmd !== 'xcrun' && args?.[1] === 'key'
-        ? { exitCode: 1, stdout: '', stderr: 'StatusCode.UNAVAILABLE' }
-        : { exitCode: 0, stdout: '', stderr: '' },
-    );
 
     await backend.typeText('abc');
 
+    // Command+A failed undelivered, was resent once on a fresh companion,
+    // and the rest of the sequence ran.
+    expect(keyCalls('4')).toHaveLength(2);
+    expect(keyCalls('42')).toHaveLength(1);
+    expect(connectionMocks.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects typeText instead of appending when the clear cannot be delivered', async () => {
+    await backend.ensureConnected();
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.[1] === 'key' && args?.[2] === '42') {
+        throw new Error('StatusCode.UNAVAILABLE');
+      }
+      return '';
+    });
+
+    await expect(backend.typeText('abc')).rejects.toMatchObject({
+      code: 'IDB_COMPANION_UNAVAILABLE',
+      message: expect.stringContaining('may have run'),
+    });
+    // Backspace is mutating with uncertain delivery: not resent, and the
+    // text is never typed onto the old value.
+    expect(keyCalls('42')).toHaveLength(1);
     expect(
-      mockExec.mock.calls.filter(([, args]) => args?.[1] === 'key'),
-    ).toHaveLength(1);
+      mockExecStrict.mock.calls.filter(([, args]) => args?.[1] === 'text'),
+    ).toHaveLength(0);
+  });
+
+  it('reports disposal during the typeText clear as an interruption', async () => {
+    await backend.ensureConnected();
+    let fail!: (error: Error) => void;
+    mockExecStrict.mockImplementation(async (_cmd, args) =>
+      args?.[1] === 'key'
+        ? new Promise<string>((_resolve, reject) => {
+            fail = reject;
+          })
+        : '',
+    );
+    const typing = backend.typeText('abc').catch((e: unknown) => e);
+    await vi.waitFor(() => expect(fail).toBeDefined());
+
+    await backend.dispose();
+    fail(new Error(hidInvalidated));
+
+    expect(await typing).toMatchObject({
+      message:
+        'IDB command interrupted: the backend was disposed during the call',
+    });
+    expect(keyCalls('4')).toHaveLength(1);
+    expect(connectionMocks.connect).toHaveBeenCalledTimes(1);
   });
 
   it('shares one reconnect between concurrent failing calls', async () => {

@@ -39,6 +39,33 @@ import {
 } from '../utils/platform.js';
 import { stopChildProcess } from '../utils/stop-child-process.js';
 
+/**
+ * USB HID keyboard usage IDs. `idb ui key` takes these integers, not key
+ * names (idb 1.7: "argument key: invalid int value: 'RETURN'").
+ */
+const HID_KEY = {
+  a: 4,
+  return: 40,
+  backspace: 42,
+} as const;
+
+/**
+ * Whether the software keyboard is on screen: an element whose type is
+ * exactly `Keyboard`. (React Native's `KeyboardControllerView` is a
+ * full-screen container that is always present, so a substring match on the
+ * type is wrong.)
+ *
+ * @param elements - The snapshot hierarchy.
+ * @returns True when a keyboard element is present.
+ */
+function hasKeyboard(elements: UIElement[]): boolean {
+  return elements.some(
+    (element) =>
+      element.type === 'Keyboard' ||
+      (element.children !== undefined && hasKeyboard(element.children)),
+  );
+}
+
 export class IdbBackend implements DeviceBackend {
   readonly kind = 'idb' as const;
 
@@ -181,26 +208,21 @@ export class IdbBackend implements DeviceBackend {
     if (command !== this.#idbPath) {
       return execStrict(command, args);
     }
-    return this.#idb(
-      args,
-      async () => execStrict(command, args, { env: this.#connection.env }),
-      () => undefined,
-      true,
+    return this.#idb(args, async () =>
+      execStrict(command, args, { env: this.#connection.env }),
     );
   }
 
+  /**
+   * Run a non-idb command (`xcrun simctl ...`) and return its result without
+   * throwing. Every idb command goes through `#execStrict`.
+   *
+   * @param command - The command to run.
+   * @param args - Its arguments.
+   * @returns The exit code and output.
+   */
   async #exec(command: string, args: string[]): Promise<ExecResult> {
-    if (command !== this.#idbPath) {
-      return exec(command, args);
-    }
-    // Non-strict callers keep their semantics: a failure that survives the
-    // retry is returned, not thrown.
-    return this.#idb(
-      args,
-      async () => exec(command, args, { env: this.#connection.env }),
-      (result) => (result.exitCode === 0 ? undefined : result.stderr),
-      false,
-    );
+    return exec(command, args);
   }
 
   /**
@@ -219,24 +241,17 @@ export class IdbBackend implements DeviceBackend {
    * is never resent after the backend is disposed.
    *
    * @param args - The idb arguments (used to decide whether a resend is safe).
-   * @param run - Sends the command once.
-   * @param failureOf - Failure text of a resolved run, if it failed.
-   * @param strict - Throw a typed error when recovery does not help.
-   * @returns The result of the first successful (or unrecoverable) run.
+   * @param run - Sends the command once; rejects when it fails.
+   * @returns The output of the first successful run.
    */
-  async #idb<Result>(
-    args: string[],
-    run: () => Promise<Result>,
-    failureOf: (value: Result) => string | undefined,
-    strict: boolean,
-  ): Promise<Result> {
+  async #idb(args: string[], run: () => Promise<string>): Promise<string> {
     if (!this.#connected || !this.#connection.alive) {
       // The companion died (or a reconnect failed) since this method's own
       // ensureConnected(); start a fresh one before sending.
       await this.ensureConnected();
     }
     const generation = this.#generation;
-    const first = await attempt(run, failureOf);
+    const first = await attempt(run);
     const failure =
       first.text === undefined ? undefined : classifyIdbFailure(first.text);
     if (!failure) {
@@ -252,10 +267,7 @@ export class IdbBackend implements DeviceBackend {
       }
     } catch (error) {
       if (this.#disposed) {
-        return interrupted(first, strict);
-      }
-      if (!strict) {
-        return first.settle();
+        throw interrupted(first);
       }
       throw new IdbUnavailableError(
         'IDB_COMPANION_UNAVAILABLE',
@@ -266,12 +278,9 @@ export class IdbBackend implements DeviceBackend {
     }
     if (this.#disposed) {
       // Disposal started while another call's reconnect was finishing.
-      return interrupted(first, strict);
+      throw interrupted(first);
     }
     if (!resend) {
-      if (!strict) {
-        return first.settle();
-      }
       throw new IdbUnavailableError(
         failure.code,
         this.#udid,
@@ -282,10 +291,10 @@ export class IdbBackend implements DeviceBackend {
         },
       );
     }
-    const second = await attempt(run, failureOf);
+    const second = await attempt(run);
     const again =
       second.text === undefined ? undefined : classifyIdbFailure(second.text);
-    if (!again || !strict) {
+    if (!again) {
       return second.settle();
     }
     throw new IdbUnavailableError(again.code, this.#udid, second.text ?? '', {
@@ -489,20 +498,29 @@ export class IdbBackend implements DeviceBackend {
     ]);
   }
 
+  /**
+   * Replaces the content of the focused text field with `text`.
+   *
+   * Clears first with select-all (Command+A) and Backspace, both through
+   * strict execution so a failed clear rejects instead of appending to the
+   * old value. On an empty field the two keys do nothing.
+   *
+   * @param text - The text to type.
+   */
   async typeText(text: string): Promise<void> {
     await this.ensureConnected();
-    await this.#exec(this.#idbPath, [
+    await this.#execStrict(this.#idbPath, [
       'ui',
-      'key-sequence',
-      '--',
-      'cmd+a',
+      'key',
+      String(HID_KEY.a),
+      '--command',
       '--udid',
       this.#udid,
     ]);
-    await this.#exec(this.#idbPath, [
+    await this.#execStrict(this.#idbPath, [
       'ui',
       'key',
-      'DELETE',
+      String(HID_KEY.backspace),
       '--udid',
       this.#udid,
     ]);
@@ -711,29 +729,45 @@ export class IdbBackend implements DeviceBackend {
     }
   }
 
+  /**
+   * `home` and `lock` are hardware buttons (`idb ui button`); `enter` is the
+   * Return key (`idb ui key 40`). iOS has no back button.
+   *
+   * @param button - The button to press.
+   * @throws `UNSUPPORTED_ON_IOS` for `back`, which iOS does not have.
+   */
   async pressButton(button: DeviceButton): Promise<void> {
+    if (button === 'back') {
+      throw Object.assign(
+        new Error(
+          "UNSUPPORTED_ON_IOS: iOS has no back button. Tap the screen's own " +
+            'back control (usually top left) instead.',
+        ),
+        { code: 'UNSUPPORTED_ON_IOS' },
+      );
+    }
     await this.ensureConnected();
-    const keyMap: Record<DeviceButton, string> = {
-      home: 'HOME',
-      lock: 'LOCK',
-      back: 'HOME',
-      enter: 'RETURN',
-    };
-    await this.#execStrict(this.#idbPath, [
-      'ui',
-      'key',
-      keyMap[button],
-      '--udid',
-      this.#udid,
-    ]);
+    const args =
+      button === 'enter'
+        ? ['ui', 'key', String(HID_KEY.return)]
+        : ['ui', 'button', button === 'home' ? 'HOME' : 'LOCK'];
+    await this.#execStrict(this.#idbPath, [...args, '--udid', this.#udid]);
   }
 
+  /**
+   * Hides the software keyboard by pressing Return, and does nothing when no
+   * keyboard is shown. Return can also submit a single-field form.
+   */
   async dismissKeyboard(): Promise<void> {
     await this.ensureConnected();
+    const { hierarchy } = await this.snapshot();
+    if (!hasKeyboard(hierarchy)) {
+      return;
+    }
     await this.#execStrict(this.#idbPath, [
       'ui',
       'key',
-      'RETURN',
+      String(HID_KEY.return),
       '--udid',
       this.#udid,
     ]);
@@ -975,11 +1009,10 @@ type Attempt<Result> = {
 
 async function attempt<Result>(
   run: () => Promise<Result>,
-  failureOf: (value: Result) => string | undefined,
 ): Promise<Attempt<Result>> {
   try {
     const value = await run();
-    return { text: failureOf(value), error: undefined, settle: () => value };
+    return { text: undefined, error: undefined, settle: () => value };
   } catch (error) {
     return {
       text: error instanceof Error ? error.message : String(error),
@@ -992,19 +1025,15 @@ async function attempt<Result>(
 }
 
 /**
- * Settle a failed first attempt when the backend was disposed before the
- * recovery could run. Disposal is a teardown, not a device fault, so the
+ * The error for a failed first attempt when the backend was disposed before
+ * the recovery could run. Disposal is a teardown, not a device fault, so the
  * command is not resent and no device remediation is given.
  *
  * @param first - The failed first attempt.
- * @param strict - Throw instead of returning the failed result.
- * @returns The first result, for non-strict callers.
+ * @returns The error to throw.
  */
-function interrupted<Result>(first: Attempt<Result>, strict: boolean): Result {
-  if (!strict) {
-    return first.settle();
-  }
-  throw new Error(
+function interrupted<Result>(first: Attempt<Result>): Error {
+  return new Error(
     'IDB command interrupted: the backend was disposed during the call',
     { cause: first.error },
   );
