@@ -64,9 +64,8 @@ const STATUS_CODE_PREFIX = 'INSTRUMENTATION_STATUS_CODE:';
 const RESULT_CODE_PREFIX = 'INSTRUMENTATION_CODE:';
 
 /**
- * `INSTRUMENTATION_CODE: -1` is `Activity.RESULT_FIRST_USER`, the helper's
- * success sentinel. Any other terminal code means the run did not finish
- * cleanly.
+ * `INSTRUMENTATION_CODE: -1` is `Activity.RESULT_OK`, the helper's success
+ * code. Any other terminal code means the run did not finish cleanly.
  */
 const SUCCESS_INSTRUMENTATION_CODE = '-1';
 

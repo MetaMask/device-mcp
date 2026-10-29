@@ -16,6 +16,7 @@ import {
 import {
   assertInstalledHelperTrusted,
   ensureHelperInstalled,
+  installHelper,
 } from './android-instrumentation/installer.js';
 import type { UIElement } from './types.js';
 import * as webviewCdpModule from './webview-cdp.js';
@@ -41,6 +42,7 @@ vi.mock('./android-instrumentation/installer.js', () => ({
   },
   ensureHelperInstalled: vi.fn().mockResolvedValue(undefined),
   assertInstalledHelperTrusted: vi.fn().mockResolvedValue(undefined),
+  installHelper: vi.fn().mockResolvedValue(undefined),
   INSTRUMENTATION_NOT_FOUND_SIGNATURE: 'INSTRUMENTATION_FAILED',
 }));
 
@@ -60,6 +62,7 @@ const mockAssertInstalledHelperTrusted = vi.mocked(
   assertInstalledHelperTrusted,
 );
 const mockReaddir = vi.mocked(readdir);
+const mockInstallHelper = vi.mocked(installHelper);
 const mockLoadHelperArtifact = vi.mocked(loadHelperArtifact);
 const ARTIFACT_MISSING = new SnapshotHelperError(
   'ARTIFACT_INVALID',
@@ -1520,5 +1523,184 @@ describe('AdbBackend.webviewCdp', () => {
 
     assertErr(outcome);
     expect(outcome.code).toBe('WEBVIEW_SOCKET_AMBIGUOUS');
+  });
+});
+
+describe('AdbBackend clipboard', () => {
+  const CLIPBOARD_RUNNER =
+    'io.metamask.devicemcp.snapshothelper/.ClipboardInstrumentation';
+  const SECRET = 'umbrella review narrow orphan fork extra';
+
+  // `null` models a helper manifest built before clipboard support.
+  const artifact = (
+    clipboardInstrumentationRunner: string | null = CLIPBOARD_RUNNER,
+  ): Awaited<ReturnType<typeof loadHelperArtifact>> => ({
+    version: '0.5.1',
+    versionCode: 5001,
+    packageName: 'io.metamask.devicemcp.snapshothelper',
+    instrumentationRunner:
+      'io.metamask.devicemcp.snapshothelper/.SnapshotInstrumentation',
+    ...(clipboardInstrumentationRunner === null
+      ? {}
+      : { clipboardInstrumentationRunner }),
+    apkPath: '/tmp/helper.apk',
+    sha256: 'a'.repeat(64),
+    signerSha256: 'b'.repeat(64),
+    minSdk: 23,
+  });
+
+  const okStdout = (length: number): string =>
+    `INSTRUMENTATION_RESULT: ok=true\r\nINSTRUMENTATION_RESULT: length=${length}\r\nINSTRUMENTATION_CODE: -1\r\n`;
+
+  const clipboardCalls = (): string[][] =>
+    mockExec.mock.calls
+      .map((call) => call[1] ?? [])
+      .filter((args) => args.includes(CLIPBOARD_RUNNER));
+
+  let backend: AdbBackend;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    backend = new AdbBackend('emulator-5554');
+    mockLoadHelperArtifact.mockResolvedValue(artifact());
+    mockEnsureHelperInstalled.mockResolvedValue(undefined);
+    mockAssertInstalledHelperTrusted.mockResolvedValue(undefined);
+    mockInstallHelper.mockResolvedValue(undefined);
+    mockExec.mockResolvedValue({
+      stdout: okStdout(SECRET.length),
+      stderr: '',
+      exitCode: 0,
+    });
+  });
+
+  it('writes the text through the clipboard instrumentation', async () => {
+    await backend.setClipboard(SECRET);
+
+    const calls = clipboardCalls();
+    expect(calls).toHaveLength(1);
+    const [args] = calls;
+    expect(args.slice(0, 2)).toStrictEqual(['-s', 'emulator-5554']);
+    const encoded = args[args.indexOf('textB64') + 1];
+    expect(Buffer.from(encoded, 'base64').toString('utf8')).toBe(SECRET);
+  });
+
+  it('installs and trust-checks the helper before writing', async () => {
+    await backend.setClipboard(SECRET);
+
+    expect(mockEnsureHelperInstalled).toHaveBeenCalledWith('emulator-5554');
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(1);
+    const trustOrder =
+      mockAssertInstalledHelperTrusted.mock.invocationCallOrder[0];
+    const execOrder = mockExec.mock.invocationCallOrder[0];
+    expect(trustOrder).toBeLessThan(execOrder);
+  });
+
+  it('never writes through an untrusted helper', async () => {
+    mockAssertInstalledHelperTrusted.mockRejectedValue(
+      new UntrustedHelperError('signer mismatch', {
+        expectedSignerSha256: 'b'.repeat(64),
+      }),
+    );
+
+    await expect(backend.setClipboard(SECRET)).rejects.toBeInstanceOf(
+      UntrustedHelperError,
+    );
+    expect(clipboardCalls()).toHaveLength(0);
+  });
+
+  it('never passes the plain text to adb', async () => {
+    await backend.setClipboard(SECRET);
+
+    for (const call of mockExec.mock.calls) {
+      expect((call[1] ?? []).join(' ')).not.toContain('umbrella');
+    }
+  });
+
+  // Matches a real device: `am` prints the missing runner on stderr, exit 1.
+  const missingRunner = {
+    stdout:
+      'INSTRUMENTATION_STATUS: Error=Unable to find instrumentation info\r\nINSTRUMENTATION_STATUS_CODE: -1\r\n',
+    stderr: `android.util.AndroidException: INSTRUMENTATION_FAILED: ${CLIPBOARD_RUNNER}\n`,
+    exitCode: 1,
+  };
+
+  it('reinstalls once when the installed helper lacks the clipboard runner', async () => {
+    mockExec.mockResolvedValueOnce(missingRunner).mockResolvedValueOnce({
+      stdout: okStdout(SECRET.length),
+      stderr: '',
+      exitCode: 0,
+    });
+
+    await backend.setClipboard(SECRET);
+
+    expect(mockInstallHelper).toHaveBeenCalledTimes(1);
+    expect(clipboardCalls()).toHaveLength(2);
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails when the reinstalled helper still lacks the runner', async () => {
+    mockExec.mockResolvedValue(missingRunner);
+
+    await expect(backend.setClipboard(SECRET)).rejects.toThrow(
+      /no result record/u,
+    );
+    expect(mockInstallHelper).toHaveBeenCalledTimes(1);
+  });
+
+  it('reinstalls when the helper was removed after it was installed', async () => {
+    await backend.setClipboard(SECRET);
+    expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(1);
+
+    mockAssertInstalledHelperTrusted.mockRejectedValueOnce(
+      new HelperNotInstalledError('Snapshot helper is not installed'),
+    );
+
+    await backend.setClipboard(SECRET);
+
+    expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(2);
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(3);
+    expect(clipboardCalls()).toHaveLength(2);
+  });
+
+  it('fails after one reinstall when the helper stays missing', async () => {
+    mockAssertInstalledHelperTrusted.mockRejectedValue(
+      new HelperNotInstalledError('Snapshot helper is not installed'),
+    );
+
+    await expect(backend.setClipboard(SECRET)).rejects.toBeInstanceOf(
+      HelperNotInstalledError,
+    );
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(2);
+    expect(clipboardCalls()).toHaveLength(0);
+  });
+
+  it('fails clearly when the bundled helper predates clipboard support', async () => {
+    mockLoadHelperArtifact.mockResolvedValue(artifact(null));
+
+    await expect(backend.setClipboard(SECRET)).rejects.toThrow(
+      /predates clipboard support/u,
+    );
+    expect(clipboardCalls()).toHaveLength(0);
+  });
+
+  it('surfaces a helper failure without the text', async () => {
+    mockExec.mockResolvedValue({
+      stdout:
+        'INSTRUMENTATION_RESULT: ok=false\r\nINSTRUMENTATION_RESULT: errorType=java.lang.SecurityException\r\nINSTRUMENTATION_CODE: -1\r\n',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    const error = await backend.setClipboard(SECRET).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+
+    expect(String(error)).toMatch(/SecurityException/u);
+    expect(String(error)).not.toContain('umbrella');
+  });
+
+  it('does not support reading the clipboard', async () => {
+    await expect(backend.getClipboard()).rejects.toThrow(/not supported/u);
   });
 });

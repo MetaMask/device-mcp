@@ -203,6 +203,7 @@ cat > "$MANIFEST" <<JSON
   "versionCode": $VERSION_CODE,
   "packageName": "io.metamask.devicemcp.snapshothelper",
   "instrumentationRunner": "io.metamask.devicemcp.snapshothelper/.SnapshotInstrumentation",
+  "clipboardInstrumentationRunner": "io.metamask.devicemcp.snapshothelper/.ClipboardInstrumentation",
   "assetName": "device-mcp-android-snapshot-helper-$VERSION.apk",
   "sha256": "$APK_SHA256",
   "signerSha256": "$SIGNER_SHA256",
