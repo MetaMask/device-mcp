@@ -9,21 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0]
 
-### Uncategorized
+### Added
 
-- fix: correct IDB recovery error reporting and resend safety ([#44](https://github.com/MetaMask/device-mcp/pull/44))
 - feat: add android clipboard helper ([#42](https://github.com/MetaMask/device-mcp/pull/42))
 - feat: add session-scoped IDB companion teardown ([#43](https://github.com/MetaMask/device-mcp/pull/43))
 
-### Added
-
-- Add optional backend disposal and private, session-owned IDB companions. Release owned resources on stdio close, stdin EOF, SIGINT, and SIGTERM.
-- Recover iOS sessions from a lost private companion or an invalidated simulator HID connection: reconnect once and resend only when the command was not delivered. Add optional `DeviceBackend.reconnect()` and export `IdbUnavailableError` (`IDB_HID_UNAVAILABLE`, `IDB_COMPANION_UNAVAILABLE`).
-- Start private companions with `--terminate-offline true` and a one-hour idle shutdown, and remove private companion directories left by dead processes.
-
 ### Changed
 
-- `LazyDeviceBackend.selectDevice()` now returns a promise and disposes the previous backend before switching. Programmatic callers must await it.
+- fix: correct IDB recovery error reporting and resend safety ([#44](https://github.com/MetaMask/device-mcp/pull/44))
 
 ## [0.6.0]
 
