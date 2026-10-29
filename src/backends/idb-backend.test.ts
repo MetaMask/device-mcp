@@ -18,13 +18,15 @@ const connectionMocks = vi.hoisted(() => ({
 }));
 const connectionState = vi.hoisted(() => ({ alive: true }));
 vi.mock('./idb-connection.js', () => ({
-  IdbConnection: vi.fn().mockImplementation(() => ({
-    ...connectionMocks,
-    get alive(): boolean {
-      return connectionState.alive;
-    },
-    env: { IDB_COMPANION: '/tmp/private-companion.sock' },
-  })),
+  IdbConnection: vi.fn().mockImplementation(function mockIdbConnection() {
+    return {
+      ...connectionMocks,
+      get alive(): boolean {
+        return connectionState.alive;
+      },
+      env: { IDB_COMPANION: '/tmp/private-companion.sock' },
+    };
+  }),
 }));
 const connectionOptions = {
   env: { IDB_COMPANION: '/tmp/private-companion.sock' },

@@ -181,12 +181,14 @@ describe('IdbConnection', () => {
     await vi.advanceTimersByTimeAsync(0);
     await connecting;
     const child = vi.mocked(spawn).mock.results[0].value;
-    vi.mocked(child.kill).mockImplementation((signal) => {
-      if (signal === 'SIGKILL') {
-        child.emit('exit', null, signal);
-      }
-      return true;
-    });
+    vi.mocked(child.kill).mockImplementation(
+      (signal?: NodeJS.Signals | number) => {
+        if (signal === 'SIGKILL') {
+          child.emit('exit', null, signal);
+        }
+        return true;
+      },
+    );
     const disposing = connection.dispose();
     await vi.advanceTimersByTimeAsync(5000);
     await disposing;
