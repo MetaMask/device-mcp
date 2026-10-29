@@ -10,12 +10,7 @@ describe('classifyIdbFailure', () => {
       true,
     ],
     [
-      'dtuhidd connection (com.apple.coredevice.feature.remote.hid.digitizer) was interrupted',
-      'IDB_HID_UNAVAILABLE',
-      true,
-    ],
-    [
-      'dtuhidd did not answer the liveness probe (attempt 3)',
+      'dtuhidd did not answer a liveness probe in 5 attempts (timed out) — the daemon is not running and launchd is not keeping it up, so every HID event sent to it would be discarded without error',
       'IDB_HID_UNAVAILABLE',
       true,
     ],
@@ -30,20 +25,24 @@ describe('classifyIdbFailure', () => {
       false,
     ],
     [
-      'The dtuhidd connection (x) has been invalidated\nretry: unsafe (outcome_unknown)',
+      'stderr: The dtuhidd connection (x) has been invalidated',
       'IDB_HID_UNAVAILABLE',
-      false,
+      true,
     ],
   ])('classifies %s', (text, code, notDelivered) => {
     expect(classifyIdbFailure(text)).toStrictEqual({ code, notDelivered });
   });
 
-  it.each(['Element not found', 'No such app', ''])(
-    'leaves other failures unclassified: %s',
-    (text) => {
-      expect(classifyIdbFailure(text)).toBeUndefined();
-    },
-  );
+  it.each([
+    'Element not found',
+    'No such app',
+    '',
+    // Companion log lines only; they never reach idb stderr.
+    'dtuhidd connection (com.apple.coredevice.feature.remote.hid.digitizer) was interrupted',
+    'dtuhidd did not answer the liveness probe (attempt 3 of 5): timed out',
+  ])('leaves other failures unclassified: %s', (text) => {
+    expect(classifyIdbFailure(text)).toBeUndefined();
+  });
 });
 
 describe('IdbUnavailableError', () => {

@@ -500,6 +500,23 @@ describe('createLazyBackend', () => {
       );
     });
 
+    it('keeps the connect error when cleanup of the failed backend also fails', async () => {
+      const { createBackend } = await import('./index.js');
+      mockDetectPlatform.mockResolvedValue({
+        platform: 'ios',
+        deviceId: 'sim-a',
+      });
+      mockEnsureConnected.mockRejectedValueOnce(
+        new Error('Private IDB companion exited before readiness (1)'),
+      );
+      mockDispose.mockRejectedValueOnce(new Error('stop failed'));
+
+      await expect(createBackend()).rejects.toThrow(
+        'Private IDB companion exited before readiness (1)',
+      );
+      expect(mockDispose).toHaveBeenCalledTimes(1);
+    });
+
     it('allows retry after non-multi-device error', async () => {
       const createLazyBackend = await getLazyBackend();
       mockDetectPlatform
