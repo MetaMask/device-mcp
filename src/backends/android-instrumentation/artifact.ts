@@ -28,6 +28,11 @@ export type HelperArtifact = {
   versionCode: number;
   packageName: string;
   instrumentationRunner: string;
+  /**
+   * Runner for the clipboard instrumentation. Absent in helpers built before
+   * clipboard support; callers must treat that as "clipboard unsupported".
+   */
+  clipboardInstrumentationRunner?: string;
   apkPath: string;
   sha256: string;
   signerSha256: string;
@@ -182,6 +187,14 @@ export async function loadHelperArtifact(): Promise<HelperArtifact> {
     );
   }
 
+  const clipboardInstrumentationRunner =
+    manifest.clipboardInstrumentationRunner === undefined
+      ? undefined
+      : requireString(
+          manifest.clipboardInstrumentationRunner,
+          'clipboardInstrumentationRunner',
+        );
+
   return {
     version: requireString(manifest.version, 'version'),
     versionCode: requireInt(manifest.versionCode, 'versionCode'),
@@ -190,6 +203,9 @@ export async function loadHelperArtifact(): Promise<HelperArtifact> {
       manifest.instrumentationRunner,
       'instrumentationRunner',
     ),
+    ...(clipboardInstrumentationRunner === undefined
+      ? {}
+      : { clipboardInstrumentationRunner }),
     apkPath,
     sha256,
     signerSha256: requireSha256(manifest.signerSha256, 'signerSha256'),
