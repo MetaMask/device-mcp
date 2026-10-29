@@ -5,17 +5,18 @@ import { readFile } from 'node:fs/promises';
 import { IdbConnection } from './idb-connection.js';
 import { classifyIdbFailure, IdbUnavailableError } from './idb-errors.js';
 import type {
+  AppStateResult,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,
-  SnapshotResult,
-  ScreenshotResult,
+  ElementQuery,
+  LogsResult,
   ScreenshotFileResult,
   ScreenshotOptions,
-  LogsResult,
+  ScreenshotResult,
+  SnapshotResult,
+  TapElementOptions,
   TapResult,
-  AppStateResult,
-  ElementQuery,
   UIElement,
   WindowSize,
 } from './types.js';
@@ -66,6 +67,16 @@ function hasKeyboard(elements: UIElement[]): boolean {
   );
 }
 
+/** `idb describe --json` printed something that is not JSON. */
+class InvalidDescribeJsonError extends Error {
+  constructor(udid: string, raw: string) {
+    super(
+      `idb describe returned invalid JSON for device ${udid}: ${raw.slice(0, 200)}`,
+    );
+    this.name = 'InvalidDescribeJsonError';
+  }
+}
+
 export class IdbBackend implements DeviceBackend {
   readonly kind = 'idb' as const;
 
@@ -101,6 +112,15 @@ export class IdbBackend implements DeviceBackend {
   #recordingPath: string | null = null;
 
   #stoppingRecording: Promise<string> | undefined;
+
+  /**
+   * `idb describe --json` of the current connection: OS version (for the
+   * describe-all API order) and screen size. Read once per connection, because
+   * every read is an idb process (~0.25 s) and both values are fixed while the
+   * simulator stays booted. Cleared on every (re)connect. A rotation while
+   * connected is not detected; reconnect after rotating.
+   */
+  #describeCache: Promise<Record<string, unknown>> | undefined;
 
   constructor(udid: string) {
     this.#udid = udid;
@@ -170,6 +190,7 @@ export class IdbBackend implements DeviceBackend {
       }
       await this.#connection.connect(this.#idbPath);
       await this.#enableSimulatorAccessibility();
+      this.#describeCache = undefined;
       this.#generation += 1;
       this.#connected = true;
     } catch (error) {
@@ -331,22 +352,56 @@ export class IdbBackend implements DeviceBackend {
     }
   }
 
+  /**
+   * Runs `idb describe --json` and stores the result as the cached
+   * description of the current connection (see `#describeCache`). Concurrent
+   * callers of `#cachedDescribe()` share one read; a failed read is dropped
+   * from the cache so the next call retries.
+   *
+   * @returns The parsed device description.
+   */
+  async #describe(): Promise<Record<string, unknown>> {
+    const pending = (async (): Promise<Record<string, unknown>> => {
+      const raw = await this.#execStrict(this.#idbPath, [
+        'describe',
+        '--udid',
+        this.#udid,
+        '--json',
+      ]);
+      try {
+        return JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        throw new InvalidDescribeJsonError(this.#udid, raw);
+      }
+    })();
+    this.#describeCache = pending;
+    pending.catch(() => {
+      if (this.#describeCache === pending) {
+        this.#describeCache = undefined;
+      }
+    });
+    return pending;
+  }
+
+  /**
+   * The cached `idb describe --json` of the current connection; reads it on
+   * first use.
+   *
+   * @returns The parsed device description.
+   */
+  async #cachedDescribe(): Promise<Record<string, unknown>> {
+    return this.#describeCache ?? this.#describe();
+  }
+
+  /**
+   * Reads the device description fresh (and refreshes the cache that
+   * snapshots and taps use).
+   *
+   * @returns The device info.
+   */
   async getDeviceInfo(): Promise<DeviceInfo> {
     await this.ensureConnected();
-    const raw = await this.#execStrict(this.#idbPath, [
-      'describe',
-      '--udid',
-      this.#udid,
-      '--json',
-    ]);
-    let info: Record<string, unknown>;
-    try {
-      info = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      throw new Error(
-        `idb describe returned invalid JSON for device ${this.#udid}: ${raw.slice(0, 200)}`,
-      );
-    }
+    const info = await this.#describe();
     return {
       platform: 'ios',
       deviceId: this.#udid,
@@ -412,16 +467,20 @@ export class IdbBackend implements DeviceBackend {
     if (!this.#idbSupportsApi) {
       return [null];
     }
-    const { osVersion } = await this.getDeviceInfo();
+    const info = await this.#cachedDescribe();
+    const osVersion = (info.os_version as string) ?? 'Unknown';
     const preferred = chooseAxApi(osVersion, true);
     const complement = preferred === 'axbridge' ? 'ax' : 'axbridge';
     return [preferred, complement];
   }
 
-  async tapElement(query: ElementQuery): Promise<TapResult> {
+  async tapElement(
+    query: ElementQuery,
+    options?: TapElementOptions,
+  ): Promise<TapResult> {
     await this.ensureConnected();
-    const snapshot = await this.snapshot();
-    const element = findElement(snapshot.hierarchy, query);
+    const element =
+      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +
@@ -890,15 +949,16 @@ export class IdbBackend implements DeviceBackend {
 
   async getWindowSize(): Promise<WindowSize> {
     await this.ensureConnected();
-    const raw = await this.#execStrict(this.#idbPath, [
-      'describe',
-      '--udid',
-      this.#udid,
-      '--json',
-    ]);
+    // A transport failure still throws, as before; only parse problems fall
+    // back to the snapshot.
+    const info = await this.#cachedDescribe().catch((error: unknown) => {
+      if (error instanceof InvalidDescribeJsonError) {
+        return undefined;
+      }
+      throw error;
+    });
     try {
-      const info = JSON.parse(raw) as Record<string, unknown>;
-      const dims = info.screen_dimensions as
+      const dims = info?.screen_dimensions as
         | {
             width?: number;
             height?: number;

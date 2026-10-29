@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tapElement(query, { element })` taps an element the caller already resolved (for example from `waitForElement`) without taking a second snapshot
+
 ### Changed
 
 - **BREAKING:** fix: iOS key presses, `back` and text clearing ([#48](https://github.com/MetaMask/device-mcp/pull/48))
@@ -14,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - iOS `pressButton('back')` now throws `UNSUPPORTED_ON_IOS` instead of pressing Home (which put the app in the background).
   - iOS `dismissKeyboard()` does nothing when no keyboard is shown.
   - iOS `typeText` clears the field with Command+A and Backspace through strict execution. Before, the clear failed silently and the text was appended to the old value.
+- iOS (idb): read `idb describe --json` once per companion connection for the OS version and window size, instead of before every snapshot, tap and swipe. `getDeviceInfo()` still reads it fresh
 
 ## [0.7.0]
 
