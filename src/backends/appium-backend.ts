@@ -10,6 +10,8 @@ import type {
   ScreenshotFileResult,
   ScreenshotOptions,
   ScreenshotResult,
+  ScrollDirection,
+  ScrollToElementResult,
   SnapshotResult,
   TapElementOptions,
   TapResult,
@@ -26,6 +28,7 @@ import {
   resolveArtifactPath,
   writeArtifactFile,
 } from '../utils/output-path.js';
+import { scrollUntilInViewport } from '../utils/scroll.js';
 
 export class AppiumBackend implements DeviceBackend {
   readonly kind = 'appium' as const;
@@ -425,26 +428,40 @@ export class AppiumBackend implements DeviceBackend {
 
   async scrollToElement(
     query: ElementQuery,
-    direction: 'up' | 'down' = 'down',
+    direction: ScrollDirection = 'auto',
     maxAttempts = 10,
-  ): Promise<UIElement> {
-    let previousRaw = '';
+  ): Promise<ScrollToElementResult> {
+    const windowSize = await this.getWindowSize();
+    return scrollUntilInViewport(
+      {
+        snapshot: async () => this.snapshot(),
+        windowSize,
+        swipe: async (finger) => this.#scrollSwipe(finger, windowSize),
+      },
+      query,
+      direction,
+      maxAttempts,
+    );
+  }
 
-    for (let i = 0; i < maxAttempts; i++) {
-      const snap = await this.snapshot();
-      const element = findElement(snap.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      if (snap.raw === previousRaw) {
-        break;
-      }
-      previousRaw = snap.raw;
-      await this.swipe(direction);
-    }
-    throw new Error(
-      `Element not found after scrolling: ${JSON.stringify(query)}\n` +
-        'Use device_snapshot to inspect the current UI hierarchy.',
+  /**
+   * One scroll gesture from the middle of the screen over 40% of its height
+   * (the iOS backend's default), so the swipe matches the real screen size.
+   *
+   * @param finger - Finger direction.
+   * @param windowSize - The screen size, in the frame units.
+   * @param windowSize.width - Viewport width.
+   * @param windowSize.height - Viewport height.
+   */
+  async #scrollSwipe(
+    finger: 'up' | 'down',
+    { width, height }: WindowSize,
+  ): Promise<void> {
+    await this.swipe(
+      finger,
+      Math.round(width / 2),
+      Math.round(height / 2),
+      Math.round(height * 0.4),
     );
   }
 
