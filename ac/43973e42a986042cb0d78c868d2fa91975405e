@@ -1,0 +1,19 @@
+.github/zizmor.yml
+  s_718f455e39c6fc::t_7bad57e27163be 1-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ac43973e42a986042cb0d78c868d2fa91975405e",
+  "prompts": {},
+  "sessions": {
+    "s_718f455e39c6fc": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e77cd2027ffe8axDAQEqnqcYaz",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
