@@ -9,10 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ScrollToElementError` (`ELEMENT_NOT_FOUND` / `ELEMENT_NOT_IN_VIEWPORT`, with `swipes` and the last `frame`) and the `ScrollDirection` / `ScrollToElementResult` types ([#50](https://github.com/MetaMask/device-mcp/pull/50))
 - `tapElement(query, { element })` taps an element the caller already resolved (for example from `waitForElement`) without taking a second snapshot
 
 ### Changed
 
+- **BREAKING:** fix: `scrollToElement` succeeds only when the element is in the viewport ([#50](https://github.com/MetaMask/device-mcp/pull/50))
+  - It returns `{ element, swipes, inViewport: true }` instead of the element. Before, it returned as soon as the element was in the UI tree; React Native keeps off-screen rows in the tree, so it often returned after zero swipes with the element below the fold.
+  - After a swipe it reads the screen until it stops moving. It fails with `ScrollToElementError` after `maxAttempts` swipes, or when the screen stops changing.
+  - New default `direction: 'auto'`: the finger direction comes from the element's position (searching toward content below first while it is not in the tree). Explicit `up` / `down` stay finger directions. Before, the default `down` revealed content above.
+  - Android and Appium swipe from the middle of the real screen (40% of its height), not from fixed coordinates.
 - **BREAKING:** fix: iOS key presses, `back` and text clearing ([#48](https://github.com/MetaMask/device-mcp/pull/48))
   - iOS `pressButton('enter')` and `dismissKeyboard()` send the integer HID key code (`idb ui key 40`); `home` and `lock` use `idb ui button`. Both failed before because `idb ui key` takes only integer codes.
   - iOS `pressButton('back')` now throws `UNSUPPORTED_ON_IOS` instead of pressing Home (which put the app in the background).
