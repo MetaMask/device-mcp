@@ -1647,6 +1647,33 @@ describe('AdbBackend clipboard', () => {
     expect(mockInstallHelper).toHaveBeenCalledTimes(1);
   });
 
+  it('reinstalls when the helper was removed after it was installed', async () => {
+    await backend.setClipboard(SECRET);
+    expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(1);
+
+    mockAssertInstalledHelperTrusted.mockRejectedValueOnce(
+      new HelperNotInstalledError('Snapshot helper is not installed'),
+    );
+
+    await backend.setClipboard(SECRET);
+
+    expect(mockEnsureHelperInstalled).toHaveBeenCalledTimes(2);
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(3);
+    expect(clipboardCalls()).toHaveLength(2);
+  });
+
+  it('fails after one reinstall when the helper stays missing', async () => {
+    mockAssertInstalledHelperTrusted.mockRejectedValue(
+      new HelperNotInstalledError('Snapshot helper is not installed'),
+    );
+
+    await expect(backend.setClipboard(SECRET)).rejects.toBeInstanceOf(
+      HelperNotInstalledError,
+    );
+    expect(mockAssertInstalledHelperTrusted).toHaveBeenCalledTimes(2);
+    expect(clipboardCalls()).toHaveLength(0);
+  });
+
   it('fails clearly when the bundled helper predates clipboard support', async () => {
     mockLoadHelperArtifact.mockResolvedValue(artifact(null));
 

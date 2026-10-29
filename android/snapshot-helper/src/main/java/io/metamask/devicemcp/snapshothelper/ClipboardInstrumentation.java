@@ -4,7 +4,9 @@ import android.app.Instrumentation;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.PersistableBundle;
 import android.util.Base64;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
@@ -19,10 +21,16 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>The text arrives base64-encoded in the {@code textB64} argument so spaces
  * and shell metacharacters survive {@code am instrument -e}. The result never
- * contains the text: callers may be passing a secret recovery phrase.
+ * contains the text: callers may be passing a secret recovery phrase. The clip
+ * is marked sensitive so the Android 13+ copy overlay and keyboard suggestions
+ * do not show it.
  */
 public final class ClipboardInstrumentation extends Instrumentation {
   private static final String CLIP_LABEL = "device-mcp";
+
+  // ClipDescription.EXTRA_IS_SENSITIVE: the constant is API 33, the key is
+  // honored from API 33. Use the literal so the helper keeps minSdk 23.
+  private static final String EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE";
 
   private Bundle arguments;
 
@@ -57,7 +65,14 @@ public final class ClipboardInstrumentation extends Instrumentation {
               if (clipboard == null) {
                 throw new IllegalStateException("Clipboard service unavailable");
               }
-              clipboard.setPrimaryClip(ClipData.newPlainText(CLIP_LABEL, text));
+              ClipData clip = ClipData.newPlainText(CLIP_LABEL, text);
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                // ClipDescription.setExtras is API 24.
+                PersistableBundle extras = new PersistableBundle();
+                extras.putBoolean(EXTRA_IS_SENSITIVE, true);
+                clip.getDescription().setExtras(extras);
+              }
+              clipboard.setPrimaryClip(clip);
             } catch (Throwable error) {
               failure.set(error);
             }

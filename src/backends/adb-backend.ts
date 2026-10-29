@@ -1066,7 +1066,18 @@ export class AdbBackend implements DeviceBackend {
           this.#helperInstalled = true;
         }
         // Trust: per use, as for snapshots. Never write through a squatter.
-        await assertInstalledHelperTrusted(this.#serial, this.#helperTrust);
+        try {
+          await assertInstalledHelperTrusted(this.#serial, this.#helperTrust);
+        } catch (error) {
+          // Removed since it was installed (e.g. emulator wipe): reinstall once.
+          if (!reinstalled && isHelperNotInstalledError(error)) {
+            reinstalled = true;
+            this.#helperInstalled = false;
+            this.#helperTrust.forget();
+            continue;
+          }
+          throw error;
+        }
 
         const { stdout, stderr } = await exec(
           'adb',
