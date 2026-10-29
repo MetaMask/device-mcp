@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0]
+
+### Uncategorized
+
+- fix: correct IDB recovery error reporting and resend safety ([#44](https://github.com/MetaMask/device-mcp/pull/44))
+- feat: add android clipboard helper ([#42](https://github.com/MetaMask/device-mcp/pull/42))
+- feat: add session-scoped IDB companion teardown ([#43](https://github.com/MetaMask/device-mcp/pull/43))
+
 ### Added
 
 - Add optional backend disposal and private, session-owned IDB companions. Release owned resources on stdio close, stdin EOF, SIGINT, and SIGTERM.
@@ -105,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.device-session` file for attaching to existing Appium sessions or creating new ones
 - 16 MCP tools: `device_snapshot`, `device_screenshot`, `device_info`, `device_tap_element`, `device_tap_coordinates`, `device_type`, `device_swipe`, `device_long_press`, `device_wait_for`, `device_app_state`, `device_open_app`, `device_close_app`, `device_press_button`, `device_dismiss_keyboard`, `device_dismiss_alert`, `device_logs`
 
-[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/MetaMask/device-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/MetaMask/device-mcp/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MetaMask/device-mcp/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/MetaMask/device-mcp/compare/v0.4.1...v0.4.2
