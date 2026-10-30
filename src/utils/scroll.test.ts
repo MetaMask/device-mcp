@@ -18,8 +18,10 @@ const node = (label: string, y: number, height = 24): UIElement => ({
 });
 
 const snap = (elements: UIElement[]): SnapshotResult => ({
+  platform: 'ios',
   hierarchy: elements,
   raw: JSON.stringify(elements),
+  timestamp: 0,
 });
 
 /**
