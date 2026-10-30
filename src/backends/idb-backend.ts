@@ -27,9 +27,15 @@ import {
   findElement,
   describeElement,
   computeSwipeEnd,
+  visibleCenter,
 } from '../utils/element.js';
 import { execStrict, exec } from '../utils/exec.js';
 import type { ExecResult } from '../utils/exec.js';
+import {
+  hitsTarget,
+  isKeyboardElement,
+  TargetObscuredError,
+} from '../utils/hit-test.js';
 import {
   hardenArtifactFile,
   resolveArtifactPath,
@@ -492,6 +498,7 @@ export class IdbBackend implements DeviceBackend {
     }
 
     const { x, y } = await this.#visibleTapPoint(element);
+    await this.#assertHittable(element, { x, y });
     await this.tapCoordinates(x, y);
 
     return {
@@ -502,37 +509,68 @@ export class IdbBackend implements DeviceBackend {
     };
   }
 
-  /**
-   * Returns the center of the part of the element's frame that lies inside
-   * the device viewport, in logical points. Tapping there is safer than
-   * tapping the raw frame center, which can fall outside the screen for
-   * off-screen or partially scrolled elements and either hit nothing or an
-   * unrelated on-screen control.
-   *
-   * @param element - The element to tap.
-   * @returns The tap point in logical points.
-   * @throws When the element's frame does not intersect the viewport at all.
-   */
   async #visibleTapPoint(
     element: UIElement,
   ): Promise<{ x: number; y: number }> {
-    const { width, height } = await this.getWindowSize();
-    const x0 = Math.max(element.frame.x, 0);
-    const y0 = Math.max(element.frame.y, 0);
-    const x1 = Math.min(element.frame.x + element.frame.width, width);
-    const y1 = Math.min(element.frame.y + element.frame.height, height);
-    if (x1 <= x0 || y1 <= y0) {
-      throw new Error(
-        `Element is outside the ${width}x${height} viewport: ` +
-          `${describeElement(element)} at (${element.frame.x}, ${element.frame.y} ` +
-          `${element.frame.width}x${element.frame.height}). ` +
-          'Scroll it into view first (device_swipe or scroll_to_element).',
+    return visibleCenter(element, await this.getWindowSize());
+  }
+
+  /**
+   * Check that a tap at the point reaches the element, with one
+   * `idb ui describe-point` (about 0.25 s). Throws when another element (an
+   * overlay, a sheet, the keyboard) is on top. When the hit-test finds no
+   * element, or the idb version cannot run it, the tap goes ahead: the check
+   * only blocks taps it knows are wrong.
+   *
+   * @param element - The element to tap.
+   * @param point - The tap point.
+   * @param point.x - X in points.
+   * @param point.y - Y in points.
+   * @throws {TargetObscuredError} When another element is at the point.
+   */
+  async #assertHittable(
+    element: UIElement,
+    point: { x: number; y: number },
+  ): Promise<void> {
+    if (!this.#idbSupportsApi) {
+      return;
+    }
+    const args = [
+      'ui',
+      'describe-point',
+      String(point.x),
+      String(point.y),
+      '--api',
+      'axbridge',
+      '--json',
+      '--udid',
+      this.#udid,
+    ];
+    let raw: string;
+    try {
+      raw = await this.#execStrict(this.#idbPath, args);
+    } catch (error) {
+      if (error instanceof IdbUnavailableError) {
+        throw error;
+      }
+      // "found no element at (x, y)" and other hit-test failures: unknown,
+      // not obscured.
+      return;
+    }
+    let hit: UIElement;
+    try {
+      hit = mapIdbElement(JSON.parse(raw) as Record<string, unknown>);
+    } catch {
+      return;
+    }
+    if (!hitsTarget(element, hit)) {
+      throw new TargetObscuredError(
+        element,
+        hit,
+        point,
+        isKeyboardElement(hit),
       );
     }
-    return {
-      x: Math.round((x0 + x1) / 2),
-      y: Math.round((y0 + y1) / 2),
-    };
   }
 
   async getElementText(query: ElementQuery): Promise<string> {
@@ -891,6 +929,7 @@ export class IdbBackend implements DeviceBackend {
     }
 
     const { x: cx, y: cy } = await this.#visibleTapPoint(element);
+    await this.#assertHittable(element, { x: cx, y: cy });
     await this.#execStrict(this.#idbPath, [
       'ui',
       'tap',

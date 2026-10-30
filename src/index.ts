@@ -10,6 +10,7 @@ export { createMcpServer } from './server.js';
 export { detectAllDevices, MultipleDevicesError } from './utils/platform.js';
 export { IdbUnavailableError } from './backends/idb-errors.js';
 export { ScrollToElementError } from './utils/scroll.js';
+export { TargetObscuredError } from './utils/hit-test.js';
 export type { ScrollToElementErrorCode } from './utils/scroll.js';
 export type { IdbErrorCode } from './backends/idb-errors.js';
 export type { DetectedDevice } from './utils/platform.js';
