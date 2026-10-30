@@ -184,7 +184,7 @@ The `.device-session` file is typically written by the test runner when it creat
 | `device_swipe`           | Swipe in a direction with optional start coordinates and distance. |
 | `device_long_press`      | Long press an element for context menus or drag initiation.        |
 | `device_wait_for`        | Poll until an element matching a query appears.                    |
-| `device_press_button`    | Press a device button (home/back/enter/lock).                      |
+| `device_press_button`    | Press a device button (home/back/enter/lock; no back on iOS).      |
 
 ### App & Device Control
 
@@ -228,10 +228,12 @@ Elements are identified by accessibility attributes — not internal refs. Match
 | `device_app_state`        | `idb list-apps` / `simctl listapps`  | `dumpsys activity`                          | `mobile: queryAppState`       |
 | `device_open_app`         | `idb launch` / `simctl launch`       | `monkey -p`                                 | `mobile: activateApp`         |
 | `device_close_app`        | `idb terminate` / `simctl terminate` | `am force-stop`                             | `mobile: terminateApp`        |
-| `device_press_button`     | `idb ui key`                         | `input keyevent`                            | `mobile: pressButton/Key`     |
-| `device_dismiss_keyboard` | `idb ui key RETURN`                  | `input keyevent 111`                        | `mobile: hideKeyboard`        |
+| `device_press_button`     | `idb ui key 40` / `idb ui button`¹   | `input keyevent`                            | `mobile: pressButton/Key`     |
+| `device_dismiss_keyboard` | `idb ui key 40` if keyboard shown    | `input keyevent 111`                        | `mobile: hideKeyboard`        |
 | `device_dismiss_alert`    | find button + tap                    | find button + tap                           | `mobile: accept/dismissAlert` |
 | `device_logs`             | `idb log`                            | `logcat`                                    | `mobile: getLog`              |
+
+¹ `enter` sends HID key 40 (Return); `home` and `lock` use `idb ui button HOME|LOCK`. iOS has no back button, so `back` fails with `UNSUPPORTED_ON_IOS`. `device_type` clears the focused field first with Command+A (`idb ui key 4 --command`) and Backspace (`idb ui key 42`).
 
 #### Android snapshot on continuously-redrawing screens
 
