@@ -176,15 +176,16 @@ The `.device-session` file is typically written by the test runner when it creat
 
 ### Interaction
 
-| Tool                     | Description                                                        |
-| ------------------------ | ------------------------------------------------------------------ |
-| `device_tap_element`     | Find an element by label/identifier/text/type and tap its center.  |
-| `device_tap_coordinates` | Tap at exact screen coordinates. Last resort when queries fail.    |
-| `device_type`            | Type text into the currently focused input field.                  |
-| `device_swipe`           | Swipe in a direction with optional start coordinates and distance. |
-| `device_long_press`      | Long press an element for context menus or drag initiation.        |
-| `device_wait_for`        | Poll until an element matching a query appears.                    |
-| `device_press_button`    | Press a device button (home/back/enter/lock; no back on iOS).      |
+| Tool                       | Description                                                                                                                                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `device_tap_element`       | Find an element by label/identifier/text/type and tap its center.                                                                                                                                                        |
+| `device_tap_coordinates`   | Tap at exact screen coordinates. Last resort when queries fail.                                                                                                                                                          |
+| `device_type`              | Type text into the currently focused input field.                                                                                                                                                                        |
+| `device_swipe`             | Swipe in a direction with optional start coordinates and distance.                                                                                                                                                       |
+| `device_long_press`        | Long press an element for context menus or drag initiation.                                                                                                                                                              |
+| `device_scroll_to_element` | Swipe until an element is inside the viewport (not only in the UI tree); reports the swipe count. `direction` is the finger direction (`up` reveals content below); default `auto` picks it from the element's position. |
+| `device_wait_for`          | Poll until an element matching a query appears.                                                                                                                                                                          |
+| `device_press_button`      | Press a device button (home/back/enter/lock; no back on iOS).                                                                                                                                                            |
 
 ### App & Device Control
 

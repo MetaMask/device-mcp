@@ -15,6 +15,8 @@ import type {
   ScreenshotFileResult,
   ScreenshotOptions,
   ScreenshotResult,
+  ScrollDirection,
+  ScrollToElementResult,
   SnapshotResult,
   TapElementOptions,
   TapResult,
@@ -304,9 +306,9 @@ export function createLazyBackend(
 
     async scrollToElement(
       query: ElementQuery,
-      direction?: 'up' | 'down',
+      direction?: ScrollDirection,
       maxAttempts?: number,
-    ): Promise<UIElement> {
+    ): Promise<ScrollToElementResult> {
       return (await resolve()).scrollToElement(query, direction, maxAttempts);
     },
 

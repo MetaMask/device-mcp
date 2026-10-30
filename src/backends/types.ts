@@ -100,6 +100,17 @@ export type ElementQuery = {
 
 export type DeviceButton = 'home' | 'back' | 'enter' | 'lock';
 
+/** Finger direction of a scroll gesture, or `auto` (from the target's position). */
+export type ScrollDirection = 'up' | 'down' | 'auto';
+
+export type ScrollToElementResult = {
+  /** The element as last read, with its in-view frame. */
+  element: UIElement;
+  /** Swipes performed (0 when the element was already in view). */
+  swipes: number;
+  inViewport: true;
+};
+
 export type WindowSize = {
   width: number;
   height: number;
@@ -191,11 +202,23 @@ export type DeviceBackend = {
 
   longPress(query: ElementQuery, durationMs?: number): Promise<TapResult>;
 
+  /**
+   * Swipe until the element is in the viewport (not only in the UI tree).
+   *
+   * @param query - The element to bring into view.
+   * @param direction - Finger direction (`up` reveals content below), or
+   * `auto` (default): from the element's position, searching downward first
+   * when it is not in the tree yet.
+   * @param maxAttempts - Maximum number of swipes (default 10).
+   * @returns The element as last read and the number of swipes.
+   * @throws {ScrollToElementError} `ELEMENT_NOT_FOUND` or
+   * `ELEMENT_NOT_IN_VIEWPORT` (with the last frame).
+   */
   scrollToElement(
     query: ElementQuery,
-    direction?: 'up' | 'down',
+    direction?: ScrollDirection,
     maxAttempts?: number,
-  ): Promise<UIElement>;
+  ): Promise<ScrollToElementResult>;
 
   getAlertText(): Promise<string>;
 

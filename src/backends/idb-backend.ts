@@ -14,6 +14,8 @@ import type {
   ScreenshotFileResult,
   ScreenshotOptions,
   ScreenshotResult,
+  ScrollDirection,
+  ScrollToElementResult,
   SnapshotResult,
   TapElementOptions,
   TapResult,
@@ -38,6 +40,7 @@ import {
   idbSupportsNestedDescribe,
   resolveIdbPath,
 } from '../utils/platform.js';
+import { scrollUntilInViewport } from '../utils/scroll.js';
 import { stopChildProcess } from '../utils/stop-child-process.js';
 
 /**
@@ -909,28 +912,20 @@ export class IdbBackend implements DeviceBackend {
 
   async scrollToElement(
     query: ElementQuery,
-    direction: 'up' | 'down' = 'down',
+    direction: ScrollDirection = 'auto',
     maxAttempts = 10,
-  ): Promise<UIElement> {
+  ): Promise<ScrollToElementResult> {
     await this.ensureConnected();
     const windowSize = await this.getWindowSize();
-    let previousRaw = '';
-
-    for (let i = 0; i < maxAttempts; i++) {
-      const snap = await this.snapshot();
-      const element = findElement(snap.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      if (snap.raw === previousRaw) {
-        break;
-      }
-      previousRaw = snap.raw;
-      await this.#swipe(direction, windowSize);
-    }
-    throw new Error(
-      `Element not found after scrolling: ${JSON.stringify(query)}\n` +
-        'Use device_snapshot to inspect the current UI hierarchy.',
+    return scrollUntilInViewport(
+      {
+        snapshot: async () => this.snapshot(),
+        windowSize,
+        swipe: async (finger) => this.#swipe(finger, windowSize),
+      },
+      query,
+      direction,
+      maxAttempts,
     );
   }
 
