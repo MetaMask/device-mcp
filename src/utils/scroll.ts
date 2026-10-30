@@ -54,7 +54,8 @@ export class ScrollToElementError extends Error {
 /**
  * Whether enough of the element is inside the viewport, after removing
  * {@link VIEWPORT_INSET} at the top and bottom, to see and tap it: half of
- * its height, or {@link MIN_VISIBLE} points for a tall element.
+ * its height, or {@link MIN_VISIBLE} points for a tall element. A zero-size
+ * frame is never in view.
  *
  * @param element - The element.
  * @param windowSize - The viewport size, in the same units as the frame.
@@ -70,7 +71,14 @@ export function isInViewport(
   const top = Math.max(y, height * VIEWPORT_INSET);
   const bottom = Math.min(y + h, height * (1 - VIEWPORT_INSET));
   const visibleWidth = Math.min(x + w, width) - Math.max(x, 0);
-  return visibleWidth > 0 && bottom - top >= Math.min(h / 2, MIN_VISIBLE);
+  const visibleHeight = bottom - top;
+  // Android clips an off-screen node's bounds to the edge of its scroll
+  // container, so a hidden row can be reported with zero height.
+  return (
+    visibleWidth > 0 &&
+    visibleHeight > 0 &&
+    visibleHeight >= Math.min(h / 2, MIN_VISIBLE)
+  );
 }
 
 /**
