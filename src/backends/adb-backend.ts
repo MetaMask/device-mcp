@@ -59,6 +59,7 @@ import {
   findElement,
   describeElement,
   computeSwipeEnd,
+  visibleCenter,
 } from '../utils/element.js';
 import { exec, execStrict, isCommandAvailable } from '../utils/exec.js';
 import {
@@ -219,6 +220,8 @@ export class AdbBackend implements DeviceBackend {
 
   readonly #recordingRemotePath = '/sdcard/device-mcp-recording.mp4';
 
+  #windowSize: Promise<WindowSize> | undefined;
+
   // Installation is cached; trust is still checked before every helper run.
   #helperInstalled = false;
 
@@ -313,8 +316,7 @@ export class AdbBackend implements DeviceBackend {
       );
     }
 
-    const x = Math.round(element.frame.x + element.frame.width / 2);
-    const y = Math.round(element.frame.y + element.frame.height / 2);
+    const { x, y } = visibleCenter(element, await this.#cachedWindowSize());
     await this.tapCoordinates(x, y);
 
     return {
@@ -880,8 +882,10 @@ export class AdbBackend implements DeviceBackend {
       );
     }
 
-    const cx = Math.round(element.frame.x + element.frame.width / 2);
-    const cy = Math.round(element.frame.y + element.frame.height / 2);
+    const { x: cx, y: cy } = visibleCenter(
+      element,
+      await this.#cachedWindowSize(),
+    );
     await this.#adb([
       'shell',
       'input',
@@ -950,6 +954,20 @@ export class AdbBackend implements DeviceBackend {
       );
     }
     return texts.join('\n');
+  }
+
+  /**
+   * The screen size, read once per backend (one `adb shell wm size`) for the
+   * tap viewport check. A failed read is not cached.
+   *
+   * @returns The screen size in pixels.
+   */
+  async #cachedWindowSize(): Promise<WindowSize> {
+    this.#windowSize ??= this.getWindowSize().catch((error: unknown) => {
+      this.#windowSize = undefined;
+      throw error;
+    });
+    return this.#windowSize;
   }
 
   async getWindowSize(): Promise<WindowSize> {
