@@ -1,0 +1,30 @@
+CHANGELOG.md
+  h_d6a04d82b61d5e 12,18-20
+src/backends/adb-backend.test.ts
+  h_d6a04d82b61d5e 633-635,638-640,651-654,666-723
+src/backends/adb-backend.ts
+  h_d6a04d82b61d5e 62,223-224,319,885-888,959-972
+src/backends/idb-backend.test.ts
+  h_d6a04d82b61d5e 13,871-1104
+src/backends/idb-backend.ts
+  h_d6a04d82b61d5e 30,34-38,501,512-517,519-523,526-529,531,533-571,932
+src/index.ts
+  h_d6a04d82b61d5e 13
+src/utils/element.ts
+  h_d6a04d82b61d5e 256-291
+src/utils/hit-test.test.ts
+  h_d6a04d82b61d5e 1-103
+src/utils/hit-test.ts
+  h_d6a04d82b61d5e 1-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8cf235ab8242c5049ee5b24d732d7f34de07a764",
+  "prompts": {},
+  "humans": {
+    "h_d6a04d82b61d5e": {
+      "author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
