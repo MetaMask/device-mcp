@@ -265,7 +265,8 @@ export function formatHierarchy(elements: UIElement[], depth: number): string {
  * @param viewport.width - Viewport width.
  * @param viewport.height - Viewport height.
  * @returns The tap point.
- * @throws When the frame does not intersect the viewport (or has no area).
+ * @throws An error with `code: 'ELEMENT_NOT_IN_VIEWPORT'` when the frame
+ * does not intersect the viewport (or has no area).
  */
 export function visibleCenter(
   element: UIElement,
@@ -276,12 +277,15 @@ export function visibleCenter(
   const x1 = Math.min(element.frame.x + element.frame.width, width);
   const y1 = Math.min(element.frame.y + element.frame.height, height);
   if (x1 <= x0 || y1 <= y0) {
-    throw new Error(
-      `Element is outside the ${width}x${height} viewport: ` +
-        `${describeElement(element)} at (${Math.round(element.frame.x)}, ` +
-        `${Math.round(element.frame.y)} ${Math.round(element.frame.width)}x` +
-        `${Math.round(element.frame.height)}). ` +
-        'Scroll it into view first (device_swipe or scroll_to_element).',
+    throw Object.assign(
+      new Error(
+        `Element is outside the ${width}x${height} viewport: ` +
+          `${describeElement(element)} at (${Math.round(element.frame.x)}, ` +
+          `${Math.round(element.frame.y)} ${Math.round(element.frame.width)}x` +
+          `${Math.round(element.frame.height)}). ` +
+          'Scroll it into view first (device_swipe or scroll_to_element).',
+      ),
+      { code: 'ELEMENT_NOT_IN_VIEWPORT' },
     );
   }
   return {

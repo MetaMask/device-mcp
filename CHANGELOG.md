@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: taps fail instead of landing on another element ([#51](https://github.com/MetaMask/device-mcp/pull/51))
   - iOS `tapElement` / `longPress` hit-test the tap point first (`idb ui describe-point --api axbridge`, about 0.25 s). When another element is there (the keyboard or its AutoFill bar, a sheet, an overlay), they throw `TargetObscuredError` and do not tap. When the hit-test finds nothing, or idb cannot select the accessibility API, the tap goes ahead.
   - Android `tapElement` / `longPress` tap the visible part of the frame and refuse an element outside the screen (including rows clipped to zero height), like iOS. The screen size is read once per backend.
+  - The "outside the viewport" tap error (iOS and Android) has `code: 'ELEMENT_NOT_IN_VIEWPORT'`.
 - **BREAKING:** fix: `scrollToElement` succeeds only when the element is in the viewport ([#50](https://github.com/MetaMask/device-mcp/pull/50))
   - It returns `{ element, swipes, inViewport: true }` instead of the element. Before, it returned as soon as the element was in the UI tree; React Native keeps off-screen rows in the tree, so it often returned after zero swipes with the element below the fold.
   - After a swipe it reads the screen until it stops moving. It fails with `ScrollToElementError` after `maxAttempts` swipes, or when the screen stops changing.

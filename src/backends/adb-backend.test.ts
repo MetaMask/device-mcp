@@ -699,7 +699,10 @@ describe('AdbBackend.tapElement', () => {
         { identifier: 'submit' },
         { element: { ...element, frame } },
       ),
-    ).rejects.toThrow('Element is outside the 1080x2400 viewport');
+    ).rejects.toMatchObject({
+      code: 'ELEMENT_NOT_IN_VIEWPORT',
+      message: expect.stringContaining('outside the 1080x2400 viewport'),
+    });
     expect(tapCalls()).toHaveLength(0);
   });
 
