@@ -83,6 +83,10 @@ describe('isInViewport', () => {
     expect(isInViewport(node('Card', 800, 600), windowSize)).toBe(false);
   });
 
+  it('rejects a zero-height frame (Android clips hidden rows to the list edge)', () => {
+    expect(isInViewport(node('Currency', 210, 0), windowSize)).toBe(false);
+  });
+
   it('rejects an element outside the viewport horizontally', () => {
     const element = {
       ...node('Row', 400),
