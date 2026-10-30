@@ -1,0 +1,18 @@
+CHANGELOG.md
+  h_d6a04d82b61d5e 21
+src/backends/adb-backend.test.ts
+  h_d6a04d82b61d5e 702-705
+src/utils/element.ts
+  h_d6a04d82b61d5e 268-269,280-288
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1ba0a9c5d229d510396f42ea1b2a7ac6cf8cb44d",
+  "prompts": {},
+  "humans": {
+    "h_d6a04d82b61d5e": {
+      "author": "cryptotavares <joao.tavares@consensys.net>"
+    }
+  }
+}
