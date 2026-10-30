@@ -224,11 +224,14 @@ export async function scrollUntilInViewport(
     );
   }
   const { frame } = last;
+  const [x, y, w, h] = [frame.x, frame.y, frame.width, frame.height].map(
+    Math.round,
+  );
   throw new ScrollToElementError(
     'ELEMENT_NOT_IN_VIEWPORT',
     `Element is outside the ${windowSize.width}x${windowSize.height} viewport ` +
       `after ${swipes} swipe(s): ${describeElement(last)} at ` +
-      `(${frame.x}, ${frame.y} ${frame.width}x${frame.height}).`,
+      `(${x}, ${y} ${w}x${h}).`,
     { swipes, frame },
   );
 }

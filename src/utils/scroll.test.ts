@@ -212,6 +212,7 @@ describe('scrollUntilInViewport', () => {
       frame: { y: 1500 },
     });
     expect((error as Error).message).toContain('after 3 swipe(s)');
+    expect((error as Error).message).toContain('at (16, 1500 370x24)');
     expect(swipes).toStrictEqual(['up', 'up', 'up']);
   });
 
