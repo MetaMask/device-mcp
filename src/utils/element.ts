@@ -253,3 +253,39 @@ export function formatHierarchy(elements: UIElement[], depth: number): string {
     })
     .join('\n');
 }
+
+/**
+ * The center of the part of the element's frame that lies inside the
+ * viewport. Tapping there is safer than tapping the raw frame center, which
+ * can fall outside the screen for off-screen or partly scrolled elements and
+ * hit nothing or an unrelated control.
+ *
+ * @param element - The element to tap.
+ * @param viewport - The viewport size, in the frame's units.
+ * @param viewport.width - Viewport width.
+ * @param viewport.height - Viewport height.
+ * @returns The tap point.
+ * @throws When the frame does not intersect the viewport (or has no area).
+ */
+export function visibleCenter(
+  element: UIElement,
+  { width, height }: { width: number; height: number },
+): { x: number; y: number } {
+  const x0 = Math.max(element.frame.x, 0);
+  const y0 = Math.max(element.frame.y, 0);
+  const x1 = Math.min(element.frame.x + element.frame.width, width);
+  const y1 = Math.min(element.frame.y + element.frame.height, height);
+  if (x1 <= x0 || y1 <= y0) {
+    throw new Error(
+      `Element is outside the ${width}x${height} viewport: ` +
+        `${describeElement(element)} at (${Math.round(element.frame.x)}, ` +
+        `${Math.round(element.frame.y)} ${Math.round(element.frame.width)}x` +
+        `${Math.round(element.frame.height)}). ` +
+        'Scroll it into view first (device_swipe or scroll_to_element).',
+    );
+  }
+  return {
+    x: Math.round((x0 + x1) / 2),
+    y: Math.round((y0 + y1) / 2),
+  };
+}

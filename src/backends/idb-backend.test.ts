@@ -10,6 +10,7 @@ import { IdbUnavailableError } from './idb-errors.js';
 import type { UIElement } from './types.js';
 import { findElement, generateLocators } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
+import { TargetObscuredError } from '../utils/hit-test.js';
 import * as platformModule from '../utils/platform.js';
 
 const connectionMocks = vi.hoisted(() => ({
@@ -864,6 +865,240 @@ describe('IdbBackend.tapElement and longPress viewport handling', () => {
         },
       ),
     ).rejects.toThrow('outside the 402x874 viewport');
+  });
+});
+
+describe('IdbBackend tap hit-test', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  const loginButton: UIElement = {
+    type: 'Button',
+    label: 'Unlock',
+    identifier: 'log-in-button',
+    frame: { x: 16.3, y: 532.3, width: 369.3, height: 48 },
+    enabled: true,
+  };
+
+  /**
+   * @param hit - What `describe-point` returns: a node, an error, or raw text.
+   */
+  const mockDevice = (hit: Record<string, unknown> | Error | string): void => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.[0] === 'describe' && args.includes('--json')) {
+        return JSON.stringify({
+          os_version: '26.5',
+          screen_dimensions: { width_points: 402, height_points: 874 },
+        });
+      }
+      if (args?.[1] === 'describe-point') {
+        if (hit instanceof Error) {
+          throw hit;
+        }
+        return typeof hit === 'string' ? hit : JSON.stringify(hit);
+      }
+      return '';
+    });
+  };
+
+  const tapCalls = (): unknown[][] =>
+    mockExecStrict.mock.calls.filter(([, args]) => args?.[1] === 'tap');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    connectionState.alive = true;
+    mockSupportsApi.mockResolvedValue(true);
+    mockSupportsNested.mockResolvedValue(true);
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    backend = new IdbBackend(udid);
+  });
+
+  it('hit-tests the tap point with describe-point before tapping', async () => {
+    mockDevice({
+      type: 'Button',
+      AXLabel: 'Unlock',
+      AXUniqueId: 'log-in-button',
+      frame: loginButton.frame,
+    });
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    const calls = mockExecStrict.mock.calls
+      .map(([, args]) => args)
+      .filter((args) => args[0] === 'ui');
+    expect(calls).toStrictEqual([
+      [
+        'ui',
+        'describe-point',
+        '201',
+        '556',
+        '--api',
+        'axbridge',
+        '--json',
+        '--udid',
+        udid,
+      ],
+      ['ui', 'tap', '201', '556', '--udid', udid],
+    ]);
+  });
+
+  it('accepts a child of the target at the point (a label inside the button)', async () => {
+    mockDevice({
+      type: 'StaticText',
+      AXLabel: 'Unlock',
+      frame: { x: 170, y: 545, width: 60, height: 22 },
+    });
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    expect(tapCalls()).toHaveLength(1);
+  });
+
+  it('refuses the tap when the keyboard covers the target (B2)', async () => {
+    // Keyboard up on the login screen: the AutoFill bar sits over Unlock.
+    mockDevice({
+      type: 'Button',
+      AXLabel: 'Passwords',
+      AXUniqueId: null,
+      frame: { x: 30, y: 546, width: 342, height: 44 },
+    });
+
+    const error = await backend
+      .tapElement({ identifier: 'log-in-button' }, { element: loginButton })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(TargetObscuredError);
+    expect(error).toMatchObject({
+      code: 'TARGET_OBSCURED',
+      keyboard: true,
+      x: 201,
+      y: 556,
+      obscuredBy: { type: 'Button', label: 'Passwords' },
+    });
+    expect((error as Error).message).toContain('by the keyboard');
+    expect(tapCalls()).toHaveLength(0);
+  });
+
+  it('refuses the tap when a key is at the point', async () => {
+    mockDevice({
+      type: 'Key',
+      AXLabel: 'g',
+      frame: { x: 182, y: 651, width: 39, height: 54 },
+    });
+    const lowButton = {
+      ...loginButton,
+      frame: { x: 16, y: 660, width: 370, height: 48 },
+    };
+
+    await expect(
+      backend.tapElement(
+        { identifier: 'log-in-button' },
+        { element: lowButton },
+      ),
+    ).rejects.toMatchObject({ code: 'TARGET_OBSCURED', keyboard: true });
+    expect(tapCalls()).toHaveLength(0);
+  });
+
+  it('refuses the tap when an overlay covers the target', async () => {
+    mockDevice({
+      type: 'Other',
+      AXLabel: 'Bottom sheet',
+      AXUniqueId: 'sheet',
+      frame: { x: 0, y: 400, width: 402, height: 474 },
+    });
+
+    await expect(
+      backend.tapElement(
+        { identifier: 'log-in-button' },
+        { element: loginButton },
+      ),
+    ).rejects.toMatchObject({
+      code: 'TARGET_OBSCURED',
+      keyboard: false,
+      message: expect.stringContaining('Close the overlay'),
+    });
+    expect(tapCalls()).toHaveLength(0);
+  });
+
+  it('taps when the hit-test finds no element at the point', async () => {
+    mockDevice(
+      new Error('The axbridge backend found no element at (201.0, 556.0)'),
+    );
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    expect(tapCalls()).toHaveLength(1);
+  });
+
+  it('taps when the hit-test output is not JSON', async () => {
+    mockDevice('not json');
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    expect(tapCalls()).toHaveLength(1);
+  });
+
+  it('skips the hit-test when idb cannot select the accessibility API', async () => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockDevice(new Error('must not be called'));
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    expect(
+      mockExecStrict.mock.calls.filter(
+        ([, args]) => args?.[1] === 'describe-point',
+      ),
+    ).toHaveLength(0);
+    expect(tapCalls()).toHaveLength(1);
+  });
+
+  it('hit-tests long presses too', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.[0] === 'describe' && args.includes('--json')) {
+        return JSON.stringify({
+          os_version: '26.5',
+          screen_dimensions: { width_points: 402, height_points: 874 },
+        });
+      }
+      if (args?.[1] === 'describe-all') {
+        return JSON.stringify([
+          {
+            type: 'Button',
+            AXLabel: 'Unlock',
+            AXUniqueId: 'log-in-button',
+            frame: loginButton.frame,
+          },
+        ]);
+      }
+      if (args?.[1] === 'describe-point') {
+        return JSON.stringify({
+          type: 'Key',
+          AXLabel: 'space',
+          frame: { x: 100, y: 540, width: 200, height: 40 },
+        });
+      }
+      return '';
+    });
+
+    await expect(
+      backend.longPress({ identifier: 'log-in-button' }),
+    ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+    expect(tapCalls()).toHaveLength(0);
   });
 });
 

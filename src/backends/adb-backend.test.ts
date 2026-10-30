@@ -630,9 +630,14 @@ describe('AdbBackend.tapElement', () => {
     enabled: true,
   };
 
+  const tapCalls = (): unknown[][] =>
+    mockExecStrict.mock.calls.filter(([, args]) => args?.includes('tap'));
+
   beforeEach(() => {
     vi.clearAllMocks();
-    mockExecStrict.mockResolvedValue('');
+    mockExecStrict.mockImplementation(async (_cmd, args) =>
+      args?.includes('wm') ? 'Physical size: 1080x2400' : '',
+    );
     backend = new AdbBackend('emulator-5554');
   });
 
@@ -643,7 +648,10 @@ describe('AdbBackend.tapElement', () => {
     );
 
     expect(result).toMatchObject({ success: true, x: 300, y: 230 });
-    expect(mockExecStrict).toHaveBeenCalledTimes(1);
+    // One `wm size` (cached per backend) and the tap; no uiautomator dump.
+    expect(
+      mockExecStrict.mock.calls.map(([, args]) => args?.[3]),
+    ).toStrictEqual(['wm', 'input']);
     expect(mockExecStrict).toHaveBeenCalledWith('adb', [
       '-s',
       'emulator-5554',
@@ -653,6 +661,64 @@ describe('AdbBackend.tapElement', () => {
       '300',
       '230',
     ]);
+  });
+
+  it('reads the screen size once per backend', async () => {
+    await backend.tapElement({ identifier: 'submit' }, { element });
+    await backend.tapElement({ identifier: 'submit' }, { element });
+
+    expect(
+      mockExecStrict.mock.calls.filter(([, args]) => args?.includes('wm')),
+    ).toHaveLength(1);
+  });
+
+  it('taps the visible part of a partly off-screen element', async () => {
+    const partly = {
+      ...element,
+      frame: { x: 100, y: 2300, width: 400, height: 300 },
+    };
+
+    const result = await backend.tapElement(
+      { identifier: 'submit' },
+      { element: partly },
+    );
+
+    // Visible part: y 2300..2400 -> center 2350.
+    expect(result).toMatchObject({ x: 300, y: 2350 });
+  });
+
+  it.each([
+    ['below the screen', { x: 42, y: 2513, width: 996, height: 63 }],
+    [
+      'clipped to zero height at the list edge',
+      { x: 42, y: 2513, width: 996, height: 0 },
+    ],
+  ])('refuses to tap an element %s', async (_name, frame) => {
+    await expect(
+      backend.tapElement(
+        { identifier: 'submit' },
+        { element: { ...element, frame } },
+      ),
+    ).rejects.toThrow('Element is outside the 1080x2400 viewport');
+    expect(tapCalls()).toHaveLength(0);
+  });
+
+  it('refuses to long-press an element outside the screen', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('wm')) {
+        return 'Physical size: 1080x2400';
+      }
+      return args?.includes('cat') || args?.includes('dump')
+        ? `<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0"><node index="0" text="Far" resource-id="far" class="android.widget.TextView" package="io.metamask" content-desc="" clickable="true" enabled="true" bounds="[0,2600][1080,2700]" /></hierarchy>`
+        : '';
+    });
+
+    await expect(backend.longPress({ identifier: 'far' })).rejects.toThrow(
+      'outside the 1080x2400 viewport',
+    );
+    expect(
+      mockExecStrict.mock.calls.filter(([, args]) => args?.includes('swipe')),
+    ).toHaveLength(0);
   });
 
   it('snapshots to find the element when none is passed', async () => {
