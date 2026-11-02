@@ -65,6 +65,25 @@ describe('matchesQuery', () => {
     expect(matchesQuery(el, { identifier: 'submit-btn' })).toBe(true);
   });
 
+  it('matches only equal strings when exact', () => {
+    const el = makeElement({
+      identifier: 'account-picker-avatar',
+      label: 'Agent Account',
+      value: 'v',
+    });
+    expect(matchesQuery(el, { identifier: 'account-picker' }, true)).toBe(
+      false,
+    );
+    expect(
+      matchesQuery(el, { identifier: 'account-picker-avatar' }, true),
+    ).toBe(true);
+    expect(matchesQuery(el, { label: 'agent account' }, true)).toBe(false);
+    expect(matchesQuery(el, { text: 'Agent Account' }, true)).toBe(true);
+    expect(matchesQuery(el, { text: 'v' }, true)).toBe(true);
+    expect(matchesQuery(el, { type: 'Butt' }, true)).toBe(false);
+    expect(matchesQuery(el, {}, true)).toBe(false);
+  });
+
   it('does not match when actual is undefined', () => {
     const el = makeElement({});
     expect(matchesQuery(el, { label: 'anything' })).toBe(false);
@@ -90,6 +109,52 @@ describe('findElement', () => {
     ];
     const found = findElement(elements, { identifier: 'child' });
     expect(found?.identifier).toBe('child');
+  });
+
+  it('prefers an exact identifier match over an earlier partial match', () => {
+    const elements = [
+      makeElement({
+        identifier: 'profile-button',
+        children: [makeElement({ identifier: 'account-picker-avatar' })],
+      }),
+      makeElement({ identifier: 'account-picker' }),
+    ];
+    expect(
+      findElement(elements, { identifier: 'account-picker' })?.identifier,
+    ).toBe('account-picker');
+  });
+
+  it('prefers an exact label or text match over an earlier partial match', () => {
+    const elements = [
+      makeElement({ label: 'Send feedback' }),
+      makeElement({ label: 'Send', value: 'Send' }),
+    ];
+    expect(findElement(elements, { label: 'Send' })?.value).toBe('Send');
+    expect(findElement(elements, { text: 'Send' })?.value).toBe('Send');
+  });
+
+  it('falls back to the first partial match when nothing matches exactly', () => {
+    const elements = [
+      makeElement({ identifier: 'io.metamask:id/submit-btn' }),
+      makeElement({ identifier: 'submit-btn-2' }),
+    ];
+    expect(
+      findElement(elements, { identifier: 'submit-btn' })?.identifier,
+    ).toBe('io.metamask:id/submit-btn');
+    expect(
+      findElement(elements, { identifier: 'SUBMIT-BTN-2' })?.identifier,
+    ).toBe('submit-btn-2');
+  });
+
+  it('requires every field to match exactly for the exact pass', () => {
+    const elements = [
+      makeElement({ identifier: 'btn-long', label: 'Go' }),
+      makeElement({ identifier: 'btn', label: 'Go now' }),
+    ];
+    // No element matches both fields exactly, so the first fuzzy match wins.
+    expect(
+      findElement(elements, { identifier: 'btn', label: 'Go' })?.identifier,
+    ).toBe('btn-long');
   });
 
   it('returns null when not found', () => {
