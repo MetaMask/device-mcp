@@ -347,10 +347,31 @@ export class IdbBackend implements DeviceBackend {
     };
   }
 
+  /**
+   * Capture the UI hierarchy. When `axbridge` is read (iOS 18+), `ax` is read
+   * at the same time and its elements whose identifier is missing from the
+   * `axbridge` tree are added to it (see `addMissingIdentifiedElements`).
+   * `axbridge` can report a React Native container as one unlabelled view
+   * without children: on the MetaMask wallet home, the balance and the
+   * Buy / Swap / Send / Receive buttons, so `wallet-send-button` was not found.
+   * `raw` stays the `axbridge` output.
+   *
+   * @returns The snapshot.
+   */
   async snapshot(): Promise<SnapshotResult> {
     await this.ensureConnected();
-    const raw = await this.#describeAll();
-    const hierarchy = parseIdbHierarchy(raw);
+    const apis = await this.#describeAllApiOrder();
+    const supplement =
+      apis[0] === 'axbridge' ? this.#describeSupplement('ax') : undefined;
+    const { raw, api } = await this.#describeAll(apis);
+    let hierarchy = parseIdbHierarchy(raw);
+    const extra = await supplement;
+    if (api === 'axbridge' && extra !== undefined) {
+      hierarchy = addMissingIdentifiedElements(
+        hierarchy,
+        parseIdbHierarchy(extra),
+      );
+    }
     return {
       platform: 'ios',
       hierarchy,
@@ -360,26 +381,64 @@ export class IdbBackend implements DeviceBackend {
   }
 
   /**
+   * Arguments of `idb ui describe-all` for one accessibility backend.
+   *
+   * @param api - The `--api` value, or null to omit it.
+   * @returns The idb arguments.
+   */
+  #describeAllArgs(api: 'ax' | 'axbridge' | null): string[] {
+    const args = ['ui', 'describe-all', '--udid', this.#udid];
+    if (api !== null) {
+      args.push('--api', api);
+    }
+    if (this.#idbSupportsNested) {
+      args.push('--nested');
+    }
+    return args;
+  }
+
+  /**
+   * Read a supplementary hierarchy. Best effort: no companion recovery (the
+   * main read does it), and a failure returns undefined.
+   *
+   * @param api - The `--api` value.
+   * @returns The raw JSON hierarchy, or undefined when the read failed.
+   */
+  async #describeSupplement(
+    api: 'ax' | 'axbridge',
+  ): Promise<string | undefined> {
+    try {
+      return await execStrict(this.#idbPath, this.#describeAllArgs(api), {
+        env: this.#connection.env,
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Run `idb ui describe-all`, trying the version-appropriate accessibility
    * backend first and falling back to the others if it errors. This keeps
    * snapshots working across iOS 17-26 regardless of the user's idb client.
    *
-   * @returns The raw JSON hierarchy from the first backend that succeeds.
+   * @param apis - The `--api` values to try, in order.
+   * @returns The raw JSON hierarchy from the first backend that succeeds, and
+   * that backend.
    * @throws When every attempted backend fails.
    */
-  async #describeAll(): Promise<string> {
-    const apis = await this.#describeAllApiOrder();
+  async #describeAll(
+    apis: ('ax' | 'axbridge' | null)[],
+  ): Promise<{ raw: string; api: 'ax' | 'axbridge' | null }> {
     let lastError: unknown;
     for (const api of apis) {
-      const args = ['ui', 'describe-all', '--udid', this.#udid];
-      if (api !== null) {
-        args.push('--api', api);
-      }
-      if (this.#idbSupportsNested) {
-        args.push('--nested');
-      }
       try {
-        return await this.#execStrict(this.#idbPath, args);
+        return {
+          raw: await this.#execStrict(
+            this.#idbPath,
+            this.#describeAllArgs(api),
+          ),
+          api,
+        };
       } catch (error) {
         if (error instanceof IdbUnavailableError) {
           // Already reconnected and retried; another --api will not help.
@@ -1105,6 +1164,80 @@ export function parseIdbHierarchy(raw: string): UIElement[] {
       },
     ];
   }
+}
+
+/**
+ * Adds to `primary` the elements of `secondary` whose identifier is not in
+ * `primary`. Each one is added, without its children, as the last child of
+ * the smallest `primary` element whose frame contains its frame, or at the
+ * top level when none does. Elements with no identifier are not added. The
+ * inputs are not modified.
+ *
+ * @param primary - The main hierarchy (idb `--api axbridge`).
+ * @param secondary - The other hierarchy (idb `--api ax`).
+ * @returns `primary` with the missing elements added.
+ */
+export function addMissingIdentifiedElements(
+  primary: UIElement[],
+  secondary: UIElement[],
+): UIElement[] {
+  const result = structuredClone(primary);
+  const all: UIElement[] = [];
+  const collect = (elements: UIElement[]): void => {
+    for (const el of elements) {
+      all.push(el);
+      if (el.children) {
+        collect(el.children);
+      }
+    }
+  };
+  collect(result);
+  const known = new Set(all.map((el) => el.identifier).filter(Boolean));
+
+  const missing: UIElement[] = [];
+  const collectMissing = (elements: UIElement[]): void => {
+    for (const el of elements) {
+      if (el.identifier && !known.has(el.identifier)) {
+        missing.push(el);
+      }
+      if (el.children) {
+        collectMissing(el.children);
+      }
+    }
+  };
+  collectMissing(secondary);
+
+  for (const el of missing) {
+    const { children: _children, ...element } = el;
+    const added: UIElement = structuredClone(element);
+    const host = all
+      .filter((candidate) => containsFrame(candidate.frame, el.frame))
+      .reduce<
+        UIElement | undefined
+      >((best, candidate) => (best === undefined || area(candidate.frame) < area(best.frame) ? candidate : best), undefined);
+    if (host) {
+      host.children = [...(host.children ?? []), added];
+    } else {
+      result.push(added);
+    }
+  }
+  return result;
+}
+
+type Frame = UIElement['frame'];
+
+function area(frame: Frame): number {
+  return frame.width * frame.height;
+}
+
+function containsFrame(outer: Frame, inner: Frame): boolean {
+  return (
+    area(outer) > 0 &&
+    inner.x >= outer.x &&
+    inner.y >= outer.y &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y + inner.height <= outer.y + outer.height
+  );
 }
 
 /**
