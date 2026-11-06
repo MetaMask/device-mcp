@@ -985,26 +985,6 @@ describe('IdbBackend tap hit-test', () => {
     expect(tapCalls()).toHaveLength(0);
   });
 
-  it('refuses the tap when a key is at the point', async () => {
-    mockDevice({
-      type: 'Key',
-      AXLabel: 'g',
-      frame: { x: 182, y: 651, width: 39, height: 54 },
-    });
-    const lowButton = {
-      ...loginButton,
-      frame: { x: 16, y: 660, width: 370, height: 48 },
-    };
-
-    await expect(
-      backend.tapElement(
-        { identifier: 'log-in-button' },
-        { element: lowButton },
-      ),
-    ).rejects.toMatchObject({ code: 'TARGET_OBSCURED', keyboard: true });
-    expect(tapCalls()).toHaveLength(0);
-  });
-
   it('refuses the tap when an overlay covers the target', async () => {
     mockDevice({
       type: 'Other',

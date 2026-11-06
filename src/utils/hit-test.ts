@@ -28,8 +28,8 @@ export class TargetObscuredError extends Error {
     target: UIElement,
     obscuredBy: UIElement,
     point: { x: number; y: number },
-    keyboard: boolean,
   ) {
+    const keyboard = isKeyboardElement(obscuredBy);
     const advice = keyboard
       ? 'Dismiss the keyboard (device_dismiss_keyboard) and retry.'
       : 'Close the overlay, or scroll the target into a free area.';
