@@ -915,32 +915,28 @@ export class IdbBackend implements DeviceBackend {
 
   async getWindowSize(): Promise<WindowSize> {
     await this.ensureConnected();
-    // A transport failure still throws, as before; only parse problems fall
-    // back to the snapshot.
+    // Transport errors throw; only a non-JSON description falls back to the
+    // snapshot.
     const info = await this.#cachedDescribe().catch((error: unknown) => {
       if (error instanceof InvalidDescribeJsonError) {
         return undefined;
       }
       throw error;
     });
-    try {
-      const dims = info?.screen_dimensions as
-        | {
-            width?: number;
-            height?: number;
-            // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
-            width_points?: number;
-            // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
-            height_points?: number;
-          }
-        | undefined;
-      // Gestures and accessibility frames are in logical points, while
-      // `width`/`height` are hardware pixels; prefer the point dimensions.
-      if (dims?.width_points && dims?.height_points) {
-        return { width: dims.width_points, height: dims.height_points };
-      }
-    } catch {
-      // fall through to snapshot-based approach
+    const dims = info?.screen_dimensions as
+      | {
+          width?: number;
+          height?: number;
+          // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
+          width_points?: number;
+          // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
+          height_points?: number;
+        }
+      | undefined;
+    // Gestures and accessibility frames are in logical points, while
+    // `width`/`height` are hardware pixels; prefer the point dimensions.
+    if (dims?.width_points && dims?.height_points) {
+      return { width: dims.width_points, height: dims.height_points };
     }
     const snap = await this.snapshot();
     if (snap.hierarchy.length > 0) {
