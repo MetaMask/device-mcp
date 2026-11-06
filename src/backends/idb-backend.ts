@@ -348,12 +348,10 @@ export class IdbBackend implements DeviceBackend {
   }
 
   /**
-   * Capture the UI hierarchy. When `axbridge` is read (iOS 18+), `ax` is read
-   * at the same time and its elements whose identifier is missing from the
-   * `axbridge` tree are added to it (see `addMissingIdentifiedElements`).
-   * `axbridge` can report a React Native container as one unlabelled view
-   * without children: on the MetaMask wallet home, the balance and the
-   * Buy / Swap / Send / Receive buttons, so `wallet-send-button` was not found.
+   * Capture the UI hierarchy. `axbridge` (iOS 18+) can report a React Native
+   * container as one unlabelled view without children (for example the
+   * MetaMask wallet home action row), so `ax` is read at the same time and
+   * its identified elements missing from the `axbridge` tree are added to it.
    * `raw` stays the `axbridge` output.
    *
    * @returns The snapshot.
@@ -361,8 +359,13 @@ export class IdbBackend implements DeviceBackend {
   async snapshot(): Promise<SnapshotResult> {
     await this.ensureConnected();
     const apis = await this.#describeAllApiOrder();
+    // Best effort and without companion recovery: the main read handles that.
     const supplement =
-      apis[0] === 'axbridge' ? this.#describeSupplement('ax') : undefined;
+      apis[0] === 'axbridge'
+        ? execStrict(this.#idbPath, this.#describeAllArgs('ax'), {
+            env: this.#connection.env,
+          }).catch(() => undefined)
+        : undefined;
     const { raw, api } = await this.#describeAll(apis);
     let hierarchy = parseIdbHierarchy(raw);
     const extra = await supplement;
@@ -395,25 +398,6 @@ export class IdbBackend implements DeviceBackend {
       args.push('--nested');
     }
     return args;
-  }
-
-  /**
-   * Read a supplementary hierarchy. Best effort: no companion recovery (the
-   * main read does it), and a failure returns undefined.
-   *
-   * @param api - The `--api` value.
-   * @returns The raw JSON hierarchy, or undefined when the read failed.
-   */
-  async #describeSupplement(
-    api: 'ax' | 'axbridge',
-  ): Promise<string | undefined> {
-    try {
-      return await execStrict(this.#idbPath, this.#describeAllArgs(api), {
-        env: this.#connection.env,
-      });
-    } catch {
-      return undefined;
-    }
   }
 
   /**
@@ -1177,44 +1161,29 @@ export function parseIdbHierarchy(raw: string): UIElement[] {
  * @param secondary - The other hierarchy (idb `--api ax`).
  * @returns `primary` with the missing elements added.
  */
-export function addMissingIdentifiedElements(
+function addMissingIdentifiedElements(
   primary: UIElement[],
   secondary: UIElement[],
 ): UIElement[] {
   const result = structuredClone(primary);
-  const all: UIElement[] = [];
-  const collect = (elements: UIElement[]): void => {
-    for (const el of elements) {
-      all.push(el);
-      if (el.children) {
-        collect(el.children);
-      }
-    }
-  };
-  collect(result);
+  const all = flatten(result);
   const known = new Set(all.map((el) => el.identifier).filter(Boolean));
-
-  const missing: UIElement[] = [];
-  const collectMissing = (elements: UIElement[]): void => {
-    for (const el of elements) {
-      if (el.identifier && !known.has(el.identifier)) {
-        missing.push(el);
-      }
-      if (el.children) {
-        collectMissing(el.children);
-      }
-    }
-  };
-  collectMissing(secondary);
+  const missing = flatten(secondary).filter(
+    (el) => el.identifier && !known.has(el.identifier),
+  );
 
   for (const el of missing) {
     const { children: _children, ...element } = el;
     const added: UIElement = structuredClone(element);
-    const host = all
-      .filter((candidate) => containsFrame(candidate.frame, el.frame))
-      .reduce<
-        UIElement | undefined
-      >((best, candidate) => (best === undefined || area(candidate.frame) < area(best.frame) ? candidate : best), undefined);
+    let host: UIElement | undefined;
+    for (const candidate of all) {
+      if (
+        containsFrame(candidate.frame, el.frame) &&
+        (!host || area(candidate.frame) < area(host.frame))
+      ) {
+        host = candidate;
+      }
+    }
     if (host) {
       host.children = [...(host.children ?? []), added];
     } else {
@@ -1222,6 +1191,10 @@ export function addMissingIdentifiedElements(
     }
   }
   return result;
+}
+
+function flatten(elements: UIElement[]): UIElement[] {
+  return elements.flatMap((el) => [el, ...flatten(el.children ?? [])]);
 }
 
 type Frame = UIElement['frame'];

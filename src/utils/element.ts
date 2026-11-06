@@ -1,11 +1,9 @@
 import type { UIElement, ElementQuery } from '../backends/types.js';
 
 /**
- * Finds the element that matches the query. An exact match (see
- * `matchesQuery`) anywhere in the tree wins; only when there is none is the
- * first fuzzy match (case-insensitive, contains) returned, in tree order.
- * Without this, the query `account-picker` returned an earlier
- * `account-picker-avatar`.
+ * Finds the element that matches the query. An exact match anywhere in the
+ * tree wins over an earlier fuzzy one (`account-picker` must not return
+ * `account-picker-avatar`); otherwise the first fuzzy match is returned.
  *
  * @param elements - The hierarchy to search.
  * @param query - The query.
