@@ -30,11 +30,7 @@ import {
   visibleCenter,
 } from '../utils/element.js';
 import { execStrict, exec } from '../utils/exec.js';
-import {
-  hitsTarget,
-  isKeyboardElement,
-  TargetObscuredError,
-} from '../utils/hit-test.js';
+import { hitsTarget, TargetObscuredError } from '../utils/hit-test.js';
 import {
   hardenArtifactFile,
   resolveArtifactPath,
@@ -484,7 +480,7 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x, y } = await this.#visibleTapPoint(element);
+    const { x, y } = visibleCenter(element, await this.getWindowSize());
     await this.#assertHittable(element, { x, y });
     await this.tapCoordinates(x, y);
 
@@ -494,12 +490,6 @@ export class IdbBackend implements DeviceBackend {
       y,
       targetDescription: describeElement(element),
     };
-  }
-
-  async #visibleTapPoint(
-    element: UIElement,
-  ): Promise<{ x: number; y: number }> {
-    return visibleCenter(element, await this.getWindowSize());
   }
 
   /**
@@ -522,20 +512,19 @@ export class IdbBackend implements DeviceBackend {
     if (!this.#idbSupportsApi) {
       return;
     }
-    const args = [
-      'ui',
-      'describe-point',
-      String(point.x),
-      String(point.y),
-      '--api',
-      'axbridge',
-      '--json',
-      '--udid',
-      this.#udid,
-    ];
     let raw: string;
     try {
-      raw = await this.#execStrict(this.#idbPath, args);
+      raw = await this.#execStrict(this.#idbPath, [
+        'ui',
+        'describe-point',
+        String(point.x),
+        String(point.y),
+        '--api',
+        'axbridge',
+        '--json',
+        '--udid',
+        this.#udid,
+      ]);
     } catch (error) {
       if (error instanceof IdbUnavailableError) {
         throw error;
@@ -551,12 +540,7 @@ export class IdbBackend implements DeviceBackend {
       return;
     }
     if (!hitsTarget(element, hit)) {
-      throw new TargetObscuredError(
-        element,
-        hit,
-        point,
-        isKeyboardElement(hit),
-      );
+      throw new TargetObscuredError(element, hit, point);
     }
   }
 
@@ -904,7 +888,7 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x: cx, y: cy } = await this.#visibleTapPoint(element);
+    const { x: cx, y: cy } = visibleCenter(element, await this.getWindowSize());
     await this.#assertHittable(element, { x: cx, y: cy });
     await this.#execStrict(this.#idbPath, [
       'ui',
