@@ -13,8 +13,9 @@ export function registerPressButtonTool(
     {
       title: 'Press Button',
       description:
-        'Press a physical device button. ' +
-        'Note: iOS has no back button — "back" maps to home.',
+        'Press a device button. "enter" sends the Return key and can ' +
+        'submit a form. iOS has no back button: "back" fails with ' +
+        "UNSUPPORTED_ON_IOS; tap the screen's back control instead.",
       inputSchema: {
         button: z
           .enum(['home', 'back', 'enter', 'lock'])
