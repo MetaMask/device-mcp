@@ -205,7 +205,7 @@ The `.device-session` file is typically written by the test runner when it creat
 
 ### Element Identification
 
-Elements are identified by accessibility attributes — not internal refs. Matching is **fuzzy**: partial text and case-insensitive matches work. For example, querying `{ label: "Confirm" }` matches an element with label `"Confirm Transaction"`.
+Elements are identified by accessibility attributes — not internal refs. Matching is **fuzzy**: partial text and case-insensitive matches work. For example, querying `{ label: "Confirm" }` matches an element with label `"Confirm Transaction"`. An exact match anywhere on screen wins over a partial one: `{ identifier: "account-picker" }` matches `account-picker`, not an earlier `account-picker-avatar`.
 
 - **iOS**: accessibility label, accessibility identifier
 - **Android**: content-description, resource-id, text
