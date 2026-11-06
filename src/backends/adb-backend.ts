@@ -906,32 +906,18 @@ export class AdbBackend implements DeviceBackend {
       {
         snapshot: async () => this.snapshot(),
         windowSize,
-        swipe: async (finger) => this.#scrollSwipe(finger, windowSize),
+        // The iOS backend's default: from the middle, over 40% of the height.
+        swipe: async (finger) =>
+          this.swipe(
+            finger,
+            Math.round(windowSize.width / 2),
+            Math.round(windowSize.height / 2),
+            Math.round(windowSize.height * 0.4),
+          ),
       },
       query,
       direction,
       maxAttempts,
-    );
-  }
-
-  /**
-   * One scroll gesture from the middle of the screen over 40% of its height
-   * (the iOS backend's default), so the swipe matches the real screen size.
-   *
-   * @param finger - Finger direction.
-   * @param windowSize - The screen size, in the frame units.
-   * @param windowSize.width - Viewport width.
-   * @param windowSize.height - Viewport height.
-   */
-  async #scrollSwipe(
-    finger: 'up' | 'down',
-    { width, height }: WindowSize,
-  ): Promise<void> {
-    await this.swipe(
-      finger,
-      Math.round(width / 2),
-      Math.round(height / 2),
-      Math.round(height * 0.4),
     );
   }
 

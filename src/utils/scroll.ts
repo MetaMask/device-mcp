@@ -165,36 +165,35 @@ export async function scrollUntilInViewport(
 
   for (;;) {
     const element = findElement(snap.hierarchy, query);
-    const before = last;
     if (element) {
+      const fixed =
+        last !== null &&
+        swipes > 0 &&
+        snap.raw !== previousRaw &&
+        sameFrame(element, last) &&
+        intersectsViewport(element, windowSize);
       last = element;
-    }
-    const fixed =
-      element !== null &&
-      before !== null &&
-      swipes > 0 &&
-      snap.raw !== previousRaw &&
-      sameFrame(element, before) &&
-      intersectsViewport(element, windowSize);
-    if (element && fixed) {
-      // Does not scroll with the content, so momentum cannot move it.
-      return { element, swipes, inViewport: true };
-    }
-    if (element && isInViewport(element, windowSize)) {
-      const settled = swipes === 0 ? null : await settle(deps, snap, query);
-      if (!settled) {
+      if (fixed) {
+        // Does not scroll with the content, so momentum cannot move it.
         return { element, swipes, inViewport: true };
       }
-      if (settled.element && isInViewport(settled.element, windowSize)) {
-        return { element: settled.element, swipes, inViewport: true };
+      if (isInViewport(element, windowSize)) {
+        const settled = swipes === 0 ? null : await settle(deps, snap);
+        if (!settled) {
+          return { element, swipes, inViewport: true };
+        }
+        const settledElement = findElement(settled.hierarchy, query);
+        if (settledElement && isInViewport(settledElement, windowSize)) {
+          return { element: settledElement, swipes, inViewport: true };
+        }
+        // Momentum carried it out of view: judge again from the settled screen.
+        snap = settled;
+        continue;
       }
-      // Momentum carried it out of view: judge again from the settled screen.
-      snap = settled.snap;
-      continue;
     }
     if (snap.raw === previousRaw) {
       // The last swipe moved nothing: the end of the list in this direction.
-      if (direction === 'auto' && !element && !turned) {
+      if (!element && !turned) {
         turned = true;
         search = search === 'up' ? 'down' : 'up';
       } else {
@@ -241,24 +240,19 @@ export async function scrollUntilInViewport(
  *
  * @param deps - Backend operations.
  * @param first - The read that found the element in view.
- * @param query - The element.
- * @returns The settled read and the element in it, or null when the first
- * read was already settled.
+ * @returns The settled read, or null when the first read was already settled.
  */
 async function settle(
   deps: ScrollDeps,
   first: SnapshotResult,
-  query: ElementQuery,
-): Promise<{ snap: SnapshotResult; element: UIElement | null } | null> {
+): Promise<SnapshotResult | null> {
   let previous = first;
   for (let i = 0; i < MAX_SETTLE_READS; i++) {
     const snap = await deps.snapshot();
     if (snap.raw === previous.raw) {
-      return i === 0
-        ? null
-        : { snap, element: findElement(snap.hierarchy, query) };
+      return i === 0 ? null : snap;
     }
     previous = snap;
   }
-  return { snap: previous, element: findElement(previous.hierarchy, query) };
+  return previous;
 }
