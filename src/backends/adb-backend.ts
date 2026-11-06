@@ -43,6 +43,8 @@ import type {
   ScreenshotFileResult,
   ScreenshotOptions,
   ScreenshotResult,
+  ScrollDirection,
+  ScrollToElementResult,
   SnapshotResult,
   TapElementOptions,
   TapResult,
@@ -63,6 +65,7 @@ import {
   hardenArtifactFile,
   resolveArtifactPath,
 } from '../utils/output-path.js';
+import { scrollUntilInViewport } from '../utils/scroll.js';
 
 // `uiautomator dump` exits 0 and prints its success banner even when it fails, so
 // the XML payload is the only trustworthy signal.
@@ -900,26 +903,26 @@ export class AdbBackend implements DeviceBackend {
 
   async scrollToElement(
     query: ElementQuery,
-    direction: 'up' | 'down' = 'down',
+    direction: ScrollDirection = 'auto',
     maxAttempts = 10,
-  ): Promise<UIElement> {
-    let previousRaw = '';
-
-    for (let i = 0; i < maxAttempts; i++) {
-      const snap = await this.snapshot();
-      const element = findElement(snap.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      if (snap.raw === previousRaw) {
-        break;
-      }
-      previousRaw = snap.raw;
-      await this.swipe(direction);
-    }
-    throw new Error(
-      `Element not found after scrolling: ${JSON.stringify(query)}\n` +
-        'Use device_snapshot to inspect the current UI hierarchy.',
+  ): Promise<ScrollToElementResult> {
+    const windowSize = await this.getWindowSize();
+    return scrollUntilInViewport(
+      {
+        snapshot: async () => this.snapshot(),
+        windowSize,
+        // The iOS backend's default: from the middle, over 40% of the height.
+        swipe: async (finger) =>
+          this.swipe(
+            finger,
+            Math.round(windowSize.width / 2),
+            Math.round(windowSize.height / 2),
+            Math.round(windowSize.height * 0.4),
+          ),
+      },
+      query,
+      direction,
+      maxAttempts,
     );
   }
 
