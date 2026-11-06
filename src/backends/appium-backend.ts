@@ -1,18 +1,19 @@
 import type { SessionConfig } from './session-file.js';
 import type {
+  AppStateResult,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,
-  SnapshotResult,
-  ScreenshotResult,
+  ElementQuery,
+  LogsResult,
+  Platform,
   ScreenshotFileResult,
   ScreenshotOptions,
-  LogsResult,
+  ScreenshotResult,
+  SnapshotResult,
+  TapElementOptions,
   TapResult,
-  AppStateResult,
-  ElementQuery,
   UIElement,
-  Platform,
   WindowSize,
 } from './types.js';
 import { WebDriverClient, createSession } from './webdriver-client.js';
@@ -96,9 +97,12 @@ export class AppiumBackend implements DeviceBackend {
     };
   }
 
-  async tapElement(query: ElementQuery): Promise<TapResult> {
-    const snapshot = await this.snapshot();
-    const element = findElement(snapshot.hierarchy, query);
+  async tapElement(
+    query: ElementQuery,
+    options?: TapElementOptions,
+  ): Promise<TapResult> {
+    const element =
+      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +

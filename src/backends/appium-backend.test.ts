@@ -13,6 +13,8 @@ const mockGetStatus = vi.fn();
 const mockExecute = vi.fn();
 const mockGetPageSource = vi.fn();
 const mockUpdateSettings = vi.fn();
+const mockPerformActions = vi.fn();
+const mockReleaseActions = vi.fn();
 
 vi.mock('./webdriver-client.js', () => ({
   WebDriverClient: vi.fn().mockImplementation(function mockWebDriverClient() {
@@ -21,6 +23,8 @@ vi.mock('./webdriver-client.js', () => ({
       execute: mockExecute,
       getPageSource: mockGetPageSource,
       updateSettings: mockUpdateSettings,
+      performActions: mockPerformActions,
+      releaseActions: mockReleaseActions,
     };
   }),
   createSession: vi.fn(),
@@ -230,6 +234,37 @@ describe('AppiumBackend.screenshot', () => {
       format: 'png',
       path: resolvePath('/tmp/appium-shot.png'),
     });
+  });
+});
+
+describe('AppiumBackend.tapElement', () => {
+  it('taps a caller-resolved element without reading the page source', async () => {
+    vi.clearAllMocks();
+    mockGetStatus.mockResolvedValue({});
+    mockPerformActions.mockResolvedValue(undefined);
+    const backend = new AppiumBackend({
+      mode: 'attach',
+      appiumUrl: 'http://localhost:4723',
+      sessionId: 'session-1',
+      platform: 'ios',
+    });
+    await backend.ensureConnected();
+
+    const result = await backend.tapElement(
+      { identifier: 'submit-btn' },
+      {
+        element: {
+          type: 'Button',
+          identifier: 'submit-btn',
+          frame: { x: 20, y: 700, width: 350, height: 44 },
+          enabled: true,
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ success: true, x: 195, y: 722 });
+    expect(mockGetPageSource).not.toHaveBeenCalled();
+    expect(mockPerformActions).toHaveBeenCalledOnce();
   });
 });
 
