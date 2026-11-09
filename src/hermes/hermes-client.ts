@@ -55,8 +55,11 @@ const DEFAULT_RECONNECT_MAX_DELAY_MS = 5_000;
 /** Default number of automatic reconnect attempts before giving up. */
 const DEFAULT_RECONNECT_MAX_ATTEMPTS = 6;
 
-/** Connect timeout used by the automatic reconnect loop. */
+/** Default connect timeout used by the automatic reconnect loop. */
 const DEFAULT_RECONNECT_TIMEOUT_MS = 10_000;
+
+/** Lifecycle event name used to report a throwing listener. */
+const LISTENER_ERROR_EVENT = 'listenerError';
 
 /** Message used when a call is made after {@link HermesClient.close}. */
 const CLIENT_CLOSED_MESSAGE = 'HermesClient is closed';
@@ -75,6 +78,12 @@ export type HermesClientReconnectOptions = {
    * fresh connect. `0` disables auto-reconnect.
    */
   maxAttempts?: number;
+  /**
+   * Connect timeout for automatic reconnect attempts, in milliseconds
+   * (default 10 s). Per-call `timeoutMs` values only apply to the call's own
+   * connect, so a short call timeout never shortens later reconnect attempts.
+   */
+  connectTimeoutMs?: number;
 };
 
 /**
@@ -133,11 +142,16 @@ export type HermesConnectedTarget = {
 };
 
 /**
+ * The failure branch shared by the connect and send results.
+ */
+type HermesFailureResult = { ok: false; code: string; message: string };
+
+/**
  * Result of {@link HermesClient.connect}.
  */
 export type HermesConnectResult =
   | { ok: true; target: HermesConnectedTarget }
-  | { ok: false; code: string; message: string };
+  | HermesFailureResult;
 
 /**
  * Options for {@link HermesClient.send}.
@@ -213,6 +227,18 @@ export type HermesReconnectedEvent = {
 };
 
 /**
+ * Payload of the `listenerError` lifecycle event, emitted when one of the
+ * client's own listeners throws. The exception is isolated so it cannot break
+ * the socket handler or the other listeners; this event surfaces it.
+ */
+export type HermesListenerErrorEvent = {
+  /** The event name whose listener threw. */
+  event: string;
+  /** The thrown value. */
+  error: unknown;
+};
+
+/**
  * Lifecycle events with a typed payload. Any other event name is a CDP event
  * and receives a {@link HermesCdpEvent}.
  */
@@ -221,6 +247,7 @@ export type HermesClientEventMap = {
   contextDestroyed: HermesContextDestroyedEvent;
   disconnected: HermesDisconnectedEvent;
   reconnected: HermesReconnectedEvent;
+  listenerError: HermesListenerErrorEvent;
 };
 
 type HermesClientStatus = 'idle' | 'connecting' | 'open' | 'closed';
@@ -249,6 +276,14 @@ type PendingCall = {
  * `Runtime` context events and emits a `contextCreated` lifecycle event for
  * every new JavaScript context on the open socket, so callers can re-apply
  * their scripts.
+ *
+ * An unexpected socket loss starts a background reconnect loop. A caller's
+ * {@link connect} or {@link send} never stops that loop: while the connection is
+ * lost, a failed caller-driven attempt (re)starts it, and a successful one is
+ * reported as `contextCreated` with `reason: 'reconnect'`.
+ *
+ * A listener that throws is isolated and reported through the `listenerError`
+ * lifecycle event; it never breaks the socket handler or the other listeners.
  */
 export class HermesClient {
   readonly #metroPort: number;
@@ -270,6 +305,12 @@ export class HermesClient {
   #pinnedDeviceId: string | undefined;
 
   #socket: WebSocket | undefined;
+
+  /**
+   * The socket of an in-flight connect, before it is adopted. Kept so
+   * {@link close} can abandon the connect promptly.
+   */
+  #connectingSocket: WebSocket | undefined;
 
   #target: HermesConnectedTarget | undefined;
 
@@ -293,17 +334,25 @@ export class HermesClient {
   /**
    * Whether a `contextDestroyed` event was already emitted for the current
    * reload; coalesces `executionContextDestroyed` and
-   * `executionContextsCleared`.
+   * `executionContextsCleared`. Also marks a reload in progress, so the next
+   * context is reported as `reload` even when the socket never reported its
+   * first context.
    */
   #contextDestroyedForReload = false;
+
+  /**
+   * Whether the last connection was lost unexpectedly (not through
+   * {@link close}). Set on an unexpected loss, cleared on a successful connect
+   * and by {@link close}. Drives the `reconnect` reason of a caller-driven
+   * connect and whether a failed caller-driven attempt restarts the loop.
+   */
+  #socketLost = false;
 
   #inFlightConnect: Promise<HermesConnectResult> | undefined;
 
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   #reconnectAttempt = 0;
-
-  #connectTimeoutMs = DEFAULT_RECONNECT_TIMEOUT_MS;
 
   #explicitlyClosed = false;
 
@@ -321,6 +370,8 @@ export class HermesClient {
         options.reconnect?.maxDelayMs ?? DEFAULT_RECONNECT_MAX_DELAY_MS,
       maxAttempts:
         options.reconnect?.maxAttempts ?? DEFAULT_RECONNECT_MAX_ATTEMPTS,
+      connectTimeoutMs:
+        options.reconnect?.connectTimeoutMs ?? DEFAULT_RECONNECT_TIMEOUT_MS,
     };
   }
 
@@ -356,8 +407,12 @@ export class HermesClient {
    *
    * Idempotent: when already connected it resolves with the current target, and
    * concurrent callers share one in-flight connect (one discovery fetch, one
-   * socket, one identity probe). Emits `contextCreated` on success. A client
-   * closed with {@link close} reopens.
+   * socket, one identity probe). Emits `contextCreated` on success, with
+   * `reason: 'reconnect'` when the previous connection was lost unexpectedly.
+   * A client closed with {@link close} reopens.
+   *
+   * A connect never stops the background reconnect loop: a failed attempt while
+   * the connection is lost restarts it.
    *
    * @param options - The connect timeout.
    * @returns The verified target or a classified failure.
@@ -365,15 +420,14 @@ export class HermesClient {
   async connect(options: HermesConnectOptions): Promise<HermesConnectResult> {
     const { timeoutMs } = options;
     this.#explicitlyClosed = false;
-    this.#clearReconnectTimer();
-    this.#reconnectAttempt = 0;
-    this.#connectTimeoutMs = timeoutMs;
 
     if (this.isConnected && this.#target) {
       return { ok: true, target: this.#target };
     }
 
-    return await this.#connectOnce(timeoutMs);
+    const result = await this.#connectOnce(timeoutMs);
+    this.#resumeReconnectAfterFailedCall(result);
+    return result;
   }
 
   /**
@@ -412,7 +466,10 @@ export class HermesClient {
     }
 
     if (!this.isConnected) {
-      const connected = await this.connect({ timeoutMs });
+      const connected = await this.#connectWithAbort(timeoutMs, signal);
+      if (connected === undefined) {
+        return abortedResult(method);
+      }
       if (!connected.ok) {
         return connected;
       }
@@ -519,7 +576,9 @@ export class HermesClient {
    */
   close(): void {
     this.#explicitlyClosed = true;
+    this.#socketLost = false;
     this.#clearReconnectTimer();
+    this.#reconnectAttempt = 0;
     this.#failAllPending(
       HERMES_CONNECTION_FAILED,
       `${CLIENT_CLOSED_MESSAGE}: the connection was closed`,
@@ -534,15 +593,26 @@ export class HermesClient {
       this.#detachSocket();
       closeSocket(socket);
     }
+
+    const connecting = this.#connectingSocket;
+    this.#connectingSocket = undefined;
+    if (connecting) {
+      closeSocket(connecting);
+    }
   }
 
   /**
    * Shares one in-flight connect between concurrent callers and emits the
    * connect lifecycle events once.
    *
+   * The `reconnect` reason is taken from the connection state at the start of
+   * the attempt: after an unexpected socket loss the next successful connect is
+   * a reconnect, whether the background loop or a caller triggered it.
+   *
    * @param timeoutMs - The connect timeout.
-   * @param reconnectAttempts - Set for a reconnect attempt, used for the
-   * `reconnected` payload and to distinguish the reordered lifecycle events.
+   * @param reconnectAttempts - Set for a background reconnect attempt, used for
+   * the `reconnected` payload. A caller-driven reconnect only emits
+   * `contextCreated`.
    * @returns The connect result.
    */
   async #connectOnce(
@@ -554,11 +624,13 @@ export class HermesClient {
       return await existing;
     }
 
-    const isReconnect = reconnectAttempts !== undefined;
-    const promise = this.#doConnect(timeoutMs, isReconnect)
+    const reconnected = this.#socketLost;
+    const promise = this.#doConnect(timeoutMs, reconnected)
       .then((result) => {
         if (result.ok) {
-          if (isReconnect) {
+          this.#socketLost = false;
+          this.#resetReconnect();
+          if (reconnectAttempts !== undefined) {
             this.#emit('reconnected', {
               target: result.target,
               attempts: reconnectAttempts,
@@ -566,8 +638,8 @@ export class HermesClient {
           }
           this.#emit('contextCreated', {
             target: result.target,
-            reconnected: isReconnect,
-            reason: isReconnect ? 'reconnect' : 'connect',
+            reconnected,
+            reason: reconnected ? 'reconnect' : 'connect',
           });
         }
         return result;
@@ -586,12 +658,13 @@ export class HermesClient {
    * Discovers, opens, probes and adopts a target. Never throws.
    *
    * @param timeoutMs - The connect timeout.
-   * @param reconnect - True for an automatic reconnect attempt.
+   * @param reconnected - True when the previous connection was lost
+   * unexpectedly, used to fail closed on a device pin mismatch.
    * @returns The verified target or a classified failure.
    */
   async #doConnect(
     timeoutMs: number,
-    reconnect: boolean,
+    reconnected: boolean,
   ): Promise<HermesConnectResult> {
     if (typeof WebSocket !== 'function') {
       this.#status = 'closed';
@@ -604,6 +677,9 @@ export class HermesClient {
 
     try {
       const targets = await fetchDiscoveryTargets(this.#metroPort, timeoutMs);
+      if (this.#explicitlyClosed) {
+        return closedDuringConnectResult();
+      }
 
       const selection = selectHermesTarget(
         targets,
@@ -614,7 +690,7 @@ export class HermesClient {
         const pinMismatch = this.#detectReconnectPinMismatch(
           targets,
           selection.code,
-          reconnect,
+          reconnected,
         );
         if (pinMismatch) {
           return pinMismatch;
@@ -653,13 +729,22 @@ export class HermesClient {
         headers: { origin },
       });
       socket = connectingSocket;
+      this.#connectingSocket = connectingSocket;
 
       await waitForSocketOpen(connectingSocket, timeoutMs);
+      if (this.#explicitlyClosed) {
+        return closedDuringConnectResult();
+      }
 
       // The probe runs once per socket, with id 1; user calls start at 2.
       const probe = await runIdentityProbe(connectingSocket, timeoutMs, 1);
       if (!probe.ok) {
         return { ok: false, code: probe.code, message: probe.message };
+      }
+      // Checked after every await of the connect path: a close() during the
+      // connect must not pin the device, call `onPin` or adopt the socket.
+      if (this.#explicitlyClosed) {
+        return closedDuringConnectResult();
       }
 
       const targetDeviceId = selection.target.reactNative?.logicalDeviceId;
@@ -680,15 +765,8 @@ export class HermesClient {
           message: `Hermes target device ${targetDeviceId} does not match session pin ${this.#pinnedDeviceId}`,
         };
       }
-      if (this.#explicitlyClosed) {
-        return {
-          ok: false,
-          code: HERMES_CONNECTION_FAILED,
-          message: `${CLIENT_CLOSED_MESSAGE} before the connection completed`,
-        };
-      }
 
-      this.#adopt(connectingSocket, timeoutMs);
+      this.#adopt(connectingSocket);
       adopted = true;
       this.#status = 'open';
 
@@ -734,6 +812,9 @@ export class HermesClient {
         message: `Hermes CDP connection failed: ${message}`,
       };
     } finally {
+      if (this.#connectingSocket === socket) {
+        this.#connectingSocket = undefined;
+      }
       if (!adopted) {
         this.#status = 'closed';
         if (socket) {
@@ -744,22 +825,78 @@ export class HermesClient {
   }
 
   /**
+   * Awaits a connect, giving up with `undefined` as soon as the signal aborts.
+   * The shared connect itself keeps running for other callers.
+   *
+   * @param timeoutMs - The connect timeout.
+   * @param signal - The call's abort signal, if any.
+   * @returns The connect result, or undefined when the call was aborted.
+   */
+  async #connectWithAbort(
+    timeoutMs: number,
+    signal: AbortSignal | undefined,
+  ): Promise<HermesConnectResult | undefined> {
+    const connecting = this.connect({ timeoutMs });
+    if (!signal) {
+      return await connecting;
+    }
+    if (signal.aborted) {
+      return undefined;
+    }
+
+    let handleAbort = (): void => undefined;
+    const aborted = new Promise<undefined>((resolve) => {
+      handleAbort = (): void => resolve(undefined);
+      signal.addEventListener('abort', handleAbort, { once: true });
+    });
+
+    try {
+      return await Promise.race([connecting, aborted]);
+    } finally {
+      signal.removeEventListener('abort', handleAbort);
+    }
+  }
+
+  /**
+   * Restarts the reconnect loop after a caller-driven connect failed while the
+   * connection was lost, so a `send` during the reconnect wait cannot stop the
+   * background loop.
+   *
+   * Does nothing after {@link close} or when the failure is terminal (device
+   * pin mismatch, WebSocket unavailable): retrying cannot fix those.
+   *
+   * @param result - The failed caller-driven connect result.
+   */
+  #resumeReconnectAfterFailedCall(result: HermesConnectResult): void {
+    if (result.ok || !this.#socketLost || this.#explicitlyClosed) {
+      return;
+    }
+    if (
+      result.code === HERMES_DEVICE_PIN_MISMATCH ||
+      result.code === HERMES_WEBSOCKET_UNAVAILABLE
+    ) {
+      return;
+    }
+    this.#scheduleReconnect();
+  }
+
+  /**
    * Turns a pinned selection failure into `HERMES_DEVICE_PIN_MISMATCH` during a
    * reconnect when Metro reports a different device. Inspection only: no socket
    * is opened for the wrong device.
    *
    * @param targets - All discovered targets.
    * @param code - The selection failure code.
-   * @param reconnect - True for an automatic reconnect attempt.
+   * @param reconnected - True when the previous connection was lost.
    * @returns The mismatch result, or undefined to keep the selection failure.
    */
   #detectReconnectPinMismatch(
     targets: Parameters<typeof selectHermesTarget>[0],
     code: string,
-    reconnect: boolean,
+    reconnected: boolean,
   ): { ok: false; code: string; message: string } | undefined {
     const pinnedDeviceId = this.#pinnedDeviceId;
-    if (!reconnect || !pinnedDeviceId || code !== HERMES_TARGET_NOT_FOUND) {
+    if (!reconnected || !pinnedDeviceId || code !== HERMES_TARGET_NOT_FOUND) {
       return undefined;
     }
 
@@ -780,17 +917,20 @@ export class HermesClient {
   }
 
   /**
-   * Adopts an open, verified socket: installs the dispatcher and resets the CDP
-   * id sequence for the new connection.
+   * Adopts an open, verified socket: installs the dispatcher, resets the CDP id
+   * sequence for the new connection and closes any socket it replaces, so a
+   * reconnect never leaks the previous socket.
    *
    * @param socket - The verified socket.
-   * @param timeoutMs - The timeout to reuse for later reconnect attempts.
    */
-  #adopt(socket: WebSocket, timeoutMs: number): void {
+  #adopt(socket: WebSocket): void {
+    const previous = this.#socket;
     this.#detachSocket();
     this.#socket = socket;
+    if (previous && previous !== socket) {
+      closeSocket(previous);
+    }
     this.#nextId = 2;
-    this.#connectTimeoutMs = timeoutMs;
     this.#socketTracksContexts = false;
     this.#sawContextOnSocket = false;
     this.#contextDestroyedForReload = false;
@@ -884,8 +1024,12 @@ export class HermesClient {
   }
 
   /**
-   * Emits `contextCreated` for a reload, skipping the first context of the
-   * socket (covered by the connect event).
+   * Emits `contextCreated` for a reload.
+   *
+   * The first context of a socket is covered by the connect event and is not
+   * re-emitted, unless a `contextDestroyed{reload}` was already seen on this
+   * socket: some devices do not report the initial context, so the next one
+   * after a destroy is a reload, not the socket's first context.
    *
    * @param params - The `Runtime.executionContextCreated` payload.
    */
@@ -893,7 +1037,9 @@ export class HermesClient {
     const executionContextId = readExecutionContextId(params);
     if (!this.#sawContextOnSocket) {
       this.#sawContextOnSocket = true;
-      return;
+      if (!this.#contextDestroyedForReload) {
+        return;
+      }
     }
 
     const target = this.#target;
@@ -963,7 +1109,11 @@ export class HermesClient {
 
   /**
    * Releases the adopted socket after an unexpected loss, fails pending calls,
-   * emits `disconnected` and starts the reconnect loop.
+   * starts the reconnect loop and then emits `disconnected`.
+   *
+   * The loop starts first on purpose: a `disconnected` listener may call
+   * {@link send}, and the socket it opens must already be the one the next
+   * scheduled attempt finds.
    *
    * @param reason - Why the socket was lost, used for the `disconnected` event.
    * @param pendingMessage - Overrides the pending-call failure message.
@@ -978,17 +1128,18 @@ export class HermesClient {
     this.#socket = undefined;
     this.#target = undefined;
     this.#status = 'closed';
+    this.#socketLost = true;
     closeSocket(socket);
 
     this.#failAllPending(
       HERMES_CONNECTION_FAILED,
       pendingMessage ?? `Hermes CDP connection closed: ${reason}`,
     );
-    this.#emit('disconnected', { reason });
 
     if (!this.#explicitlyClosed) {
       this.#startReconnect();
     }
+    this.#emit('disconnected', { reason });
   }
 
   /**
@@ -1031,23 +1182,32 @@ export class HermesClient {
   }
 
   /**
-   * Runs one reconnect attempt. Failures schedule the next backoff step; a
-   * device pin mismatch stops the loop so the wrong device is never used.
+   * Runs one reconnect attempt.
+   *
+   * Does nothing when the client is already connected: a caller (for example a
+   * `disconnected` listener) may have connected before the timer fired, and a
+   * second socket must never be opened. Failures schedule the next backoff
+   * step; a device pin mismatch or a missing WebSocket stops the loop so the
+   * wrong device is never used.
    */
   async #attemptReconnect(): Promise<void> {
     if (this.#explicitlyClosed) {
       return;
     }
+    if (this.isConnected) {
+      this.#resetReconnect();
+      return;
+    }
     try {
       const result = await this.#connectOnce(
-        this.#connectTimeoutMs,
+        this.#reconnect.connectTimeoutMs,
         this.#reconnectAttempt,
       );
       if (this.#explicitlyClosed) {
         return;
       }
-      if (result.ok) {
-        this.#reconnectAttempt = 0;
+      if (result.ok || this.isConnected) {
+        this.#resetReconnect();
         return;
       }
       if (
@@ -1061,6 +1221,14 @@ export class HermesClient {
     } catch {
       this.#scheduleReconnect();
     }
+  }
+
+  /**
+   * Clears the pending reconnect timer and resets the backoff counter.
+   */
+  #resetReconnect(): void {
+    this.#clearReconnectTimer();
+    this.#reconnectAttempt = 0;
   }
 
   /**
@@ -1105,6 +1273,10 @@ export class HermesClient {
   /**
    * Calls every listener registered for an event.
    *
+   * A throwing listener is isolated (the socket handler and the other listeners
+   * keep working) and reported to the `listenerError` listeners. A throwing
+   * `listenerError` listener is swallowed, so the report never recurses.
+   *
    * @param event - The lifecycle event name or CDP method name.
    * @param payload - The payload to deliver.
    */
@@ -1116,12 +1288,49 @@ export class HermesClient {
     for (const listener of [...listeners]) {
       try {
         (listener as (value: unknown) => void)(payload);
-      } catch {
-        // A failing listener must not break the socket handler or the
-        // other listeners.
+      } catch (error) {
+        if (event !== LISTENER_ERROR_EVENT) {
+          this.#emitListenerError(event, error);
+        }
       }
     }
   }
+
+  /**
+   * Reports a throwing listener to the `listenerError` listeners.
+   *
+   * @param event - The event name whose listener threw.
+   * @param error - The thrown value.
+   */
+  #emitListenerError(event: string, error: unknown): void {
+    const listeners = this.#listeners.get(LISTENER_ERROR_EVENT);
+    if (!listeners) {
+      return;
+    }
+    const payload: HermesListenerErrorEvent = { event, error };
+    for (const listener of [...listeners]) {
+      try {
+        (listener as (value: HermesListenerErrorEvent) => void)(payload);
+      } catch {
+        // A failing `listenerError` listener must not recurse or break the
+        // socket handler.
+      }
+    }
+  }
+}
+
+/**
+ * Builds the failure result for a connect that was still in flight when the
+ * client was closed.
+ *
+ * @returns A `HERMES_CONNECTION_FAILED` failure.
+ */
+function closedDuringConnectResult(): HermesFailureResult {
+  return {
+    ok: false,
+    code: HERMES_CONNECTION_FAILED,
+    message: `${CLIENT_CLOSED_MESSAGE} before the connection completed`,
+  };
 }
 
 /**
