@@ -1,3 +1,8 @@
+// `hermes-client.ts` imports this module's discovery and socket helpers, so the
+// two modules import each other. The cycle is safe: `hermes-client.ts` reads
+// those bindings only while connecting, never during module evaluation.
+import { HermesClient } from './hermes-client.js';
+
 /**
  * Pure Hermes Chrome DevTools Protocol (CDP) core for `@metamask/device-mcp`.
  *
@@ -105,20 +110,33 @@ type CdpSuccessResponse = {
   result?: unknown;
 };
 
+/**
+ * A CDP-level error payload.
+ */
+export type HermesCdpErrorInfo = {
+  /** The CDP error message. */
+  message?: string;
+  /** The CDP error code. */
+  code?: number;
+  /** Optional structured error details. */
+  data?: unknown;
+};
+
 type CdpErrorResponse = {
   id: number;
-  error: {
-    message?: string;
-    code?: number;
-    data?: unknown;
-  };
+  error: HermesCdpErrorInfo;
 };
 
 type TargetSelection =
   | { ok: true; target: HermesTarget }
   | { ok: false; code: string; message: string };
 
-type ProbeResult = { ok: true } | { ok: false; code: string; message: string };
+/**
+ * Result of the Hermes identity probe.
+ */
+export type HermesIdentityProbeResult =
+  | { ok: true }
+  | { ok: false; code: string; message: string };
 
 /**
  * No Hermes debug target matched the expected appId (after synthetic-title and
@@ -175,6 +193,12 @@ export const HERMES_CDP_FAILED = 'HERMES_CDP_FAILED';
 export const HERMES_WEBSOCKET_UNAVAILABLE = 'HERMES_WEBSOCKET_UNAVAILABLE';
 
 /**
+ * A pending CDP call was aborted through its `AbortSignal`. The pending entry is
+ * removed, so a late response is ignored.
+ */
+export const HERMES_ABORTED = 'HERMES_ABORTED';
+
+/**
  * CDP methods blocked for safety. Ported VERBATIM from the reference — do not
  * weaken.
  */
@@ -217,6 +241,46 @@ export const IDENTITY_PROBE_EXPR = `(function () {
 })();`;
 
 /**
+ * Returns the fail-closed result for a CDP method in the blocked set.
+ *
+ * @param method - The requested CDP method.
+ * @returns The `HERMES_BLOCKED_METHOD` failure, or undefined when not blocked.
+ */
+export function createBlockedMethodResult(
+  method: string,
+): HermesCdpResult | undefined {
+  if (!HERMES_BLOCKED_METHODS.has(method)) {
+    return undefined;
+  }
+  return {
+    ok: false,
+    code: HERMES_BLOCKED_METHOD,
+    message:
+      `CDP method "${method}" is blocked for safety. ` +
+      `Blocked methods: ${[...HERMES_BLOCKED_METHODS].join(', ')}`,
+  };
+}
+
+/**
+ * Returns the failure result for a runtime without a global `WebSocket`.
+ *
+ * @returns The `HERMES_WEBSOCKET_UNAVAILABLE` failure.
+ */
+export function websocketUnavailableResult(): {
+  ok: false;
+  code: string;
+  message: string;
+} {
+  return {
+    ok: false,
+    code: HERMES_WEBSOCKET_UNAVAILABLE,
+    message:
+      'Global WebSocket is unavailable. On Node 20 launch device-mcp with ' +
+      'NODE_OPTIONS="--experimental-websocket" (or use Node 22+).',
+  };
+}
+
+/**
  * Orchestrates a single verified Hermes CDP command end to end.
  *
  * Resolves a target from Metro discovery, enforces all five fail-closed safety
@@ -225,6 +289,9 @@ export const IDENTITY_PROBE_EXPR = `(function () {
  * supplies the resolved port/appId/pin and persists the pin — this function is
  * pure with respect to session state.
  *
+ * Implemented on {@link HermesClient}: one client, one connect, one send, then
+ * close. Auto-reconnect is disabled because a one-shot call owns the socket.
+ *
  * @param input - Method, params, timeout, resolved port/appId/pin, and the pin
  * persistence callback. See {@link RunHermesCdpInput}.
  * @returns A discriminated {@link HermesCdpResult}.
@@ -232,65 +299,21 @@ export const IDENTITY_PROBE_EXPR = `(function () {
 export async function runHermesCdp(
   input: RunHermesCdpInput,
 ): Promise<HermesCdpResult> {
-  if (HERMES_BLOCKED_METHODS.has(input.method)) {
-    return {
-      ok: false,
-      code: HERMES_BLOCKED_METHOD,
-      message:
-        `CDP method "${input.method}" is blocked for safety. ` +
-        `Blocked methods: ${[...HERMES_BLOCKED_METHODS].join(', ')}`,
-    };
-  }
-
-  if (typeof WebSocket !== 'function') {
-    return {
-      ok: false,
-      code: HERMES_WEBSOCKET_UNAVAILABLE,
-      message:
-        'Global WebSocket is unavailable. On Node 20 launch device-mcp with ' +
-        'NODE_OPTIONS="--experimental-websocket" (or use Node 22+).',
-    };
-  }
+  const client = new HermesClient({
+    metroPort: input.metroPort,
+    appId: input.appId,
+    origin: input.origin,
+    pinnedDeviceId: input.pinnedDeviceId,
+    onPin: input.onPin,
+    reconnect: { maxAttempts: 0 },
+  });
 
   try {
-    const targets = await fetchDiscoveryTargets(
-      input.metroPort,
-      input.timeoutMs,
-    );
-    const selection = selectHermesTarget(
-      targets,
-      input.appId,
-      input.pinnedDeviceId,
-    );
-    if (!selection.ok) {
-      return { ok: false, code: selection.code, message: selection.message };
-    }
-
-    const validation = validateWebSocketUrl(
-      selection.target.webSocketDebuggerUrl,
-      input.metroPort,
-    );
-    if (!validation.ok) {
-      return {
-        ok: false,
-        code: HERMES_INVALID_WS_URL,
-        message: validation.message,
-      };
-    }
-
-    return await executeVerifiedCdpCommand(
-      selection.target,
-      input,
-      input.pinnedDeviceId,
-      input.onPin,
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      code: HERMES_CONNECTION_FAILED,
-      message: `Hermes CDP connection failed: ${message}`,
-    };
+    return await client.send(input.method, input.params, {
+      timeoutMs: input.timeoutMs,
+    });
+  } finally {
+    client.close();
   }
 }
 
@@ -501,8 +524,9 @@ export function validateWebSocketUrl(
  * @param webSocketUrl - The target's WebSocket URL.
  * @param override - An explicit HTTP(S) origin, if configured.
  * @returns The HTTP(S) origin to send in the handshake.
+ * @throws When the explicit override is not a bare HTTP(S) origin.
  */
-function resolveWebSocketOrigin(
+export function resolveWebSocketOrigin(
   webSocketUrl: string,
   override: string | undefined,
 ): string {
@@ -562,13 +586,7 @@ export async function executeVerifiedCdpCommand(
     };
   }
   if (typeof WebSocket !== 'function') {
-    return {
-      ok: false,
-      code: HERMES_WEBSOCKET_UNAVAILABLE,
-      message:
-        'Global WebSocket is unavailable. On Node 20 launch device-mcp with ' +
-        'NODE_OPTIONS="--experimental-websocket" (or use Node 22+).',
-    };
+    return websocketUnavailableResult();
   }
 
   // Node's WebSocket supports this headers overload on Node 20 (with the
@@ -616,7 +634,7 @@ export async function executeVerifiedCdpCommand(
         ok: false,
         code: HERMES_CDP_FAILED,
         message: `Hermes CDP "${input.method}" failed: ${formatCdpError(
-          response,
+          response.error,
         )}`,
       };
     }
@@ -635,13 +653,13 @@ export async function executeVerifiedCdpCommand(
  * @param socket - The open target WebSocket.
  * @param timeoutMs - Round-trip timeout in milliseconds.
  * @param id - The CDP message id to use for this probe.
- * @returns A {@link ProbeResult}.
+ * @returns A {@link HermesIdentityProbeResult}.
  */
-async function runIdentityProbe(
+export async function runIdentityProbe(
   socket: WebSocket,
   timeoutMs: number,
   id: number,
-): Promise<ProbeResult> {
+): Promise<HermesIdentityProbeResult> {
   socket.send(
     JSON.stringify({
       id,
@@ -673,7 +691,7 @@ async function runIdentityProbe(
     return {
       ok: false,
       code: HERMES_NOT_VERIFIED,
-      message: `Identity probe failed: ${formatCdpError(response)}`,
+      message: `Identity probe failed: ${formatCdpError(response.error)}`,
     };
   }
 
@@ -786,7 +804,7 @@ async function sendUserMethod(
  * @param timeoutMs - Connection timeout in milliseconds.
  * @returns A promise that resolves when the socket is open.
  */
-async function waitForSocketOpen(
+export async function waitForSocketOpen(
   socket: WebSocket,
   timeoutMs: number,
 ): Promise<void> {
@@ -925,18 +943,18 @@ function isCdpErrorResponse(
 }
 
 /**
- * Formats a CDP error response into a single human-readable line.
+ * Formats a CDP error payload into a single human-readable line.
  *
- * @param response - The CDP error response.
+ * @param error - The CDP error payload.
  * @returns A combined message including code and data when present.
  */
-function formatCdpError(response: CdpErrorResponse): string {
-  const parts = [response.error.message ?? 'Unknown CDP error'];
-  if (typeof response.error.code === 'number') {
-    parts.push(`code ${response.error.code}`);
+export function formatCdpError(error: HermesCdpErrorInfo): string {
+  const parts = [error.message ?? 'Unknown CDP error'];
+  if (typeof error.code === 'number') {
+    parts.push(`code ${error.code}`);
   }
-  if (response.error.data !== undefined) {
-    parts.push(JSON.stringify(response.error.data));
+  if (error.data !== undefined) {
+    parts.push(JSON.stringify(error.data));
   }
   return parts.join(' - ');
 }
@@ -946,7 +964,7 @@ function formatCdpError(response: CdpErrorResponse): string {
  *
  * @param socket - The target WebSocket.
  */
-function closeSocket(socket: WebSocket): void {
+export function closeSocket(socket: WebSocket): void {
   if (
     socket.readyState === WebSocket.CONNECTING ||
     socket.readyState === WebSocket.OPEN

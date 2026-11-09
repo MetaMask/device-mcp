@@ -47,12 +47,29 @@ export {
   hasAmbiguousTarget,
   validateWebSocketUrl,
   LEGACY_SYNTHETIC_TITLE,
+  HERMES_ABORTED,
 } from './hermes/hermes-cdp.js';
 export type {
   HermesTarget,
   HermesCdpResult,
+  HermesCdpErrorInfo,
   RunHermesCdpInput,
 } from './hermes/hermes-cdp.js';
+
+export { HermesClient } from './hermes/hermes-client.js';
+export type {
+  HermesClientOptions,
+  HermesClientReconnectOptions,
+  HermesConnectOptions,
+  HermesConnectResult,
+  HermesConnectedTarget,
+  HermesSendOptions,
+  HermesCdpEvent,
+  HermesClientEventMap,
+  HermesContextCreatedEvent,
+  HermesDisconnectedEvent,
+  HermesReconnectedEvent,
+} from './hermes/hermes-client.js';
 
 export {
   runWebViewCdp,
