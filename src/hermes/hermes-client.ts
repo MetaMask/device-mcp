@@ -949,7 +949,12 @@ export class HermesClient {
       return;
     }
     for (const listener of [...listeners]) {
-      (listener as (value: unknown) => void)(payload);
+      try {
+        (listener as (value: unknown) => void)(payload);
+      } catch {
+        // A failing listener must not break the socket handler or the
+        // other listeners.
+      }
     }
   }
 }

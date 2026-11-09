@@ -445,6 +445,29 @@ describe('HermesClient', () => {
     expect(received).toHaveLength(1);
   });
 
+  it('keeps dispatching when a listener throws', async () => {
+    const client = createClient();
+    const received: HermesCdpEvent[] = [];
+    client.on('Runtime.consoleAPICalled', () => {
+      throw new Error('listener failed');
+    });
+    client.on('Runtime.consoleAPICalled', (event: HermesCdpEvent) => {
+      received.push(event);
+    });
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    const socket = socketAt(0);
+    socket.receive(
+      JSON.stringify({ method: 'Runtime.consoleAPICalled', params: {} }),
+    );
+
+    expect(received).toHaveLength(1);
+    const next = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    expect(next.ok).toBe(true);
+  });
+
   it('ignores malformed and unknown-id frames', async () => {
     const client = createClient();
     await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
