@@ -67,6 +67,8 @@ export type {
   HermesCdpEvent,
   HermesClientEventMap,
   HermesContextCreatedEvent,
+  HermesContextCreatedReason,
+  HermesContextDestroyedEvent,
   HermesDisconnectedEvent,
   HermesReconnectedEvent,
 } from './hermes/hermes-client.js';

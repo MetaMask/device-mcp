@@ -306,6 +306,9 @@ export async function runHermesCdp(
     pinnedDeviceId: input.pinnedDeviceId,
     onPin: input.onPin,
     reconnect: { maxAttempts: 0 },
+    // The one-shot path must not pay for (or expose) context tracking, and its
+    // wire traffic stays probe + one method.
+    trackContexts: false,
   });
 
   try {

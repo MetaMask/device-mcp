@@ -11,7 +11,12 @@ import {
   IDENTITY_PROBE_EXPR,
 } from './hermes-cdp.js';
 import { HermesClient } from './hermes-client.js';
-import type { HermesCdpEvent, HermesClientOptions } from './hermes-client.js';
+import type {
+  HermesCdpEvent,
+  HermesClientOptions,
+  HermesContextCreatedEvent,
+  HermesContextDestroyedEvent,
+} from './hermes-client.js';
 
 const APP_ID = 'io.metamask.MetaMask';
 const METRO_PORT = 8085;
@@ -157,8 +162,25 @@ function defaultResponseFactory(request: CdpRequest): Record<string, unknown> {
   return { id: request.id, result: { result: { type: 'number', value: 2 } } };
 }
 
-function probeOnly(request: CdpRequest): MockResponse {
-  return isIdentityProbe(request) ? probeResponse(request) : undefined;
+function isRuntimeEnable(request: CdpRequest): boolean {
+  return request.method === 'Runtime.enable';
+}
+
+/**
+ * Answers the identity probe and the client's internal `Runtime.enable`, but
+ * leaves user methods unanswered.
+ *
+ * @param request - The sent CDP request.
+ * @returns The mocked response, or undefined to stay pending.
+ */
+function controlOnly(request: CdpRequest): MockResponse {
+  if (isIdentityProbe(request)) {
+    return probeResponse(request);
+  }
+  if (isRuntimeEnable(request)) {
+    return { id: request.id, result: {} };
+  }
+  return undefined;
 }
 
 function socketAt(index: number): FakeWebSocket {
@@ -246,8 +268,11 @@ describe('HermesClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const socket = socketAt(0);
-    expect(socket.sent.map((request) => request.id)).toStrictEqual([1, 2, 3]);
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([
+      1, 2, 3, 4,
+    ]);
     expect(socket.sent.filter(isIdentityProbe)).toHaveLength(1);
+    expect(socket.sent.filter(isRuntimeEnable)).toHaveLength(1);
     expect(socket.options?.headers.origin).toBe(
       `http://127.0.0.1:${METRO_PORT}`,
     );
@@ -278,7 +303,134 @@ describe('HermesClient', () => {
         title: 'io.metamask.MetaMask (iPhone 15)',
       },
       reconnected: false,
+      reason: 'connect',
     });
+  });
+
+  it('sends Runtime.enable once per socket', async () => {
+    const client = createClient();
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+
+    const enableMessages = socketAt(0).sent.filter(isRuntimeEnable);
+    expect(enableMessages).toStrictEqual([
+      { id: 2, method: 'Runtime.enable', params: {} },
+    ]);
+  });
+
+  it('does not send Runtime.enable when trackContexts is off', async () => {
+    const client = createClient({ trackContexts: false });
+    const created = vi.fn();
+    client.on('contextCreated', created);
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    const socket = socketAt(0);
+
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([1, 2]);
+    expect(socket.sent.filter(isRuntimeEnable)).toHaveLength(0);
+
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { name: 'main', id: 2 } },
+      }),
+    );
+    expect(created).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits one contextDestroyed and one reload contextCreated when the app reloads on the same socket', async () => {
+    const client = createClient();
+    const created: HermesContextCreatedEvent[] = [];
+    const destroyed: HermesContextDestroyedEvent[] = [];
+    const raw: HermesCdpEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('contextDestroyed', (event) => destroyed.push(event));
+    client.on('Runtime.executionContextCreated', (event) => raw.push(event));
+
+    await client.connect({ timeoutMs: 1_000 });
+    const socket = socketAt(0);
+    const expectedTarget = {
+      id: 'device-page-1',
+      logicalDeviceId: 'logical-device-1',
+      title: 'io.metamask.MetaMask (iPhone 15)',
+    };
+
+    // The first context after Runtime.enable is the one connect already
+    // reported, so it must not produce a second contextCreated.
+    const firstContext = {
+      method: 'Runtime.executionContextCreated',
+      params: { context: { name: 'main', id: 2 } },
+    };
+    socket.receive(JSON.stringify(firstContext));
+    expect(created).toStrictEqual([
+      { target: expectedTarget, reconnected: false, reason: 'connect' },
+    ]);
+    // Raw CDP events still reach listeners.
+    expect(raw).toStrictEqual([firstContext]);
+
+    // Reload: Hermes sends both destroy events; they coalesce into one.
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextDestroyed',
+        params: { executionContextId: 2 },
+      }),
+    );
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextsCleared',
+        params: {},
+      }),
+    );
+    expect(destroyed).toStrictEqual([{ reason: 'reload' }]);
+
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { name: 'main', id: 3 } },
+      }),
+    );
+    expect(created).toHaveLength(2);
+    expect(created[1]).toStrictEqual({
+      target: expectedTarget,
+      reconnected: false,
+      reason: 'reload',
+      executionContextId: 3,
+    });
+  });
+
+  it('keeps the connection when Runtime.enable fails', async () => {
+    FakeWebSocket.responseFactory = (request) => {
+      if (isIdentityProbe(request)) {
+        return probeResponse(request);
+      }
+      if (isRuntimeEnable(request)) {
+        return {
+          id: request.id,
+          error: { message: 'Method not found', code: -32601 },
+        };
+      }
+      return undefined;
+    };
+    const client = createClient();
+    const created = vi.fn();
+    client.on('contextCreated', created);
+
+    const result = await client.connect({ timeoutMs: 1_000 });
+
+    expect(result.ok).toBe(true);
+    expect(client.isConnected).toBe(true);
+
+    socketAt(0).receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { name: 'main', id: 2 } },
+      }),
+    );
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(created).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'connect' }),
+    );
   });
 
   it('returns the current target when already connected', async () => {
@@ -293,7 +445,7 @@ describe('HermesClient', () => {
   });
 
   it('matches concurrent responses by id, even out of order', async () => {
-    FakeWebSocket.responseFactory = probeOnly;
+    FakeWebSocket.responseFactory = controlOnly;
     const client = createClient();
 
     const first = client.send(
@@ -309,17 +461,17 @@ describe('HermesClient', () => {
 
     await flush();
     const socket = socketAt(0);
-    expect(socket.sent).toHaveLength(3);
+    expect(socket.sent).toHaveLength(4);
 
-    socket.receive(JSON.stringify({ id: 3, result: 'b' }));
-    socket.receive(JSON.stringify({ id: 2, result: 'a' }));
+    socket.receive(JSON.stringify({ id: 4, result: 'b' }));
+    socket.receive(JSON.stringify({ id: 3, result: 'a' }));
 
     expect(await second).toStrictEqual({ ok: true, result: 'b' });
     expect(await first).toStrictEqual({ ok: true, result: 'a' });
   });
 
   it('fails with HERMES_TIMEOUT on a per-call timeout and drops the pending entry', async () => {
-    FakeWebSocket.responseFactory = probeOnly;
+    FakeWebSocket.responseFactory = controlOnly;
     const client = createClient();
 
     const result = await client.send(
@@ -333,7 +485,7 @@ describe('HermesClient', () => {
 
     // The late response must be ignored, and the next call gets a fresh id.
     const socket = socketAt(0);
-    socket.receive(JSON.stringify({ id: 2, result: 'late' }));
+    socket.receive(JSON.stringify({ id: 3, result: 'late' }));
     FakeWebSocket.responseFactory = defaultResponseFactory;
     const next = await client.send(
       'Runtime.evaluate',
@@ -342,11 +494,13 @@ describe('HermesClient', () => {
     );
 
     expect(next.ok).toBe(true);
-    expect(socket.sent.map((request) => request.id)).toStrictEqual([1, 2, 3]);
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([
+      1, 2, 3, 4,
+    ]);
   });
 
   it('fails with HERMES_ABORTED when the signal aborts and drops the pending entry', async () => {
-    FakeWebSocket.responseFactory = probeOnly;
+    FakeWebSocket.responseFactory = controlOnly;
     const controller = new AbortController();
     const client = createClient();
 
@@ -363,7 +517,7 @@ describe('HermesClient', () => {
     expect(result.message).toContain('aborted');
 
     const socket = socketAt(0);
-    socket.receive(JSON.stringify({ id: 2, result: 'late' }));
+    socket.receive(JSON.stringify({ id: 3, result: 'late' }));
     FakeWebSocket.responseFactory = defaultResponseFactory;
     const next = await client.send(
       'Runtime.evaluate',
@@ -372,7 +526,9 @@ describe('HermesClient', () => {
     );
 
     expect(next.ok).toBe(true);
-    expect(socket.sent.map((request) => request.id)).toStrictEqual([1, 2, 3]);
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([
+      1, 2, 3, 4,
+    ]);
   });
 
   it('does not connect for an already-aborted signal', async () => {
@@ -391,17 +547,22 @@ describe('HermesClient', () => {
   });
 
   it('formats a CDP error into HERMES_CDP_FAILED', async () => {
-    FakeWebSocket.responseFactory = (request) =>
-      isIdentityProbe(request)
-        ? probeResponse(request)
-        : {
-            id: request.id,
-            error: {
-              message: 'Bad params',
-              code: -32602,
-              data: { reason: 'invalid' },
-            },
-          };
+    FakeWebSocket.responseFactory = (request) => {
+      if (isIdentityProbe(request)) {
+        return probeResponse(request);
+      }
+      if (isRuntimeEnable(request)) {
+        return { id: request.id, result: {} };
+      }
+      return {
+        id: request.id,
+        error: {
+          message: 'Bad params',
+          code: -32602,
+          data: { reason: 'invalid' },
+        },
+      };
+    };
     const client = createClient();
 
     const result = await client.send('Missing.method', undefined, {
@@ -546,7 +707,7 @@ describe('HermesClient', () => {
   });
 
   it('closing fails pending calls and closes the socket', async () => {
-    FakeWebSocket.responseFactory = probeOnly;
+    FakeWebSocket.responseFactory = controlOnly;
     const client = createClient();
 
     const pending = client.send('Runtime.evaluate', undefined, {
@@ -585,12 +746,12 @@ describe('HermesClient', () => {
     expect(created).toHaveLength(1);
     expect(FakeWebSocket.instances).toHaveLength(1);
 
-    FakeWebSocket.responseFactory = probeOnly;
+    FakeWebSocket.responseFactory = controlOnly;
     const pending = client.send('Network.enable', undefined, {
       timeoutMs: 5_000,
     });
     await flush();
-    expect(socketAt(0).sent).toHaveLength(3);
+    expect(socketAt(0).sent).toHaveLength(4);
 
     // The app reloads: the target id and URL change behind the same Metro port.
     mockDiscovery([
@@ -625,6 +786,7 @@ describe('HermesClient', () => {
     ]);
     expect(created[1]).toMatchObject({
       reconnected: true,
+      reason: 'reconnect',
       target: { id: 'device-page-2' },
     });
     expect(client.isConnected).toBe(true);
@@ -635,7 +797,9 @@ describe('HermesClient', () => {
       timeoutMs: 1_000,
     });
     expect(after.ok).toBe(true);
-    expect(socketAt(1).sent.map((request) => request.id)).toStrictEqual([1, 2]);
+    expect(socketAt(1).sent.map((request) => request.id)).toStrictEqual([
+      1, 2, 3,
+    ]);
   });
 
   it('retries with backoff and gives up after maxAttempts', async () => {

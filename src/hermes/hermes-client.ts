@@ -11,12 +11,16 @@
  * selection, the Hermes identity probe once per socket, the device pin, the
  * WebSocket URL validation, and the blocked-method set.
  *
- * When the app reloads (or Metro restarts) the socket closes. Pending calls are
- * failed with `HERMES_CONNECTION_FAILED` and NOT resent (they may have run), then
- * the client rediscovers the target (its id and URL change after a reload) and
- * reconnects with exponential backoff. Every successful (re)connect emits
- * `contextCreated` so callers can re-apply their scripts (page reloads reset the
- * runtime).
+ * When Metro restarts (or the socket is otherwise lost) the socket closes.
+ * Pending calls are failed with `HERMES_CONNECTION_FAILED` and NOT resent (they
+ * may have run), then the client rediscovers the target and reconnects with
+ * exponential backoff. Every successful (re)connect emits `contextCreated`.
+ *
+ * An app reload does NOT close the socket: the runtime swaps its JavaScript
+ * context in place. With `trackContexts` on (the default) the client enables
+ * `Runtime` context events, emits `contextDestroyed` when the old context goes
+ * away and `contextCreated` (`reason: 'reload'`) for the new one, so callers can
+ * re-apply their scripts.
  */
 
 import type { HermesCdpResult } from './hermes-cdp.js';
@@ -92,6 +96,20 @@ export type HermesClientOptions = {
   onPin?: (logicalDeviceId: string) => void;
   /** Automatic reconnect tuning. */
   reconnect?: HermesClientReconnectOptions;
+  /**
+   * Track JavaScript execution contexts and emit `contextCreated` /
+   * `contextDestroyed` lifecycle events (default `true`).
+   *
+   * When enabled, the client sends `Runtime.enable` itself after each
+   * connection so Hermes streams `Runtime.executionContextCreated`,
+   * `Runtime.executionContextDestroyed` and `Runtime.executionContextsCleared`
+   * over the socket; an app reload keeps the socket open, so this is the only
+   * signal that the JavaScript context was replaced. Cost: `Runtime.enable`
+   * also makes Hermes stream `Runtime.consoleAPICalled` (and other `Runtime`
+   * events) on the socket; listeners that do not consume them still receive
+   * them.
+   */
+  trackContexts?: boolean;
 };
 
 /**
@@ -142,14 +160,37 @@ export type HermesCdpEvent = {
 };
 
 /**
- * Payload of the `contextCreated` lifecycle event, emitted after every
- * successful connect (including the first one) and after every reconnect.
+ * Why a `contextCreated` lifecycle event fired:
+ * - `connect`: the first connection of this client.
+ * - `reconnect`: a new socket after the old one closed (Metro restart, socket
+ *   loss).
+ * - `reload`: a new JS context on the SAME socket (app reload / fast refresh).
+ */
+export type HermesContextCreatedReason = 'connect' | 'reconnect' | 'reload';
+
+/**
+ * Payload of the `contextCreated` lifecycle event: emitted after every
+ * successful connect, after every reconnect, and for every new JavaScript
+ * execution context created on an open socket (app reload).
  */
 export type HermesContextCreatedEvent = {
-  /** The verified target of the new connection. */
+  /** The verified target of the connection. */
   target: HermesConnectedTarget;
-  /** True for a reconnect, false for the initial connect. */
+  /** True for a reconnect, false for the initial connect or a reload. */
   reconnected: boolean;
+  /** Why the event fired. */
+  reason: HermesContextCreatedReason;
+  /** The CDP execution context id for a `reload`, when Hermes reported one. */
+  executionContextId?: number;
+};
+
+/**
+ * Payload of the `contextDestroyed` lifecycle event, emitted when an open
+ * socket reports that its JavaScript context went away (a reload started).
+ */
+export type HermesContextDestroyedEvent = {
+  /** Contexts are only destroyed by a reload on the same socket. */
+  reason: 'reload';
 };
 
 /**
@@ -177,6 +218,7 @@ export type HermesReconnectedEvent = {
  */
 export type HermesClientEventMap = {
   contextCreated: HermesContextCreatedEvent;
+  contextDestroyed: HermesContextDestroyedEvent;
   disconnected: HermesDisconnectedEvent;
   reconnected: HermesReconnectedEvent;
 };
@@ -201,6 +243,12 @@ type PendingCall = {
  *
  * Create one per session, call {@link send} for CDP methods (it connects on the
  * first call), subscribe with {@link on}, and call {@link close} when done.
+ *
+ * Reloads keep the socket open, so a closed socket only means a lost connection
+ * (Metro restart). When `trackContexts` is on (the default), the client enables
+ * `Runtime` context events and emits a `contextCreated` lifecycle event for
+ * every new JavaScript context on the open socket, so callers can re-apply
+ * their scripts.
  */
 export class HermesClient {
   readonly #metroPort: number;
@@ -212,6 +260,8 @@ export class HermesClient {
   readonly #onPin: ((logicalDeviceId: string) => void) | undefined;
 
   readonly #reconnect: Required<HermesClientReconnectOptions>;
+
+  readonly #trackContexts: boolean;
 
   readonly #listeners = new Map<string, Set<HermesEventListener>>();
 
@@ -226,6 +276,26 @@ export class HermesClient {
   #status: HermesClientStatus = 'idle';
 
   #nextId = 1;
+
+  /**
+   * Whether the adopted socket streams `Runtime` execution-context events.
+   * True while `Runtime.enable` is in flight or succeeded; false when
+   * `trackContexts` is off or `Runtime.enable` failed.
+   */
+  #socketTracksContexts = false;
+
+  /**
+   * Whether the first execution context of the adopted socket was already seen.
+   * The connect `contextCreated` event covers it, so it is not re-emitted.
+   */
+  #sawContextOnSocket = false;
+
+  /**
+   * Whether a `contextDestroyed` event was already emitted for the current
+   * reload; coalesces `executionContextDestroyed` and
+   * `executionContextsCleared`.
+   */
+  #contextDestroyedForReload = false;
 
   #inFlightConnect: Promise<HermesConnectResult> | undefined;
 
@@ -243,6 +313,7 @@ export class HermesClient {
     this.#origin = options.origin;
     this.#pinnedDeviceId = options.pinnedDeviceId;
     this.#onPin = options.onPin;
+    this.#trackContexts = options.trackContexts ?? true;
     this.#reconnect = {
       initialDelayMs:
         options.reconnect?.initialDelayMs ?? DEFAULT_RECONNECT_INITIAL_DELAY_MS,
@@ -401,9 +472,9 @@ export class HermesClient {
   /**
    * Subscribes to a lifecycle event or a CDP event.
    *
-   * Lifecycle names are `contextCreated`, `disconnected` and `reconnected`.
-   * Any other name receives the CDP event messages of that `method`
-   * (for example `Runtime.consoleAPICalled`).
+   * Lifecycle names are `contextCreated`, `contextDestroyed`, `disconnected`
+   * and `reconnected`. Any other name receives the CDP event messages of that
+   * `method` (for example `Runtime.consoleAPICalled`).
    *
    * @param event - The lifecycle event name or CDP method name.
    * @param listener - Called with the typed lifecycle payload or the CDP event.
@@ -496,6 +567,7 @@ export class HermesClient {
           this.#emit('contextCreated', {
             target: result.target,
             reconnected: isReconnect,
+            reason: isReconnect ? 'reconnect' : 'connect',
           });
         }
         return result;
@@ -626,6 +698,33 @@ export class HermesClient {
         title: selection.target.title,
       };
       this.#target = target;
+
+      if (this.#trackContexts) {
+        // Mark tracking before sending: Hermes can emit the first
+        // `executionContextCreated` before the `Runtime.enable` response, and
+        // that first context must be recorded (so a later reload is not
+        // mistaken for it) even though it is not re-emitted.
+        this.#socketTracksContexts = true;
+        // Enabling contexts is best effort: a failure only disables the
+        // `contextCreated` / `contextDestroyed` lifecycle detection for this
+        // socket, it never fails the connect.
+        const enabled = await this.send('Runtime.enable', undefined, {
+          timeoutMs,
+        });
+        if (!enabled.ok) {
+          this.#socketTracksContexts = false;
+          this.#sawContextOnSocket = false;
+          if (!this.isConnected) {
+            return {
+              ok: false,
+              code: HERMES_CONNECTION_FAILED,
+              message:
+                'Hermes CDP connection failed: the socket closed while enabling runtime events',
+            };
+          }
+        }
+      }
+
       return { ok: true, target };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -692,6 +791,9 @@ export class HermesClient {
     this.#socket = socket;
     this.#nextId = 2;
     this.#connectTimeoutMs = timeoutMs;
+    this.#socketTracksContexts = false;
+    this.#sawContextOnSocket = false;
+    this.#contextDestroyedForReload = false;
     socket.addEventListener('message', this.#handleMessage);
     socket.addEventListener('close', this.#handleClose);
     socket.addEventListener('error', this.#handleError);
@@ -745,8 +847,71 @@ export class HermesClient {
         method: message.method,
         params: message.params,
       });
+      this.#trackExecutionContext(message.method, message.params);
     }
   };
+
+  /**
+   * Derives `contextCreated` / `contextDestroyed` lifecycle events from the
+   * `Runtime` execution-context events of the adopted socket.
+   *
+   * The first context of a socket is the one the connect `contextCreated` event
+   * already described, so it is not re-emitted. A later context means the app
+   * reloaded while the socket stayed open.
+   *
+   * @param method - The CDP event method.
+   * @param params - The CDP event payload.
+   */
+  #trackExecutionContext(method: string, params: unknown): void {
+    if (!this.#socketTracksContexts) {
+      return;
+    }
+
+    if (method === 'Runtime.executionContextCreated') {
+      this.#handleExecutionCreated(params);
+      return;
+    }
+    if (
+      method === 'Runtime.executionContextDestroyed' ||
+      method === 'Runtime.executionContextsCleared'
+    ) {
+      if (this.#contextDestroyedForReload) {
+        return;
+      }
+      this.#contextDestroyedForReload = true;
+      this.#emit('contextDestroyed', { reason: 'reload' });
+    }
+  }
+
+  /**
+   * Emits `contextCreated` for a reload, skipping the first context of the
+   * socket (covered by the connect event).
+   *
+   * @param params - The `Runtime.executionContextCreated` payload.
+   */
+  #handleExecutionCreated(params: unknown): void {
+    const executionContextId = readExecutionContextId(params);
+    if (!this.#sawContextOnSocket) {
+      this.#sawContextOnSocket = true;
+      return;
+    }
+
+    const target = this.#target;
+    if (!target) {
+      return;
+    }
+
+    this.#contextDestroyedForReload = false;
+    const event: HermesContextCreatedEvent = {
+      target,
+      reconnected: false,
+      reason: 'reload',
+    };
+    if (executionContextId !== undefined) {
+      event.executionContextId = executionContextId;
+    }
+    this.#emit('contextCreated', event);
+  }
 
   /**
    * Settles the pending call whose id matches a CDP response.
@@ -984,6 +1149,25 @@ function abortedResult(method: string): HermesCdpResult {
     code: HERMES_ABORTED,
     message: `Hermes CDP call "${method}" was aborted`,
   };
+}
+
+/**
+ * Reads the execution context id from a `Runtime.executionContextCreated`
+ * payload.
+ *
+ * @param params - The CDP event payload.
+ * @returns The numeric context id, or undefined when absent.
+ */
+function readExecutionContextId(params: unknown): number | undefined {
+  if (typeof params !== 'object' || params === null) {
+    return undefined;
+  }
+  const { context } = params as { context?: unknown };
+  if (typeof context !== 'object' || context === null) {
+    return undefined;
+  }
+  const { id } = context as { id?: unknown };
+  return typeof id === 'number' ? id : undefined;
 }
 
 /**
