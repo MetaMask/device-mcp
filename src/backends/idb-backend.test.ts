@@ -978,6 +978,68 @@ describe('IdbBackend device description cache', () => {
     expect(describeJsonCalls()).toBe(2);
   });
 
+  it('keeps the cached description when a getDeviceInfo read fails', async () => {
+    await backend.getWindowSize();
+    mockExecStrict.mockImplementationOnce(async () => {
+      throw new Error('companion busy');
+    });
+
+    await expect(backend.getDeviceInfo()).rejects.toThrow('companion busy');
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 402,
+      height: 874,
+    });
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('serves the cached description while getDeviceInfo reads', async () => {
+    await backend.getWindowSize();
+    let finishRead: (raw: string) => void = () => undefined;
+    mockExecStrict.mockImplementationOnce(
+      async () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const refreshing = backend.getDeviceInfo();
+
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 402,
+      height: 874,
+    });
+
+    finishRead(
+      JSON.stringify({
+        ...screenInfo,
+        screen_dimensions: { width_points: 874, height_points: 402 },
+      }),
+    );
+    await refreshing;
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 874,
+      height: 402,
+    });
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('does not cache a getDeviceInfo read that a reconnect overtook', async () => {
+    let finishRead: (raw: string) => void = () => undefined;
+    await backend.ensureConnected();
+    mockExecStrict.mockImplementationOnce(
+      async () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const refreshing = backend.getDeviceInfo();
+    await backend.reconnect();
+    finishRead(JSON.stringify(screenInfo));
+    await refreshing;
+
+    await backend.getWindowSize();
+    expect(describeJsonCalls()).toBe(2);
+  });
+
   it('falls back to the snapshot root when describe is not JSON', async () => {
     // Without --api support the snapshot does not need the OS version.
     mockSupportsApi.mockResolvedValue(false);

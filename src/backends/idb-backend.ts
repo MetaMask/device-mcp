@@ -344,27 +344,37 @@ export class IdbBackend implements DeviceBackend {
   }
 
   /**
-   * Runs `idb describe --json` and stores the result as the cached
-   * description of the current connection (see `#describeCache`). Concurrent
-   * callers of `#cachedDescribe()` share one read; a failed read is dropped
-   * from the cache so the next call retries.
+   * Runs `idb describe --json`.
    *
    * @returns The parsed device description.
    */
-  async #describe(): Promise<Record<string, unknown>> {
-    const pending = (async (): Promise<Record<string, unknown>> => {
-      const raw = await this.#execStrict(this.#idbPath, [
-        'describe',
-        '--udid',
-        this.#udid,
-        '--json',
-      ]);
-      try {
-        return JSON.parse(raw) as Record<string, unknown>;
-      } catch {
-        throw new InvalidDescribeJsonError(this.#udid, raw);
-      }
-    })();
+  async #readDescribe(): Promise<Record<string, unknown>> {
+    const raw = await this.#execStrict(this.#idbPath, [
+      'describe',
+      '--udid',
+      this.#udid,
+      '--json',
+    ]);
+    try {
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new InvalidDescribeJsonError(this.#udid, raw);
+    }
+  }
+
+  /**
+   * The cached `idb describe --json` of the current connection (see
+   * `#describeCache`); reads it on first use. Concurrent first callers share
+   * one read; a failed read is dropped from the cache so the next call
+   * retries.
+   *
+   * @returns The parsed device description.
+   */
+  async #cachedDescribe(): Promise<Record<string, unknown>> {
+    if (this.#describeCache) {
+      return this.#describeCache;
+    }
+    const pending = this.#readDescribe();
     this.#describeCache = pending;
     pending.catch(() => {
       if (this.#describeCache === pending) {
@@ -375,24 +385,19 @@ export class IdbBackend implements DeviceBackend {
   }
 
   /**
-   * The cached `idb describe --json` of the current connection; reads it on
-   * first use.
-   *
-   * @returns The parsed device description.
-   */
-  async #cachedDescribe(): Promise<Record<string, unknown>> {
-    return this.#describeCache ?? this.#describe();
-  }
-
-  /**
-   * Reads the device description fresh (and refreshes the cache that
-   * snapshots and taps use).
+   * Reads the device description fresh. A successful read replaces the cache
+   * that snapshots and taps use, unless the connection changed meanwhile;
+   * until then, and after a failed read, they keep the cached description.
    *
    * @returns The device info.
    */
   async getDeviceInfo(): Promise<DeviceInfo> {
     await this.ensureConnected();
-    const info = await this.#describe();
+    const generation = this.#generation;
+    const info = await this.#readDescribe();
+    if (this.#generation === generation) {
+      this.#describeCache = Promise.resolve(info);
+    }
     return {
       platform: 'ios',
       deviceId: this.#udid,
