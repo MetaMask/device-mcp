@@ -39,6 +39,7 @@ import {
   resolveIdbPath,
 } from '../utils/platform.js';
 import { stopChildProcess } from '../utils/stop-child-process.js';
+import { pollForElement } from '../utils/wait-for-element.js';
 
 /** `idb describe --json` printed something that is not JSON. */
 class InvalidDescribeJsonError extends Error {
@@ -641,17 +642,11 @@ export class IdbBackend implements DeviceBackend {
     timeoutMs = 10_000,
     intervalMs = 500,
   ): Promise<UIElement> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const snapshot = await this.snapshot();
-      const element = findElement(snapshot.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    throw new Error(
-      `Timed out waiting for element: ${JSON.stringify(query)} (${timeoutMs}ms)`,
+    return pollForElement(
+      async () => this.snapshot(),
+      query,
+      timeoutMs,
+      intervalMs,
     );
   }
 

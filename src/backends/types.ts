@@ -156,6 +156,12 @@ export type DeviceBackend = {
     distance?: number,
   ): Promise<void>;
 
+  /**
+   * Polls snapshots until an element matches `query`. An element that appears
+   * during the wait is returned once its frame stops changing (a sheet that
+   * is still sliding in), so a tap on the returned frame lands where the
+   * element stops.
+   */
   waitForElement(
     query: ElementQuery,
     timeoutMs?: number,

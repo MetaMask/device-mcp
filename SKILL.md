@@ -147,7 +147,7 @@ Swipe on screen. Uses **natural scrolling**: swipe `"up"` to scroll content **do
 
 ### device_wait_for
 
-Poll the hierarchy until an element appears. Use after navigation or when waiting for async content.
+Poll the hierarchy until an element appears. An element that appears during the wait is returned once it stops moving (for example a sheet sliding in). Use after navigation or when waiting for async content.
 
 ```json
 { "label": "Welcome", "timeoutMs": 15000 }

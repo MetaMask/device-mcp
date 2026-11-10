@@ -26,6 +26,7 @@ import {
   resolveArtifactPath,
   writeArtifactFile,
 } from '../utils/output-path.js';
+import { pollForElement } from '../utils/wait-for-element.js';
 
 export class AppiumBackend implements DeviceBackend {
   readonly kind = 'appium' as const;
@@ -196,17 +197,11 @@ export class AppiumBackend implements DeviceBackend {
     timeoutMs = 10_000,
     intervalMs = 500,
   ): Promise<UIElement> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const snap = await this.snapshot();
-      const element = findElement(snap.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    throw new Error(
-      `Timed out waiting for element: ${JSON.stringify(query)} (${timeoutMs}ms)`,
+    return pollForElement(
+      async () => this.snapshot(),
+      query,
+      timeoutMs,
+      intervalMs,
     );
   }
 

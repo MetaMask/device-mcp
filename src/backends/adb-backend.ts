@@ -63,6 +63,7 @@ import {
   hardenArtifactFile,
   resolveArtifactPath,
 } from '../utils/output-path.js';
+import { pollForElement } from '../utils/wait-for-element.js';
 
 // `uiautomator dump` exits 0 and prints its success banner even when it fails, so
 // the XML payload is the only trustworthy signal.
@@ -384,17 +385,11 @@ export class AdbBackend implements DeviceBackend {
     timeoutMs = 10_000,
     intervalMs = 500,
   ): Promise<UIElement> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const snapshot = await this.snapshot();
-      const element = findElement(snapshot.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    throw new Error(
-      `Timed out waiting for element: ${JSON.stringify(query)} (${timeoutMs}ms)`,
+    return pollForElement(
+      async () => this.snapshot(),
+      query,
+      timeoutMs,
+      intervalMs,
     );
   }
 
