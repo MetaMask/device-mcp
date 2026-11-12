@@ -1104,9 +1104,11 @@ describe('IdbBackend device description cache', () => {
     mockExecStrict.mock.calls.filter(
       ([, args]) => args?.includes('describe') && args?.includes('--json'),
     ).length;
-  const describeAllCalls = (): number =>
-    mockExecStrict.mock.calls.filter(([, args]) =>
-      args?.includes('describe-all'),
+  const describeAllCalls = (api: 'ax' | 'axbridge'): number =>
+    mockExecStrict.mock.calls.filter(
+      ([, args]) =>
+        args?.includes('describe-all') &&
+        args[args.indexOf('--api') + 1] === api,
     ).length;
 
   beforeEach(() => {
@@ -1139,8 +1141,10 @@ describe('IdbBackend device description cache', () => {
     await backend.swipe('up');
 
     expect(describeJsonCalls()).toBe(1);
-    // waitForElement, snapshot, and the second (unresolved) tap.
-    expect(describeAllCalls()).toBe(3);
+    // waitForElement, snapshot, and the second (unresolved) tap; each
+    // axbridge snapshot also reads `ax` for the elements axbridge drops.
+    expect(describeAllCalls('axbridge')).toBe(3);
+    expect(describeAllCalls('ax')).toBe(3);
   });
 
   it('shares one describe read between concurrent first calls', async () => {
