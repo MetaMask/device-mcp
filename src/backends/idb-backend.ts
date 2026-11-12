@@ -509,12 +509,14 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x, y } = visibleCenter(element, await this.getWindowSize());
+    const window = await this.getWindowSize();
+    const { x, y } = visibleCenter(element, window);
     await this.#assertHittable(
       element,
       { x, y },
       // Identity-based: resolves only for an element from the last snapshot.
       findAncestors(this.#lastHierarchy ?? [], element) ?? undefined,
+      window,
     );
     await this.tapCoordinates(x, y);
 
@@ -540,12 +542,17 @@ export class IdbBackend implements DeviceBackend {
    * @param ancestors - The element's ancestors in its snapshot, when known.
    * Lets a hit on the target's own container (a button around the matched
    * label) pass, while overlays and the keyboard are still refused.
+   * @param window - The window size, so a full-screen ancestor is never
+   * mistaken for the target's container.
+   * @param window.width - Window width in points.
+   * @param window.height - Window height in points.
    * @throws {TargetObscuredError} When another element is at the point.
    */
   async #assertHittable(
     element: UIElement,
     point: { x: number; y: number },
     ancestors?: UIElement[],
+    window?: { width: number; height: number },
   ): Promise<void> {
     if (!this.#idbSupportsApi) {
       return;
@@ -577,7 +584,7 @@ export class IdbBackend implements DeviceBackend {
     } catch {
       return;
     }
-    if (!hitsTarget(element, hit, ancestors)) {
+    if (!hitsTarget(element, hit, ancestors, window)) {
       throw new TargetObscuredError(element, hit, point);
     }
   }
@@ -920,11 +927,13 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x: cx, y: cy } = visibleCenter(element, await this.getWindowSize());
+    const window = await this.getWindowSize();
+    const { x: cx, y: cy } = visibleCenter(element, window);
     await this.#assertHittable(
       element,
       { x: cx, y: cy },
       findAncestors(snap.hierarchy, element) ?? undefined,
+      window,
     );
     await this.#execStrict(this.#idbPath, [
       'ui',

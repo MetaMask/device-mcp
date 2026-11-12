@@ -10,6 +10,9 @@ const KEYBOARD_ASSISTANT_LABELS = new Set(['Passwords']);
 /** Frame comparison tolerance, in points. */
 const FRAME_TOLERANCE = 1;
 
+/** The window size, in points. */
+export type HitTestWindow = { width: number; height: number };
+
 /**
  * A tap would land on another element than the target: an overlay, a sheet,
  * or the software keyboard. Nothing was tapped.
@@ -73,12 +76,18 @@ export class TargetObscuredError extends Error {
  * parent last. Omit when the hierarchy is unavailable (for example for an
  * element copied from another snapshot): the strict label rule is then the
  * only container signal.
+ * @param window - The window size, when known. An ancestor that covers the
+ * whole window (1 pt tolerance) never proves the hit is the target's
+ * container: React Native screens have several unlabelled full-screen
+ * wrappers, and an overlay's backdrop looks exactly like them. Without it,
+ * the hierarchy root's frame is used instead.
  * @returns True when the tap reaches the target.
  */
 export function hitsTarget(
   target: UIElement,
   hit: UIElement,
   ancestors: UIElement[] = [],
+  window?: HitTestWindow,
 ): boolean {
   if (isKeyboardElement(hit)) {
     return false;
@@ -91,26 +100,33 @@ export function hitsTarget(
   }
   return (
     containsFrame(hit.frame, target.frame) &&
-    isOwnContainer(target, hit, ancestors)
+    isOwnContainer(target, hit, ancestors, window)
   );
 }
 
 /**
- * Whether the hit is the target's own container: an ancestor in the snapshot,
- * or an element that carries the target's label.
+ * Whether the hit is the target's own container: an ancestor in the snapshot
+ * that can be told apart from an overlay, or an element that carries the
+ * target's label.
  *
  * @param target - The element the caller wants to tap.
  * @param hit - The element at the tap point, whose frame contains the target's.
  * @param ancestors - The target's ancestors, root first.
+ * @param window - The window size, when known.
  * @returns True when the hit is the target's container, not an overlay.
  */
 function isOwnContainer(
   target: UIElement,
   hit: UIElement,
   ancestors: UIElement[],
+  window: HitTestWindow | undefined,
 ): boolean {
+  // Without the window size, the hierarchy root stands in for it: an ancestor
+  // that covers the root is indistinguishable from an overlay backdrop too.
+  const screen = window ?? ancestors[0]?.frame;
   const isAncestor = ancestors.some(
     (ancestor) =>
+      !coversScreen(ancestor.frame, screen) &&
       ancestor.type === hit.type &&
       framesMatch(ancestor.frame, hit.frame) &&
       (!ancestor.identifier ||
@@ -118,6 +134,31 @@ function isOwnContainer(
         ancestor.identifier === hit.identifier),
   );
   return isAncestor || labelCarries(target.label, hit.label);
+}
+
+/**
+ * Whether a frame covers the whole screen (1 pt tolerance). An unlabelled
+ * full-screen wrapper is indistinguishable from an overlay backdrop, so it
+ * cannot prove that a hit is the target's container.
+ *
+ * @param frame - The frame to test.
+ * @param screen - The screen size, when known. Without it, no frame is
+ * considered full-screen.
+ * @returns True when the frame covers the screen.
+ */
+function coversScreen(
+  frame: UIElement['frame'],
+  screen: HitTestWindow | undefined,
+): boolean {
+  if (!screen) {
+    return false;
+  }
+  return (
+    frame.x <= FRAME_TOLERANCE &&
+    frame.y <= FRAME_TOLERANCE &&
+    frame.x + frame.width >= screen.width - FRAME_TOLERANCE &&
+    frame.y + frame.height >= screen.height - FRAME_TOLERANCE
+  );
 }
 
 /**

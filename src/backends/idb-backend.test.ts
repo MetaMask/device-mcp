@@ -1225,6 +1225,41 @@ describe('IdbBackend tap hit-test', () => {
       ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
       expect(tapCalls()).toHaveLength(0);
     });
+
+    it('refuses a full-screen backdrop that matches the root ancestor', async () => {
+      const backdrop = {
+        type: 'Other',
+        frame: { x: 0, y: 0, width: 402, height: 874 },
+        enabled: true,
+      };
+      mockDevice(backdrop, [
+        {
+          ...backdrop,
+          children: [
+            {
+              type: 'Button',
+              AXLabel: 'Primary action',
+              frame: { x: 20, y: 400, width: 360, height: 48 },
+              enabled: true,
+              children: [
+                {
+                  type: 'StaticText',
+                  AXLabel: 'Confirm',
+                  frame: { x: 100, y: 414, width: 60, height: 22 },
+                  enabled: true,
+                },
+              ],
+            },
+          ],
+        },
+      ]);
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED', keyboard: false });
+      expect(tapCalls()).toHaveLength(0);
+    });
   });
 });
 

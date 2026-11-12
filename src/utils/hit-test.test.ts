@@ -197,6 +197,59 @@ describe('hitsTarget', () => {
       ).toBe(false);
     });
 
+    it('rejects a full-screen ancestor that matches an overlay backdrop', () => {
+      const window = { width: 402, height: 874 };
+      const confirm = el(
+        'StaticText',
+        { x: 100, y: 414, width: 60, height: 22 },
+        { label: 'Confirm' },
+      );
+      const backdrop = el('Other', { x: 0, y: 0, width: 402, height: 874 });
+      const button = el(
+        'Button',
+        { x: 20, y: 400, width: 360, height: 48 },
+        { label: 'Primary action' },
+      );
+
+      // The backdrop is structurally the hierarchy root: an unlabelled
+      // full-screen Other is indistinguishable from it.
+      expect(hitsTarget(confirm, backdrop, [backdrop, button], window)).toBe(
+        false,
+      );
+      // The hierarchy root stands in for the window when it is not passed.
+      expect(hitsTarget(confirm, backdrop, [backdrop, button])).toBe(false);
+    });
+
+    it('accepts a non-full-screen unlabelled ancestor (a card)', () => {
+      const window = { width: 402, height: 874 };
+      const confirm = el(
+        'StaticText',
+        { x: 100, y: 414, width: 60, height: 22 },
+        { label: 'Confirm' },
+      );
+      const root = el('Other', { x: 0, y: 0, width: 402, height: 874 });
+      const card = el('Other', { x: 16, y: 380, width: 370, height: 120 });
+
+      expect(hitsTarget(confirm, card, [root, card], window)).toBe(true);
+    });
+
+    it('accepts a button ancestor that is not full-screen', () => {
+      const window = { width: 402, height: 874 };
+      const confirm = el(
+        'StaticText',
+        { x: 100, y: 414, width: 60, height: 22 },
+        { label: 'Confirm' },
+      );
+      const root = el('Other', { x: 0, y: 0, width: 402, height: 874 });
+      const button = el(
+        'Button',
+        { x: 20, y: 400, width: 360, height: 48 },
+        { label: 'Primary action' },
+      );
+
+      expect(hitsTarget(confirm, button, [root, button], window)).toBe(true);
+    });
+
     it('rejects a larger keyboard element even when it is an ancestor', () => {
       const keyboard = el('Keyboard', {
         x: 0,
