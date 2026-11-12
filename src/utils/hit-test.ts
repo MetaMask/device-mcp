@@ -56,39 +56,23 @@ export class TargetObscuredError extends Error {
  * Whether `hit` (the element at the tap point) is the target, part of it, or
  * its own container.
  *
- * The hit-test returns the deepest accessible element, which can be a child
- * of the target (a label inside a button), so "part of" means: same
- * identifier, or a frame inside the target's frame (1 pt tolerance).
+ * The hit-test returns the deepest accessible element, which can be a child of
+ * the target (a label inside a button): a hit with the target's identifier, or
+ * with a frame inside the target's frame (1 pt tolerance), reaches the target.
  *
- * When the hit is larger than the target, it is accepted only as the target's
- * own container, and only from the target's ancestor chain:
+ * A larger hit is accepted only as the target's own container, proved in one
+ * of two ways (`ancestorProvesContainer` and `flatLabelProvesContainer`):
  *
- * - the ancestor must not cover the screen (an unlabelled full-screen wrapper
- *   is indistinguishable from an overlay backdrop);
- * - it must have an identifier or a label, so it can be told apart from an
- *   overlay; with a label, the hit must carry the same label;
- * - identifiers must match exactly on both sides (or both be absent);
- * - no other element in the hierarchy may have the hit's type and frame (an
- *   absolute-fill veil can otherwise impersonate a real ancestor).
+ * - from the target's ancestor chain, when an ancestor matches the hit exactly
+ *   and is identifiable, does not cover the screen, and no other element in
+ *   the hierarchy matches the hit (which would make the hit ambiguous);
+ * - from the label rule, when there is no chain and the structure is flat: the
+ *   hit is not an `Other`, does not cover the screen, and its label carries
+ *   the target's label exactly.
  *
- * With a non-empty ancestor chain the label rule is never consulted: React
- * Native Fabric joins any accessible container's child labels with `", "`, so
- * a sheet labelled `"Review transaction, 0.5 ETH, Cancel, Confirm"` would
- * otherwise be accepted for a `"Confirm"` target.
- *
- * Without a chain, a larger hit can be accepted only through the strict label
- * rule, and only when the structure is genuinely flat: no hierarchy was
- * passed, or no element in it has children. When the hierarchy is nested but
- * the target is not in it (a copy, or an element from an earlier snapshot),
- * the structure is unknown, so no larger hit is accepted. The hit's label
- * must carry the target's label exactly — equal after trimming, lowercasing
- * and collapsing whitespace, or equal to one of the hit label's `", "`
- * segments (`"Unlock, lock icon"` around `"Unlock"`) — with no substring or
- * prefix matching. The hit must not be an `Other` and must not cover the
- * screen: accessibility sheets, toasts and other `Other` containers aggregate
- * their children's labels, so they are never accepted this way. The flat rule
- * does not cover React Native Paper (old architecture), which joins labels
- * with a space instead of `", "`; that fails safe with TARGET_OBSCURED.
+ * A nested hierarchy without the target in it (a copy, or an element from an
+ * earlier snapshot) is unknown structure, so no larger hit is accepted. The
+ * keyboard is always refused.
  *
  * @param target - The element the caller wants to tap.
  * @param hit - The element at the tap point.
@@ -122,25 +106,17 @@ export function hitsTarget(
   if (!containsFrame(hit.frame, target.frame)) {
     return false;
   }
+
   const screen = window ?? ancestors?.[0]?.frame;
-  if (ancestors && ancestors.length > 0) {
+  if (ancestors?.length) {
     return ancestorProvesContainer(hit, ancestors, screen, hierarchy);
   }
   if (hierarchy && isNestedHierarchy(hierarchy)) {
-    // The hierarchy is nested, so the target should have had ancestors: it
-    // was not found in it (a copy, or an element from another snapshot). The
-    // structure is unknown, so no larger hit is accepted.
+    // The target is not in a nested hierarchy (a copy, or an element from
+    // another snapshot), so there is no chain to prove its container.
     return false;
   }
-  // Genuinely flat snapshot or no hierarchy: the strict label rule is the
-  // only signal, and a screen-covering hit is never accepted through it. An
-  // `Other` aggregates its children's labels (sheets, toasts), so it is never
-  // accepted either.
-  return (
-    hit.type !== 'Other' &&
-    !coversScreen(hit.frame, screen) &&
-    labelCarries(target.label, hit.label)
-  );
+  return flatLabelProvesContainer(target, hit, screen);
 }
 
 /**
@@ -175,7 +151,7 @@ function ancestorProvesContainer(
   const proved = ancestors.some((ancestor) =>
     ancestorMatchesHit(ancestor, hit, screen),
   );
-  return proved && !hasSameFrameOutsideChain(hit, ancestors, hierarchy);
+  return proved && !anotherElementMatchesHit(hit, ancestors, hierarchy);
 }
 
 /**
@@ -211,7 +187,7 @@ function ancestorMatchesHit(
 }
 
 /**
- * Whether the hierarchy has an element that matches the hit's type and frame,
+ * Whether the hierarchy has an element that matches the hit's type, frame,
  * label and identifier but is not on the target's ancestor chain. Such an
  * element (for example an absolute-fill loading veil) makes the hit ambiguous,
  * so it is refused; an unrelated decoration with the same frame (a same-frame
@@ -220,10 +196,9 @@ function ancestorMatchesHit(
  * @param hit - The element at the tap point.
  * @param ancestors - The target's ancestors, root first.
  * @param hierarchy - The hierarchy the target came from, when known.
- * @returns True when a same-type, same-frame, same-label element is off the
- * chain.
+ * @returns True when another element matches the hit off the chain.
  */
-function hasSameFrameOutsideChain(
+function anotherElementMatchesHit(
   hit: UIElement,
   ancestors: UIElement[],
   hierarchy: UIElement[] | undefined,
@@ -247,13 +222,46 @@ function hasSameFrameOutsideChain(
 }
 
 /**
+ * Whether the flat-snapshot label rule accepts a larger hit: the hit is not an
+ * `Other`, does not cover the screen, and its label carries the target's
+ * label.
+ *
+ * `Other` containers aggregate their children's labels (sheets, toasts), and a
+ * screen-covering hit is an overlay backdrop, so neither can pass for the
+ * target's own container.
+ *
+ * Only used when the target has no ancestor chain: React Native Fabric joins a
+ * container's child labels with `", "`, so a sheet labelled `"Review
+ * transaction, 0.5 ETH, Cancel, Confirm"` would otherwise be accepted for a
+ * `"Confirm"` target.
+ *
+ * @param target - The element the caller wants to tap.
+ * @param hit - The element at the tap point.
+ * @param screen - The screen size.
+ * @returns True when the label rule proves the hit is the target's container.
+ */
+function flatLabelProvesContainer(
+  target: UIElement,
+  hit: UIElement,
+  screen: HitTestWindow | undefined,
+): boolean {
+  return (
+    hit.type !== 'Other' &&
+    !coversScreen(hit.frame, screen) &&
+    labelCarries(target.label, hit.label)
+  );
+}
+
+/**
  * Whether the hit's label carries the target's label: equal after trimming,
  * lowercasing and collapsing whitespace (so `"1,000 USDC"` equals itself), or
  * equal to one of the hit label's `", "` segments. React Native Fabric joins
  * a container's child labels and icon names with `", "` (`"Unlock, lock
  * icon"`), so a button around a static text repeats it as a segment. No
  * substring or prefix matching: `"OK"` is not carried by `"Look at your
- * balance"`, nor `"Send"` by `"Sending in progress"`.
+ * balance"`, nor `"Send"` by `"Sending in progress"`. React Native Paper (old
+ * architecture) joins labels with a space instead, which never matches, so the
+ * tap is refused: fail-safe, not a false accept.
  *
  * @param target - The target's label.
  * @param hit - The hit's label.
@@ -271,6 +279,7 @@ function labelCarries(
   if (wanted === got) {
     return true;
   }
+  // Wrap both sides so that a match at either end still counts as a segment.
   return `, ${got}, `.includes(`, ${wanted}, `);
 }
 
