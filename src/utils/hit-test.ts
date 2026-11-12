@@ -58,29 +58,41 @@ export class TargetObscuredError extends Error {
  *
  * The hit-test returns the deepest accessible element, which can be a child
  * of the target (a label inside a button), so "part of" means: same
- * identifier, or a frame inside the target's frame (1 pt tolerance). It can
- * also be the target's container when the query matched a label or text (the
- * button whose label is the matched static text). A container is accepted
- * only when its frame contains the target's frame and it is provably the
- * target's own: it is one of the `ancestors` from the snapshot the target
- * came from, or it carries the target's label exactly (equal after trimming
- * and ignoring case, or as one of its comma-separated segments, as iOS joins
- * a container's child labels and icon names: "Unlock, lock icon"). Nothing
- * else is a match: "OK" is not carried by "Look at your balance". A larger
- * overlay, sheet, backdrop or keyboard that merely contains the target is
- * still refused.
+ * identifier, or a frame inside the target's frame (1 pt tolerance).
+ *
+ * When the hit is larger than the target, it is accepted only as the target's
+ * own container, and only from the target's ancestor chain:
+ *
+ * - the ancestor must not cover the screen (an unlabelled full-screen wrapper
+ *   is indistinguishable from an overlay backdrop);
+ * - it must have an identifier or a label, so it can be told apart from an
+ *   overlay; with a label, the hit must carry the same label;
+ * - identifiers must match exactly on both sides (or both be absent);
+ * - no other element in the hierarchy may have the hit's type and frame (an
+ *   absolute-fill veil can otherwise impersonate a real ancestor).
+ *
+ * With a non-empty ancestor chain the label rule is never consulted: React
+ * Native Fabric joins any accessible container's child labels with `", "`, so
+ * a sheet labelled `"Review transaction, 0.5 ETH, Cancel, Confirm"` would
+ * otherwise be accepted for a `"Confirm"` target. Without a chain (flat idb
+ * snapshots), the hit's label must carry the target's label exactly: equal
+ * after trimming, lowercasing and collapsing whitespace, or equal to one of
+ * the hit label's `", "` segments (`"Unlock, lock icon"` around `"Unlock"`).
+ * No substring or prefix matching, and a hit that covers the screen is never
+ * accepted this way. The flat rule does not cover React Native Paper (old
+ * architecture), which joins labels with a space instead of `", "`; that
+ * fails safe with TARGET_OBSCURED.
  *
  * @param target - The element the caller wants to tap.
  * @param hit - The element at the tap point.
  * @param ancestors - The target's ancestors in its snapshot, root first and
- * parent last. Omit when the hierarchy is unavailable (for example for an
- * element copied from another snapshot): the strict label rule is then the
- * only container signal.
- * @param window - The window size, when known. An ancestor that covers the
- * whole window (1 pt tolerance) never proves the hit is the target's
- * container: React Native screens have several unlabelled full-screen
- * wrappers, and an overlay's backdrop looks exactly like them. Without it,
- * the hierarchy root's frame is used instead.
+ * parent last. Omit or pass an empty array when the target has no known
+ * ancestors (flat snapshot or copied element): the strict label rule is then
+ * the only container signal.
+ * @param window - The window size, when known, to refuse screen-covering
+ * ancestors and hits. Without it, the hierarchy root's frame stands in.
+ * @param hierarchy - The hierarchy the target came from, when known. Used to
+ * refuse a hit that also matches an element off the target's ancestor chain.
  * @returns True when the tap reaches the target.
  */
 export function hitsTarget(
@@ -88,6 +100,7 @@ export function hitsTarget(
   hit: UIElement,
   ancestors: UIElement[] = [],
   window?: HitTestWindow,
+  hierarchy?: UIElement[],
 ): boolean {
   if (isKeyboardElement(hit)) {
     return false;
@@ -98,76 +111,114 @@ export function hitsTarget(
   if (containsFrame(target.frame, hit.frame)) {
     return true;
   }
-  return (
-    containsFrame(hit.frame, target.frame) &&
-    isOwnContainer(target, hit, ancestors, window)
-  );
-}
-
-/**
- * Whether the hit is the target's own container: an ancestor in the snapshot
- * that can be told apart from an overlay, or an element that carries the
- * target's label.
- *
- * @param target - The element the caller wants to tap.
- * @param hit - The element at the tap point, whose frame contains the target's.
- * @param ancestors - The target's ancestors, root first.
- * @param window - The window size, when known.
- * @returns True when the hit is the target's container, not an overlay.
- */
-function isOwnContainer(
-  target: UIElement,
-  hit: UIElement,
-  ancestors: UIElement[],
-  window: HitTestWindow | undefined,
-): boolean {
-  // Without the window size, the hierarchy root stands in for it: an ancestor
-  // that covers the root is indistinguishable from an overlay backdrop too.
-  const screen = window ?? ancestors[0]?.frame;
-  const isAncestor = ancestors.some(
-    (ancestor) =>
-      !coversScreen(ancestor.frame, screen) &&
-      ancestor.type === hit.type &&
-      framesMatch(ancestor.frame, hit.frame) &&
-      (!ancestor.identifier ||
-        !hit.identifier ||
-        ancestor.identifier === hit.identifier),
-  );
-  return isAncestor || labelCarries(target.label, hit.label);
-}
-
-/**
- * Whether a frame covers the whole screen (1 pt tolerance). An unlabelled
- * full-screen wrapper is indistinguishable from an overlay backdrop, so it
- * cannot prove that a hit is the target's container.
- *
- * @param frame - The frame to test.
- * @param screen - The screen size, when known. Without it, no frame is
- * considered full-screen.
- * @returns True when the frame covers the screen.
- */
-function coversScreen(
-  frame: UIElement['frame'],
-  screen: HitTestWindow | undefined,
-): boolean {
-  if (!screen) {
+  if (!containsFrame(hit.frame, target.frame)) {
     return false;
   }
-  return (
-    frame.x <= FRAME_TOLERANCE &&
-    frame.y <= FRAME_TOLERANCE &&
-    frame.x + frame.width >= screen.width - FRAME_TOLERANCE &&
-    frame.y + frame.height >= screen.height - FRAME_TOLERANCE
-  );
+  const screen = window ?? ancestors[0]?.frame;
+  if (ancestors.length === 0) {
+    // No structure to trust: the strict label rule is the only signal, and a
+    // screen-covering hit is never accepted through it.
+    return (
+      !coversScreen(hit.frame, screen) && labelCarries(target.label, hit.label)
+    );
+  }
+  return ancestorProvesContainer(hit, ancestors, screen, hierarchy);
 }
 
 /**
- * Whether the hit's label carries the target's label exactly: equal after
- * trimming and ignoring case, or equal to one of the hit label's
- * comma-separated segments. iOS joins a container's child labels and icon
- * names with ", " ("Unlock, lock icon"), so a button around a static text
- * repeats it as a segment. No substring or prefix matching: "OK" is not
- * carried by "Look at your balance", nor "Send" by "Sending in progress".
+ * Whether an ancestor of the target proves that the hit is the target's own
+ * container: it matches the hit's type, frame, identifier and label, can be
+ * told apart from an overlay, and no other element in the hierarchy matches
+ * the hit.
+ *
+ * @param hit - The element at the tap point.
+ * @param ancestors - The target's ancestors, root first.
+ * @param screen - The screen size.
+ * @param hierarchy - The hierarchy the target came from, when known.
+ * @returns True when the ancestor chain proves the hit is the container.
+ */
+function ancestorProvesContainer(
+  hit: UIElement,
+  ancestors: UIElement[],
+  screen: HitTestWindow | undefined,
+  hierarchy: UIElement[] | undefined,
+): boolean {
+  const proved = ancestors.some((ancestor) =>
+    ancestorMatchesHit(ancestor, hit, screen),
+  );
+  return proved && !hasSameFrameOutsideChain(hit, ancestors, hierarchy);
+}
+
+/**
+ * Whether an ancestor can be the hit's element: same type and frame, same
+ * identifiers, and a label the hit also carries. An ancestor with neither a
+ * label nor an identifier cannot be told apart from an overlay, and a
+ * screen-covering ancestor cannot either.
+ *
+ * @param ancestor - One of the target's ancestors.
+ * @param hit - The element at the tap point.
+ * @param screen - The screen size.
+ * @returns True when the ancestor matches the hit and is identifiable.
+ */
+function ancestorMatchesHit(
+  ancestor: UIElement,
+  hit: UIElement,
+  screen: HitTestWindow | undefined,
+): boolean {
+  if (coversScreen(ancestor.frame, screen)) {
+    return false;
+  }
+  if (ancestor.type !== hit.type || !framesMatch(ancestor.frame, hit.frame)) {
+    return false;
+  }
+  if ((ancestor.identifier ?? '') !== (hit.identifier ?? '')) {
+    return false;
+  }
+  const label = normalizeLabel(ancestor.label);
+  if (!label) {
+    return Boolean(ancestor.identifier);
+  }
+  return label === normalizeLabel(hit.label);
+}
+
+/**
+ * Whether the hierarchy has an element that matches the hit's type and frame
+ * but is not on the target's ancestor chain. Such an element (for example an
+ * absolute-fill loading veil) makes the hit ambiguous, so it is refused.
+ *
+ * @param hit - The element at the tap point.
+ * @param ancestors - The target's ancestors, root first.
+ * @param hierarchy - The hierarchy the target came from, when known.
+ * @returns True when a same-type, same-frame element is off the chain.
+ */
+function hasSameFrameOutsideChain(
+  hit: UIElement,
+  ancestors: UIElement[],
+  hierarchy: UIElement[] | undefined,
+): boolean {
+  if (!hierarchy) {
+    return false;
+  }
+  const chain = new Set(ancestors);
+  const walk = (elements: UIElement[]): boolean =>
+    elements.some(
+      (element) =>
+        (element.type === hit.type &&
+          framesMatch(element.frame, hit.frame) &&
+          !chain.has(element)) ||
+        (element.children ? walk(element.children) : false),
+    );
+  return walk(hierarchy);
+}
+
+/**
+ * Whether the hit's label carries the target's label: equal after trimming,
+ * lowercasing and collapsing whitespace (so `"1,000 USDC"` equals itself), or
+ * equal to one of the hit label's `", "` segments. React Native Fabric joins
+ * a container's child labels and icon names with `", "` (`"Unlock, lock
+ * icon"`), so a button around a static text repeats it as a segment. No
+ * substring or prefix matching: `"OK"` is not carried by `"Look at your
+ * balance"`, nor `"Send"` by `"Sending in progress"`.
  *
  * @param target - The target's label.
  * @param hit - The hit's label.
@@ -177,15 +228,26 @@ function labelCarries(
   target: string | undefined,
   hit: string | undefined,
 ): boolean {
-  const wanted = target?.trim().toLowerCase();
-  if (!wanted) {
+  const wanted = normalizeLabel(target);
+  const got = normalizeLabel(hit);
+  if (!wanted || !got) {
     return false;
   }
-  return (
-    hit
-      ?.split(',')
-      .some((segment) => segment.trim().toLowerCase() === wanted) ?? false
-  );
+  if (wanted === got) {
+    return true;
+  }
+  return `, ${got}, `.includes(`, ${wanted}, `);
+}
+
+/**
+ * A label normalized for comparison: trimmed, lowercased, whitespace runs
+ * collapsed to one space.
+ *
+ * @param label - The label.
+ * @returns The normalized label, or an empty string.
+ */
+function normalizeLabel(label: string | undefined): string {
+  return (label ?? '').trim().toLowerCase().replace(/\s+/gu, ' ');
 }
 
 /**
@@ -216,6 +278,31 @@ function containsFrame(
  */
 function framesMatch(a: UIElement['frame'], b: UIElement['frame']): boolean {
   return containsFrame(a, b) && containsFrame(b, a);
+}
+
+/**
+ * Whether a frame covers the whole screen (1 pt tolerance). An unlabelled
+ * full-screen wrapper is indistinguishable from an overlay backdrop, so it
+ * cannot prove that a hit is the target's container.
+ *
+ * @param frame - The frame to test.
+ * @param screen - The screen size, when known. Without it, no frame is
+ * considered full-screen.
+ * @returns True when the frame covers the screen.
+ */
+function coversScreen(
+  frame: UIElement['frame'],
+  screen: HitTestWindow | undefined,
+): boolean {
+  if (!screen) {
+    return false;
+  }
+  return (
+    frame.x <= FRAME_TOLERANCE &&
+    frame.y <= FRAME_TOLERANCE &&
+    frame.x + frame.width >= screen.width - FRAME_TOLERANCE &&
+    frame.y + frame.height >= screen.height - FRAME_TOLERANCE
+  );
 }
 
 /**

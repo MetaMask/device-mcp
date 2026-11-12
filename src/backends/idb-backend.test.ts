@@ -883,16 +883,26 @@ describe('IdbBackend tap hit-test', () => {
   /**
    * @param hit - What `describe-point` returns: a node, an error, or raw text.
    * @param hierarchy - What `describe-all` returns, when the test taps by query.
+   * @param screen - The window size `idb describe` reports, in points.
+   * @param screen.widthPoints - Window width in points.
+   * @param screen.heightPoints - Window height in points.
    */
   const mockDevice = (
     hit: Record<string, unknown> | Error | string,
     hierarchy: Record<string, unknown>[] = [],
+    screen: { widthPoints: number; heightPoints: number } = {
+      widthPoints: 402,
+      heightPoints: 874,
+    },
   ): void => {
     mockExecStrict.mockImplementation(async (_cmd, args) => {
       if (args?.[0] === 'describe' && args.includes('--json')) {
         return JSON.stringify({
           os_version: '26.5',
-          screen_dimensions: { width_points: 402, height_points: 874 },
+          screen_dimensions: {
+            width_points: screen.widthPoints,
+            height_points: screen.heightPoints,
+          },
         });
       }
       if (args?.[1] === 'describe-all') {
@@ -1259,6 +1269,205 @@ describe('IdbBackend tap hit-test', () => {
         backend.tapElement({ label: 'Confirm' }, { element }),
       ).rejects.toMatchObject({ code: 'TARGET_OBSCURED', keyboard: false });
       expect(tapCalls()).toHaveLength(0);
+    });
+  });
+
+  describe('overlay and ancestor safety', () => {
+    it('refuses a same-frame unlabelled veil around a nested target', async () => {
+      // Regression: an absoluteFill loading veil with the same type and frame
+      // as a real wrapper must not pass as the target's container.
+      const veil = {
+        type: 'Other',
+        frame: { x: 0, y: 100, width: 390, height: 661 },
+        enabled: true,
+        children: [
+          {
+            type: 'Button',
+            AXLabel: 'Confirm',
+            frame: { x: 100, y: 300, width: 190, height: 48 },
+            enabled: true,
+          },
+        ],
+      };
+      mockDevice(
+        veil,
+        [
+          {
+            type: 'Application',
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+            enabled: true,
+            children: [veil],
+          },
+        ],
+        { widthPoints: 390, heightPoints: 844 },
+      );
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('refuses a Fabric-aggregated sheet label with a nested chain', async () => {
+      const target = {
+        type: 'StaticText',
+        AXLabel: 'Confirm',
+        frame: { x: 120, y: 610, width: 150, height: 24 },
+        enabled: true,
+      };
+      mockDevice(
+        {
+          type: 'Other',
+          AXLabel: 'Review transaction, 0.5 ETH, Cancel, Confirm',
+          frame: { x: 0, y: 400, width: 390, height: 444 },
+        },
+        [
+          {
+            type: 'Application',
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+            enabled: true,
+            children: [
+              {
+                type: 'Button',
+                AXLabel: 'Confirm',
+                AXUniqueId: 'confirm-btn',
+                frame: { x: 100, y: 600, width: 190, height: 48 },
+                enabled: true,
+                children: [target],
+              },
+            ],
+          },
+        ],
+        { widthPoints: 390, heightPoints: 844 },
+      );
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('keeps ancestors when getWindowSize takes a snapshot', async () => {
+      // Regression: a describe without point dimensions makes getWindowSize
+      // snapshot, which must not replace the hierarchy the element came from.
+      const elementNode = {
+        type: 'StaticText',
+        AXLabel: 'Confirm',
+        frame: { x: 100, y: 414, width: 60, height: 22 },
+        enabled: true,
+      };
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.[0] === 'describe' && args.includes('--json')) {
+          return JSON.stringify({ os_version: '26.5' });
+        }
+        if (args?.[1] === 'describe-all') {
+          return JSON.stringify([
+            {
+              type: 'Application',
+              frame: { x: 0, y: 0, width: 402, height: 874 },
+              enabled: true,
+              children: [
+                {
+                  type: 'Button',
+                  AXLabel: 'Primary action',
+                  AXUniqueId: 'primary-btn',
+                  frame: { x: 20, y: 400, width: 360, height: 48 },
+                  enabled: true,
+                  children: [elementNode],
+                },
+              ],
+            },
+          ]);
+        }
+        if (args?.[1] === 'describe-point') {
+          return JSON.stringify({
+            type: 'Button',
+            AXLabel: 'Primary action',
+            AXUniqueId: 'primary-btn',
+            frame: { x: 20, y: 400, width: 360, height: 48 },
+          });
+        }
+        return '';
+      });
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await backend.tapElement({ label: 'Confirm' }, { element });
+
+      const describeAllCalls = mockExecStrict.mock.calls.filter(
+        ([, args]) => args?.[1] === 'describe-all',
+      );
+      expect(tapCalls()).toHaveLength(1);
+      // One for waitForElement, one for the getWindowSize fallback.
+      expect(describeAllCalls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe('iOS Settings fixtures', () => {
+    const fixture = (name: string): Record<string, unknown>[] =>
+      JSON.parse(
+        readFileSync(join(__dirname, '__fixtures__', name), 'utf8'),
+      ) as Record<string, unknown>[];
+    const nested = fixture('idb-describe-all-settings-nested.json');
+    const flat = fixture('idb-describe-all-settings-flat.json');
+    const screen = { widthPoints: 390, heightPoints: 844 };
+
+    const generalHit = {
+      type: 'Button',
+      AXLabel: 'General',
+      AXUniqueId: 'com.apple.settings.general',
+      frame: { x: 16, y: 80, width: 370, height: 44 },
+    };
+    const accountHit = {
+      type: 'Button',
+      AXLabel:
+        'Apple Account, Sign in to access your iCloud data, the App Store, Apple services, and more.',
+      AXUniqueId: 'com.apple.settings.primaryAppleAccount',
+      frame: { x: 16, y: 168, width: 370, height: 90 },
+    };
+
+    it.each([
+      ['General', { type: 'StaticText', label: 'General' }, generalHit],
+      [
+        'Apple Account',
+        { type: 'StaticText', label: 'Apple Account' },
+        accountHit,
+      ],
+      [
+        'Sign in to access',
+        { type: 'StaticText', label: 'Sign in to access' },
+        accountHit,
+      ],
+    ])(
+      'taps the "%s" row through its button (nested)',
+      async (_, query, hit) => {
+        mockDevice(hit, nested, screen);
+
+        await backend.tapElement(query);
+
+        expect(tapCalls()).toHaveLength(1);
+      },
+    );
+
+    it.each([
+      ['General', { type: 'StaticText', label: 'General' }, generalHit],
+      [
+        'Apple Account',
+        { type: 'StaticText', label: 'Apple Account' },
+        accountHit,
+      ],
+      [
+        'Sign in to access',
+        { type: 'StaticText', label: 'Sign in to access' },
+        accountHit,
+      ],
+    ])('taps the "%s" row through its button (flat)', async (_, query, hit) => {
+      mockDevice(hit, flat, screen);
+
+      await backend.tapElement(query);
+
+      expect(tapCalls()).toHaveLength(1);
     });
   });
 });
