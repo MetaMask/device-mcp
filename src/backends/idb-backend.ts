@@ -418,10 +418,34 @@ export class IdbBackend implements DeviceBackend {
     };
   }
 
+  /**
+   * Capture the UI hierarchy. `axbridge` (iOS 18+) can report a React Native
+   * container as one unlabelled view without children (for example the
+   * MetaMask wallet home action row), so `ax` is read at the same time and
+   * its identified elements missing from the `axbridge` tree are added to it.
+   * `raw` stays the `axbridge` output.
+   *
+   * @returns The snapshot.
+   */
   async snapshot(): Promise<SnapshotResult> {
     await this.ensureConnected();
-    const raw = await this.#describeAll();
-    const hierarchy = parseIdbHierarchy(raw);
+    const apis = await this.#describeAllApiOrder();
+    // Best effort and without companion recovery: the main read handles that.
+    const supplement =
+      apis[0] === 'axbridge'
+        ? execStrict(this.#idbPath, this.#describeAllArgs('ax'), {
+            env: this.#connection.env,
+          }).catch(() => undefined)
+        : undefined;
+    const { raw, api } = await this.#describeAll(apis);
+    let hierarchy = parseIdbHierarchy(raw);
+    const extra = await supplement;
+    if (api === 'axbridge' && extra !== undefined) {
+      hierarchy = addMissingIdentifiedElements(
+        hierarchy,
+        parseIdbHierarchy(extra),
+      );
+    }
     this.#lastHierarchy = hierarchy;
     return {
       platform: 'ios',
@@ -432,26 +456,45 @@ export class IdbBackend implements DeviceBackend {
   }
 
   /**
+   * Arguments of `idb ui describe-all` for one accessibility backend.
+   *
+   * @param api - The `--api` value, or null to omit it.
+   * @returns The idb arguments.
+   */
+  #describeAllArgs(api: 'ax' | 'axbridge' | null): string[] {
+    const args = ['ui', 'describe-all', '--udid', this.#udid];
+    if (api !== null) {
+      args.push('--api', api);
+    }
+    if (this.#idbSupportsNested) {
+      args.push('--nested');
+    }
+    return args;
+  }
+
+  /**
    * Run `idb ui describe-all`, trying the version-appropriate accessibility
    * backend first and falling back to the others if it errors. This keeps
    * snapshots working across iOS 17-26 regardless of the user's idb client.
    *
-   * @returns The raw JSON hierarchy from the first backend that succeeds.
+   * @param apis - The `--api` values to try, in order.
+   * @returns The raw JSON hierarchy from the first backend that succeeds, and
+   * that backend.
    * @throws When every attempted backend fails.
    */
-  async #describeAll(): Promise<string> {
-    const apis = await this.#describeAllApiOrder();
+  async #describeAll(
+    apis: ('ax' | 'axbridge' | null)[],
+  ): Promise<{ raw: string; api: 'ax' | 'axbridge' | null }> {
     let lastError: unknown;
     for (const api of apis) {
-      const args = ['ui', 'describe-all', '--udid', this.#udid];
-      if (api !== null) {
-        args.push('--api', api);
-      }
-      if (this.#idbSupportsNested) {
-        args.push('--nested');
-      }
       try {
-        return await this.#execStrict(this.#idbPath, args);
+        return {
+          raw: await this.#execStrict(
+            this.#idbPath,
+            this.#describeAllArgs(api),
+          ),
+          api,
+        };
       } catch (error) {
         if (error instanceof IdbUnavailableError) {
           // Already reconnected and retried; another --api will not help.
@@ -1247,6 +1290,69 @@ export function parseIdbHierarchy(raw: string): UIElement[] {
       },
     ];
   }
+}
+
+/**
+ * Adds to `primary` the elements of `secondary` whose identifier is not in
+ * `primary`. Each one is added, without its children, as the last child of
+ * the smallest `primary` element whose frame contains its frame, or at the
+ * top level when none does. Elements with no identifier are not added. The
+ * inputs are not modified.
+ *
+ * @param primary - The main hierarchy (idb `--api axbridge`).
+ * @param secondary - The other hierarchy (idb `--api ax`).
+ * @returns `primary` with the missing elements added.
+ */
+function addMissingIdentifiedElements(
+  primary: UIElement[],
+  secondary: UIElement[],
+): UIElement[] {
+  const result = structuredClone(primary);
+  const all = flatten(result);
+  const known = new Set(all.map((el) => el.identifier).filter(Boolean));
+  const missing = flatten(secondary).filter(
+    (el) => el.identifier && !known.has(el.identifier),
+  );
+
+  for (const el of missing) {
+    const { children: _children, ...element } = el;
+    const added: UIElement = structuredClone(element);
+    let host: UIElement | undefined;
+    for (const candidate of all) {
+      if (
+        containsFrame(candidate.frame, el.frame) &&
+        (!host || area(candidate.frame) < area(host.frame))
+      ) {
+        host = candidate;
+      }
+    }
+    if (host) {
+      host.children = [...(host.children ?? []), added];
+    } else {
+      result.push(added);
+    }
+  }
+  return result;
+}
+
+function flatten(elements: UIElement[]): UIElement[] {
+  return elements.flatMap((el) => [el, ...flatten(el.children ?? [])]);
+}
+
+type Frame = UIElement['frame'];
+
+function area(frame: Frame): number {
+  return frame.width * frame.height;
+}
+
+function containsFrame(outer: Frame, inner: Frame): boolean {
+  return (
+    area(outer) > 0 &&
+    inner.x >= outer.x &&
+    inner.y >= outer.y &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y + inner.height <= outer.y + outer.height
+  );
 }
 
 /**

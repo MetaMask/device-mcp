@@ -1592,9 +1592,11 @@ describe('IdbBackend device description cache', () => {
     mockExecStrict.mock.calls.filter(
       ([, args]) => args?.includes('describe') && args?.includes('--json'),
     ).length;
-  const describeAllCalls = (): number =>
-    mockExecStrict.mock.calls.filter(([, args]) =>
-      args?.includes('describe-all'),
+  const describeAllCalls = (api: 'ax' | 'axbridge'): number =>
+    mockExecStrict.mock.calls.filter(
+      ([, args]) =>
+        args?.includes('describe-all') &&
+        args[args.indexOf('--api') + 1] === api,
     ).length;
 
   beforeEach(() => {
@@ -1627,8 +1629,10 @@ describe('IdbBackend device description cache', () => {
     await backend.swipe('up');
 
     expect(describeJsonCalls()).toBe(1);
-    // waitForElement, snapshot, and the second (unresolved) tap.
-    expect(describeAllCalls()).toBe(3);
+    // waitForElement, snapshot, and the second (unresolved) tap; each
+    // axbridge snapshot also reads `ax` for the elements axbridge drops.
+    expect(describeAllCalls('axbridge')).toBe(3);
+    expect(describeAllCalls('ax')).toBe(3);
   });
 
   it('shares one describe read between concurrent first calls', async () => {
@@ -2121,6 +2125,117 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
     expect(hierarchy[0].children?.[0].children).toBeUndefined();
   });
 
+  describe('ax supplement for axbridge', () => {
+    const node = (
+      id: string | null,
+      frame: { x: number; y: number; width: number; height: number },
+      children: unknown[] = [],
+      label: string | null = null,
+    ): Record<string, unknown> => ({
+      type: id ? 'Button' : 'RCTViewComponentView',
+      AXUniqueId: id,
+      AXLabel: label,
+      frame,
+      children,
+    });
+    const axbridgeTree = [
+      node(null, { x: 0, y: 0, width: 402, height: 874 }, [
+        node('wallet-screen', { x: 0, y: 0, width: 402, height: 874 }, [
+          // The unlabelled container that hides the action row.
+          node(null, { x: 0, y: 134, width: 402, height: 439 }),
+          node('account-picker', { x: 60, y: 78, width: 163, height: 24 }),
+        ]),
+      ]),
+    ];
+    const axTree = [
+      node(null, { x: 0, y: 0, width: 402, height: 874 }, [
+        node('account-picker', { x: 60, y: 78, width: 163, height: 24 }),
+        node(
+          'wallet-send-button',
+          { x: 205, y: 242, width: 87, height: 73 },
+          [],
+          'Send',
+        ),
+        node('offscreen-card', { x: 966, y: 1075, width: 180, height: 180 }),
+        node(null, { x: 1, y: 1, width: 1, height: 1 }, [], 'no id'),
+      ]),
+    ];
+
+    const mockApis = (ax: () => Promise<string>): void => {
+      mockSupportsApi.mockResolvedValue(true);
+      mockSupportsNested.mockResolvedValue(true);
+      mockChooseAxApi.mockReturnValue('axbridge');
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.includes('describe') && args?.includes('--json')) {
+          return JSON.stringify({ os_version: '27.0', name: 'iPhone' });
+        }
+        if (args?.includes('axbridge')) {
+          return JSON.stringify(axbridgeTree);
+        }
+        return ax();
+      });
+    };
+
+    it('adds identified elements that only ax reports, inside the smallest containing element', async () => {
+      mockApis(async () => JSON.stringify(axTree));
+
+      const { hierarchy, raw } = await backend.snapshot();
+
+      expect(raw).toBe(JSON.stringify(axbridgeTree));
+      const send = findElement(hierarchy, { identifier: 'wallet-send-button' });
+      expect(send).toMatchObject({
+        label: 'Send',
+        frame: { x: 205, y: 242, width: 87, height: 73 },
+      });
+      const container = hierarchy[0].children?.[0].children?.[0];
+      expect(container?.children?.map((el) => el.identifier)).toStrictEqual([
+        'wallet-send-button',
+      ]);
+      // Not contained by any axbridge frame: added at the top level.
+      expect(hierarchy.at(-1)?.identifier).toBe('offscreen-card');
+      // account-picker is not duplicated; unidentified ax nodes are skipped.
+      const ids: (string | undefined)[] = [];
+      const walk = (els: typeof hierarchy): void =>
+        els.forEach((el) => {
+          ids.push(el.identifier ?? el.label);
+          walk(el.children ?? []);
+        });
+      walk(hierarchy);
+      expect(ids.filter((id) => id === 'account-picker')).toHaveLength(1);
+      expect(ids).not.toContain('no id');
+    });
+
+    it('returns the axbridge tree unchanged when the ax read fails', async () => {
+      mockApis(async () => {
+        throw new Error('ax failed');
+      });
+
+      const { hierarchy } = await backend.snapshot();
+
+      expect(hierarchy).toStrictEqual(
+        parseIdbHierarchy(JSON.stringify(axbridgeTree)),
+      );
+    });
+
+    it('does not read a supplement when ax is the preferred backend', async () => {
+      mockSupportsApi.mockResolvedValue(true);
+      mockChooseAxApi.mockReturnValue('ax');
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.includes('describe') && args?.includes('--json')) {
+          return JSON.stringify({ os_version: '17.4', name: 'iPhone' });
+        }
+        return JSON.stringify(axTree);
+      });
+
+      await backend.snapshot();
+
+      const describeCalls = mockExecStrict.mock.calls.filter(
+        ([, args]) => args?.[1] === 'describe-all',
+      );
+      expect(describeCalls).toHaveLength(1);
+    });
+  });
+
   it('rethrows a non-Error rejection as a descriptive Error', async () => {
     mockSupportsApi.mockResolvedValue(false);
     mockExecStrict.mockRejectedValue('boom');
@@ -2325,7 +2440,10 @@ describe('IdbBackend companion recovery', () => {
     const apis = mockExecStrict.mock.calls
       .filter(([, args]) => args?.[1] === 'describe-all')
       .map(([, args]) => args?.[args.indexOf('--api') + 1]);
-    expect(apis).toStrictEqual(['axbridge', 'axbridge']);
+    // axbridge is read and retried once; the one ax read is the concurrent
+    // best-effort supplement, not a fallback.
+    expect(apis.filter((api) => api === 'axbridge')).toHaveLength(2);
+    expect(apis.filter((api) => api === 'ax')).toHaveLength(1);
   });
 
   it('does not resend a mutating command when delivery is uncertain', async () => {
