@@ -1370,6 +1370,150 @@ describe('IdbBackend tap hit-test', () => {
     });
   });
 
+  describe('for an element recovered from ax under a guessed parent', () => {
+    // iOS 18+ axbridge cuts the tree at depth 50: an unlabelled container
+    // loses its children. #52 adds the identified elements only ax sees, as a
+    // child of the smallest axbridge frame that contains them, which need not
+    // be their real parent (here: the send button is attached under the open
+    // confirm sheet, which covers it).
+    const screenFrame = { x: 0, y: 0, width: 402, height: 874 };
+    const sendFrame = { x: 205, y: 500, width: 87, height: 73 };
+    const sheetFrame = { x: 0, y: 400, width: 402, height: 474 };
+
+    const axbridgeTree = [
+      {
+        type: 'Other',
+        frame: screenFrame,
+        children: [
+          // The depth-50 cut: an unlabelled container with no children.
+          { type: 'Other', frame: { x: 0, y: 134, width: 402, height: 700 } },
+          {
+            type: 'Other',
+            AXUniqueId: 'confirm-sheet',
+            AXLabel: 'Confirm swap',
+            frame: sheetFrame,
+            children: [
+              {
+                type: 'Button',
+                AXUniqueId: 'sheet-cancel',
+                AXLabel: 'Cancel',
+                frame: { x: 24, y: 780, width: 354, height: 48 },
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const axTree = [
+      {
+        type: 'Button',
+        AXUniqueId: 'wallet-send-button',
+        AXLabel: 'Send',
+        frame: sendFrame,
+      },
+    ];
+    const sendButton = {
+      type: 'Button',
+      AXUniqueId: 'wallet-send-button',
+      AXLabel: 'Send',
+      frame: sendFrame,
+    };
+    const sheet = {
+      type: 'Other',
+      AXUniqueId: 'confirm-sheet',
+      AXLabel: 'Confirm swap',
+      frame: sheetFrame,
+    };
+    const query = { identifier: 'wallet-send-button' };
+
+    /**
+     * @param hit - What `describe-point` returns at the tap point.
+     */
+    const mockSupplementedDevice = (hit: Record<string, unknown>): void => {
+      mockSupportsApi.mockResolvedValue(true);
+      mockSupportsNested.mockResolvedValue(true);
+      mockChooseAxApi.mockReturnValue('axbridge');
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.[0] === 'describe' && args.includes('--json')) {
+          return JSON.stringify({
+            os_version: '26.5',
+            screen_dimensions: { width_points: 402, height_points: 874 },
+          });
+        }
+        if (args?.[1] === 'describe-all') {
+          return JSON.stringify(
+            args.includes('axbridge') ? axbridgeTree : axTree,
+          );
+        }
+        if (args?.[1] === 'describe-point') {
+          return JSON.stringify(hit);
+        }
+        return '';
+      });
+    };
+
+    it('refuses a larger hit over an element added from ax (core path)', async () => {
+      mockSupplementedDevice(sheet);
+
+      // #52's placement: the button is added under the smallest axbridge frame
+      // that contains it, here the sheet on top of it.
+      const { hierarchy } = await backend.snapshot();
+      expect(
+        findElement(hierarchy, { identifier: 'confirm-sheet' })?.children?.map(
+          (element) => element.identifier,
+        ),
+      ).toStrictEqual(['sheet-cancel', 'wallet-send-button']);
+
+      const element = await backend.waitForElement(query, 2000);
+      await expect(
+        backend.tapElement(query, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED', keyboard: false });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('refuses a larger hit over an element added from ax (tap by query)', async () => {
+      mockSupplementedDevice(sheet);
+
+      await expect(backend.tapElement(query)).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: false,
+      });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('still taps when the hit is the supplemented element itself', async () => {
+      mockSupplementedDevice(sendButton);
+
+      const element = await backend.waitForElement(query, 2000);
+      await backend.tapElement(query, { element });
+      await backend.tapElement(query);
+
+      expect(tapCalls()).toHaveLength(2);
+    });
+
+    it('still taps when the hit lies inside the supplemented element', async () => {
+      mockSupplementedDevice({
+        type: 'StaticText',
+        AXLabel: 'Send',
+        frame: { x: 220, y: 525, width: 60, height: 22 },
+      });
+
+      await backend.tapElement(query);
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('refuses a larger hit over an element added from ax on a long press', async () => {
+      mockSupplementedDevice(sheet);
+
+      await expect(backend.longPress(query, 800)).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: false,
+      });
+      expect(tapCalls()).toHaveLength(0);
+    });
+  });
+
   describe('overlay and ancestor safety', () => {
     it('refuses a same-frame unlabelled veil around a nested target', async () => {
       // Regression: an absoluteFill loading veil with the same type and frame

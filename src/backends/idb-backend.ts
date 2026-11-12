@@ -531,7 +531,8 @@ export class IdbBackend implements DeviceBackend {
    * its ancestors still come from the most recent snapshot, so a tap whose
    * hit-test lands on the element's own container is accepted. An element
    * from another snapshot is not in this one: its ancestors are unknown, and
-   * a hit larger than the element is refused.
+   * a hit larger than the element is refused. An element added from `ax` has
+   * a guessed parent, so its ancestors are unknown too.
    *
    * @param query - The element to tap.
    * @param options - A caller-resolved element, to skip the snapshot.
@@ -568,8 +569,9 @@ export class IdbBackend implements DeviceBackend {
       element,
       { x, y },
       // Identity-based: `null` when the element is not from that hierarchy (a
-      // copy, or another snapshot), so a larger hit is refused there.
-      hierarchy ? findAncestors(hierarchy, element) : [],
+      // copy, or another snapshot), or when it was added from ax and so has a
+      // guessed parent, so a larger hit is refused there.
+      hitTestAncestors(hierarchy, element),
       window,
       hierarchy,
     );
@@ -596,9 +598,10 @@ export class IdbBackend implements DeviceBackend {
    * @param point.y - Y in points.
    * @param ancestors - The element's ancestors in its snapshot, when known;
    * `null` when the element is not in the hierarchy it was checked against (a
-   * copy, or another snapshot). Lets a hit on the target's own container (a
-   * button around the matched label) pass, while overlays and the keyboard
-   * are still refused.
+   * copy, or another snapshot), or when it was added from `ax` (its parent is
+   * a geometric guess). Lets a hit on the target's own container (a button
+   * around the matched label) pass, while overlays and the keyboard are still
+   * refused.
    * @param window - The window size, so a full-screen ancestor is never
    * mistaken for the target's container.
    * @param window.width - Window width in points.
@@ -992,7 +995,7 @@ export class IdbBackend implements DeviceBackend {
     await this.#assertHittable(
       element,
       { x: cx, y: cy },
-      findAncestors(snap.hierarchy, element),
+      hitTestAncestors(snap.hierarchy, element),
       window,
       snap.hierarchy,
     );
@@ -1293,6 +1296,39 @@ export function parseIdbHierarchy(raw: string): UIElement[] {
 }
 
 /**
+ * Elements that `addMissingIdentifiedElements` added to a snapshot, by
+ * identity. Their parent in the merged hierarchy is a geometric guess (the
+ * smallest element whose frame contains them), not the accessibility tree's
+ * parent, so the ancestor chain cannot prove that a larger hit is their own
+ * container. Tap and long press treat their ancestors as unknown instead. A
+ * `WeakSet` because the elements are discarded with their snapshot.
+ */
+const supplementedElements = new WeakSet<UIElement>();
+
+/**
+ * The ancestors to give the hit-test for an element: its chain in
+ * `hierarchy`; empty when the hierarchy is unknown; and `null` (unknown) when
+ * the element was added from `ax`, because its parent in the merged hierarchy
+ * is a geometric guess and must not prove that a larger hit is its own
+ * container.
+ *
+ * @param hierarchy - The hierarchy the element came from, when known.
+ * @param element - The element to tap.
+ * @returns The ancestors, or `null` when they must be treated as unknown.
+ */
+function hitTestAncestors(
+  hierarchy: UIElement[] | undefined,
+  element: UIElement,
+): UIElement[] | null {
+  if (!hierarchy) {
+    return [];
+  }
+  return supplementedElements.has(element)
+    ? null
+    : findAncestors(hierarchy, element);
+}
+
+/**
  * Adds to `primary` the elements of `secondary` whose identifier is not in
  * `primary`. Each one is added, without its children, as the last child of
  * the smallest `primary` element whose frame contains its frame, or at the
@@ -1317,6 +1353,7 @@ function addMissingIdentifiedElements(
   for (const el of missing) {
     const { children: _children, ...element } = el;
     const added: UIElement = structuredClone(element);
+    supplementedElements.add(added);
     let host: UIElement | undefined;
     for (const candidate of all) {
       if (
