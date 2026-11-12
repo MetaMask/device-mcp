@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- fix: accept a tap that hits the target's own container ([#55](https://github.com/MetaMask/device-mcp/pull/55))
+
 ## [0.7.0]
 
 ### Added
