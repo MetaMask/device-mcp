@@ -18,6 +18,34 @@ export function findElement(
   return null;
 }
 
+/**
+ * The chain of ancestors of `target` in a hierarchy, root first and parent
+ * last. The target itself is not included. Identity is by reference: pass an
+ * element that came from `elements` (as `findElement` returns).
+ *
+ * @param elements - The hierarchy to search.
+ * @param target - The element whose ancestors to collect.
+ * @returns The ancestors, or `null` when `target` is not in the hierarchy.
+ */
+export function findAncestors(
+  elements: UIElement[],
+  target: UIElement,
+): UIElement[] | null {
+  for (const element of elements) {
+    if (element === target) {
+      return [];
+    }
+    if (!element.children) {
+      continue;
+    }
+    const below = findAncestors(element.children, target);
+    if (below) {
+      return [element, ...below];
+    }
+  }
+  return null;
+}
+
 export function matchesQuery(element: UIElement, query: ElementQuery): boolean {
   if (query.identifier && !fuzzyMatch(element.identifier, query.identifier)) {
     return false;

@@ -79,6 +79,90 @@ describe('hitsTarget', () => {
       hitsTarget(target, el('Key', { x: 100, y: 540, width: 30, height: 30 })),
     ).toBe(false);
   });
+
+  describe('container of a label-matched target', () => {
+    const label = el(
+      'StaticText',
+      { x: 170, y: 545, width: 60, height: 22 },
+      { label: 'Unlock' },
+    );
+
+    it('accepts a larger button whose label relates to the target label', () => {
+      expect(
+        hitsTarget(
+          label,
+          el(
+            'Button',
+            { x: 16, y: 532, width: 370, height: 48 },
+            { identifier: 'log-in-button', label: 'Unlock' },
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it('accepts a larger ancestor of the target whatever its label', () => {
+      const container = el(
+        'Button',
+        { x: 16, y: 532, width: 370, height: 48 },
+        { identifier: 'log-in-button', label: 'Sign in' },
+      );
+
+      expect(hitsTarget(label, container)).toBe(false);
+      expect(hitsTarget(label, container, [container])).toBe(true);
+    });
+
+    it('rejects a larger overlay that only contains the target', () => {
+      expect(
+        hitsTarget(
+          label,
+          el(
+            'Other',
+            { x: 0, y: 400, width: 402, height: 474 },
+            { label: 'Bottom sheet' },
+          ),
+        ),
+      ).toBe(false);
+      expect(
+        hitsTarget(
+          label,
+          el(
+            'Other',
+            { x: 0, y: 400, width: 402, height: 474 },
+            { identifier: 'modal-backdrop' },
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects a larger element whose label is only whitespace', () => {
+      expect(
+        hitsTarget(
+          el(
+            'StaticText',
+            { x: 170, y: 545, width: 60, height: 22 },
+            { label: '  ' },
+          ),
+          el(
+            'Other',
+            { x: 16, y: 532, width: 370, height: 48 },
+            { label: ' ' },
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects a larger keyboard element even when it is an ancestor', () => {
+      const keyboard = el('Keyboard', {
+        x: 0,
+        y: 500,
+        width: 402,
+        height: 316,
+      });
+
+      expect(hitsTarget(label, keyboard)).toBe(false);
+      expect(hitsTarget(label, keyboard, [keyboard])).toBe(false);
+    });
+  });
 });
 
 describe('isKeyboardElement', () => {

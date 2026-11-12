@@ -882,14 +882,21 @@ describe('IdbBackend tap hit-test', () => {
 
   /**
    * @param hit - What `describe-point` returns: a node, an error, or raw text.
+   * @param hierarchy - What `describe-all` returns, when the test taps by query.
    */
-  const mockDevice = (hit: Record<string, unknown> | Error | string): void => {
+  const mockDevice = (
+    hit: Record<string, unknown> | Error | string,
+    hierarchy: Record<string, unknown>[] = [],
+  ): void => {
     mockExecStrict.mockImplementation(async (_cmd, args) => {
       if (args?.[0] === 'describe' && args.includes('--json')) {
         return JSON.stringify({
           os_version: '26.5',
           screen_dimensions: { width_points: 402, height_points: 874 },
         });
+      }
+      if (args?.[1] === 'describe-all') {
+        return JSON.stringify(hierarchy);
       }
       if (args?.[1] === 'describe-point') {
         if (hit instanceof Error) {
@@ -1079,6 +1086,95 @@ describe('IdbBackend tap hit-test', () => {
       backend.longPress({ identifier: 'log-in-button' }),
     ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
     expect(tapCalls()).toHaveLength(0);
+  });
+
+  describe('when the query matched a label inside a button', () => {
+    const label: Record<string, unknown> = {
+      type: 'StaticText',
+      AXLabel: 'Unlock',
+      frame: { x: 170, y: 545, width: 60, height: 22 },
+      enabled: true,
+    };
+
+    it('accepts the tap when describe-point returns the button around the label', async () => {
+      // Nested snapshot: the static text is a child of the button.
+      mockDevice(
+        {
+          type: 'Button',
+          AXLabel: 'Unlock',
+          AXUniqueId: 'log-in-button',
+          frame: loginButton.frame,
+        },
+        [
+          {
+            type: 'Button',
+            AXUniqueId: 'log-in-button',
+            frame: loginButton.frame,
+            enabled: true,
+            children: [label],
+          },
+        ],
+      );
+
+      await backend.tapElement({ text: 'Unlock' });
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('accepts a flat snapshot whose button repeats the matched label', async () => {
+      // Flat snapshot: no children, so only the label relation links them.
+      mockDevice(
+        {
+          type: 'Button',
+          AXLabel: 'Unlock',
+          frame: loginButton.frame,
+        },
+        [label],
+      );
+
+      await backend.tapElement({ text: 'Unlock' });
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('still refuses an overlay that contains the matched label', async () => {
+      mockDevice(
+        {
+          type: 'Other',
+          AXLabel: 'Bottom sheet',
+          AXUniqueId: 'sheet',
+          frame: { x: 0, y: 400, width: 402, height: 474 },
+        },
+        [label],
+      );
+
+      await expect(
+        backend.tapElement({ text: 'Unlock' }),
+      ).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: false,
+      });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('still refuses the keyboard that contains the matched label', async () => {
+      mockDevice(
+        {
+          type: 'Button',
+          AXLabel: 'Passwords',
+          frame: { x: 30, y: 546, width: 342, height: 44 },
+        },
+        [label],
+      );
+
+      await expect(
+        backend.tapElement({ text: 'Unlock' }),
+      ).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: true,
+      });
+      expect(tapCalls()).toHaveLength(0);
+    });
   });
 });
 

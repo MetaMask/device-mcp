@@ -25,6 +25,7 @@ import type {
 import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
 import {
   findElement,
+  findAncestors,
   describeElement,
   computeSwipeEnd,
   visibleCenter,
@@ -477,8 +478,12 @@ export class IdbBackend implements DeviceBackend {
     options?: TapElementOptions,
   ): Promise<TapResult> {
     await this.ensureConnected();
-    const element =
-      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
+    let hierarchy: UIElement[] | undefined;
+    let element = options?.element;
+    if (!element) {
+      hierarchy = (await this.snapshot()).hierarchy;
+      element = findElement(hierarchy, query) ?? undefined;
+    }
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +
@@ -487,7 +492,11 @@ export class IdbBackend implements DeviceBackend {
     }
 
     const { x, y } = visibleCenter(element, await this.getWindowSize());
-    await this.#assertHittable(element, { x, y });
+    await this.#assertHittable(
+      element,
+      { x, y },
+      hierarchy ? (findAncestors(hierarchy, element) ?? undefined) : undefined,
+    );
     await this.tapCoordinates(x, y);
 
     return {
@@ -509,11 +518,15 @@ export class IdbBackend implements DeviceBackend {
    * @param point - The tap point.
    * @param point.x - X in points.
    * @param point.y - Y in points.
+   * @param ancestors - The element's ancestors in its snapshot, when known.
+   * Lets a hit on the target's own container (a button around the matched
+   * label) pass, while overlays and the keyboard are still refused.
    * @throws {TargetObscuredError} When another element is at the point.
    */
   async #assertHittable(
     element: UIElement,
     point: { x: number; y: number },
+    ancestors?: UIElement[],
   ): Promise<void> {
     if (!this.#idbSupportsApi) {
       return;
@@ -545,7 +558,7 @@ export class IdbBackend implements DeviceBackend {
     } catch {
       return;
     }
-    if (!hitsTarget(element, hit)) {
+    if (!hitsTarget(element, hit, ancestors)) {
       throw new TargetObscuredError(element, hit, point);
     }
   }
@@ -889,7 +902,11 @@ export class IdbBackend implements DeviceBackend {
     }
 
     const { x: cx, y: cy } = visibleCenter(element, await this.getWindowSize());
-    await this.#assertHittable(element, { x: cx, y: cy });
+    await this.#assertHittable(
+      element,
+      { x: cx, y: cy },
+      findAncestors(snap.hierarchy, element) ?? undefined,
+    );
     await this.#execStrict(this.#idbPath, [
       'ui',
       'tap',
