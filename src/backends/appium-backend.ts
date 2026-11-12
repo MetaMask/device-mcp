@@ -1,18 +1,21 @@
 import type { SessionConfig } from './session-file.js';
 import type {
+  AppStateResult,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,
-  SnapshotResult,
-  ScreenshotResult,
+  ElementQuery,
+  LogsResult,
+  Platform,
   ScreenshotFileResult,
   ScreenshotOptions,
-  LogsResult,
+  ScreenshotResult,
+  ScrollDirection,
+  ScrollToElementResult,
+  SnapshotResult,
+  TapElementOptions,
   TapResult,
-  AppStateResult,
-  ElementQuery,
   UIElement,
-  Platform,
   WindowSize,
 } from './types.js';
 import { WebDriverClient, createSession } from './webdriver-client.js';
@@ -25,6 +28,8 @@ import {
   resolveArtifactPath,
   writeArtifactFile,
 } from '../utils/output-path.js';
+import { scrollUntilInViewport } from '../utils/scroll.js';
+import { pollForElement } from '../utils/wait-for-element.js';
 
 export class AppiumBackend implements DeviceBackend {
   readonly kind = 'appium' as const;
@@ -96,9 +101,12 @@ export class AppiumBackend implements DeviceBackend {
     };
   }
 
-  async tapElement(query: ElementQuery): Promise<TapResult> {
-    const snapshot = await this.snapshot();
-    const element = findElement(snapshot.hierarchy, query);
+  async tapElement(
+    query: ElementQuery,
+    options?: TapElementOptions,
+  ): Promise<TapResult> {
+    const element =
+      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +
@@ -192,17 +200,11 @@ export class AppiumBackend implements DeviceBackend {
     timeoutMs = 10_000,
     intervalMs = 500,
   ): Promise<UIElement> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const snap = await this.snapshot();
-      const element = findElement(snap.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    throw new Error(
-      `Timed out waiting for element: ${JSON.stringify(query)} (${timeoutMs}ms)`,
+    return pollForElement(
+      async () => this.snapshot(),
+      query,
+      timeoutMs,
+      intervalMs,
     );
   }
 
@@ -421,26 +423,26 @@ export class AppiumBackend implements DeviceBackend {
 
   async scrollToElement(
     query: ElementQuery,
-    direction: 'up' | 'down' = 'down',
+    direction: ScrollDirection = 'auto',
     maxAttempts = 10,
-  ): Promise<UIElement> {
-    let previousRaw = '';
-
-    for (let i = 0; i < maxAttempts; i++) {
-      const snap = await this.snapshot();
-      const element = findElement(snap.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      if (snap.raw === previousRaw) {
-        break;
-      }
-      previousRaw = snap.raw;
-      await this.swipe(direction);
-    }
-    throw new Error(
-      `Element not found after scrolling: ${JSON.stringify(query)}\n` +
-        'Use device_snapshot to inspect the current UI hierarchy.',
+  ): Promise<ScrollToElementResult> {
+    const windowSize = await this.getWindowSize();
+    return scrollUntilInViewport(
+      {
+        snapshot: async () => this.snapshot(),
+        windowSize,
+        // The iOS backend's default: from the middle, over 40% of the height.
+        swipe: async (finger) =>
+          this.swipe(
+            finger,
+            Math.round(windowSize.width / 2),
+            Math.round(windowSize.height / 2),
+            Math.round(windowSize.height * 0.4),
+          ),
+      },
+      query,
+      direction,
+      maxAttempts,
     );
   }
 

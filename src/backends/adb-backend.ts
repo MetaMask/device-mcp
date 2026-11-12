@@ -34,21 +34,24 @@ import {
   reassembleInstrumentationXml,
 } from './android-instrumentation/snapshot.js';
 import type {
+  AppStateResult,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,
-  SnapshotResult,
-  ScreenshotResult,
+  ElementQuery,
+  LogsResult,
   ScreenshotFileResult,
   ScreenshotOptions,
-  LogsResult,
+  ScreenshotResult,
+  ScrollDirection,
+  ScrollToElementResult,
+  SnapshotResult,
+  TapElementOptions,
   TapResult,
-  AppStateResult,
-  ElementQuery,
   UIElement,
-  WindowSize,
   WebViewCdpInput,
   WebViewCdpOutcome,
+  WindowSize,
 } from './types.js';
 import { runWebViewCdp } from './webview-cdp.js';
 import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
@@ -56,12 +59,15 @@ import {
   findElement,
   describeElement,
   computeSwipeEnd,
+  visibleCenter,
 } from '../utils/element.js';
 import { exec, execStrict, isCommandAvailable } from '../utils/exec.js';
 import {
   hardenArtifactFile,
   resolveArtifactPath,
 } from '../utils/output-path.js';
+import { scrollUntilInViewport } from '../utils/scroll.js';
+import { pollForElement } from '../utils/wait-for-element.js';
 
 // `uiautomator dump` exits 0 and prints its success banner even when it fails, so
 // the XML payload is the only trustworthy signal.
@@ -215,6 +221,8 @@ export class AdbBackend implements DeviceBackend {
 
   readonly #recordingRemotePath = '/sdcard/device-mcp-recording.mp4';
 
+  #windowSize: Promise<WindowSize> | undefined;
+
   // Installation is cached; trust is still checked before every helper run.
   #helperInstalled = false;
 
@@ -296,9 +304,12 @@ export class AdbBackend implements DeviceBackend {
     };
   }
 
-  async tapElement(query: ElementQuery): Promise<TapResult> {
-    const snapshot = await this.snapshot();
-    const element = findElement(snapshot.hierarchy, query);
+  async tapElement(
+    query: ElementQuery,
+    options?: TapElementOptions,
+  ): Promise<TapResult> {
+    const element =
+      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +
@@ -306,8 +317,7 @@ export class AdbBackend implements DeviceBackend {
       );
     }
 
-    const x = Math.round(element.frame.x + element.frame.width / 2);
-    const y = Math.round(element.frame.y + element.frame.height / 2);
+    const { x, y } = visibleCenter(element, await this.#cachedWindowSize());
     await this.tapCoordinates(x, y);
 
     return {
@@ -380,17 +390,11 @@ export class AdbBackend implements DeviceBackend {
     timeoutMs = 10_000,
     intervalMs = 500,
   ): Promise<UIElement> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const snapshot = await this.snapshot();
-      const element = findElement(snapshot.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    throw new Error(
-      `Timed out waiting for element: ${JSON.stringify(query)} (${timeoutMs}ms)`,
+    return pollForElement(
+      async () => this.snapshot(),
+      query,
+      timeoutMs,
+      intervalMs,
     );
   }
 
@@ -873,8 +877,10 @@ export class AdbBackend implements DeviceBackend {
       );
     }
 
-    const cx = Math.round(element.frame.x + element.frame.width / 2);
-    const cy = Math.round(element.frame.y + element.frame.height / 2);
+    const { x: cx, y: cy } = visibleCenter(
+      element,
+      await this.#cachedWindowSize(),
+    );
     await this.#adb([
       'shell',
       'input',
@@ -896,26 +902,26 @@ export class AdbBackend implements DeviceBackend {
 
   async scrollToElement(
     query: ElementQuery,
-    direction: 'up' | 'down' = 'down',
+    direction: ScrollDirection = 'auto',
     maxAttempts = 10,
-  ): Promise<UIElement> {
-    let previousRaw = '';
-
-    for (let i = 0; i < maxAttempts; i++) {
-      const snap = await this.snapshot();
-      const element = findElement(snap.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      if (snap.raw === previousRaw) {
-        break;
-      }
-      previousRaw = snap.raw;
-      await this.swipe(direction);
-    }
-    throw new Error(
-      `Element not found after scrolling: ${JSON.stringify(query)}\n` +
-        'Use device_snapshot to inspect the current UI hierarchy.',
+  ): Promise<ScrollToElementResult> {
+    const windowSize = await this.getWindowSize();
+    return scrollUntilInViewport(
+      {
+        snapshot: async () => this.snapshot(),
+        windowSize,
+        // The iOS backend's default: from the middle, over 40% of the height.
+        swipe: async (finger) =>
+          this.swipe(
+            finger,
+            Math.round(windowSize.width / 2),
+            Math.round(windowSize.height / 2),
+            Math.round(windowSize.height * 0.4),
+          ),
+      },
+      query,
+      direction,
+      maxAttempts,
     );
   }
 
@@ -929,6 +935,20 @@ export class AdbBackend implements DeviceBackend {
       );
     }
     return texts.join('\n');
+  }
+
+  /**
+   * The screen size, read once per backend (one `adb shell wm size`) for the
+   * tap viewport check. A failed read is not cached.
+   *
+   * @returns The screen size in pixels.
+   */
+  async #cachedWindowSize(): Promise<WindowSize> {
+    this.#windowSize ??= this.getWindowSize().catch((error: unknown) => {
+      this.#windowSize = undefined;
+      throw error;
+    });
+    return this.#windowSize;
   }
 
   async getWindowSize(): Promise<WindowSize> {

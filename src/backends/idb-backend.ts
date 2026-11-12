@@ -5,17 +5,20 @@ import { readFile } from 'node:fs/promises';
 import { IdbConnection } from './idb-connection.js';
 import { classifyIdbFailure, IdbUnavailableError } from './idb-errors.js';
 import type {
+  AppStateResult,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,
-  SnapshotResult,
-  ScreenshotResult,
+  ElementQuery,
+  LogsResult,
   ScreenshotFileResult,
   ScreenshotOptions,
-  LogsResult,
+  ScreenshotResult,
+  ScrollDirection,
+  ScrollToElementResult,
+  SnapshotResult,
+  TapElementOptions,
   TapResult,
-  AppStateResult,
-  ElementQuery,
   UIElement,
   WindowSize,
 } from './types.js';
@@ -24,9 +27,10 @@ import {
   findElement,
   describeElement,
   computeSwipeEnd,
+  visibleCenter,
 } from '../utils/element.js';
 import { execStrict, exec } from '../utils/exec.js';
-import type { ExecResult } from '../utils/exec.js';
+import { hitsTarget, TargetObscuredError } from '../utils/hit-test.js';
 import {
   hardenArtifactFile,
   resolveArtifactPath,
@@ -37,7 +41,46 @@ import {
   idbSupportsNestedDescribe,
   resolveIdbPath,
 } from '../utils/platform.js';
+import { scrollUntilInViewport } from '../utils/scroll.js';
 import { stopChildProcess } from '../utils/stop-child-process.js';
+import { pollForElement } from '../utils/wait-for-element.js';
+
+/**
+ * USB HID keyboard usage IDs. `idb ui key` takes these integers, not key
+ * names (idb 1.7: "argument key: invalid int value: 'RETURN'").
+ */
+const HID_KEY = {
+  a: 4,
+  return: 40,
+  backspace: 42,
+} as const;
+
+/**
+ * Whether the software keyboard is on screen: an element whose type is
+ * exactly `Keyboard`. (React Native's `KeyboardControllerView` is a
+ * full-screen container that is always present, so a substring match on the
+ * type is wrong.)
+ *
+ * @param elements - The snapshot hierarchy.
+ * @returns True when a keyboard element is present.
+ */
+function hasKeyboard(elements: UIElement[]): boolean {
+  return elements.some(
+    (element) =>
+      element.type === 'Keyboard' ||
+      (element.children !== undefined && hasKeyboard(element.children)),
+  );
+}
+
+/** `idb describe --json` printed something that is not JSON. */
+class InvalidDescribeJsonError extends Error {
+  constructor(udid: string, raw: string) {
+    super(
+      `idb describe returned invalid JSON for device ${udid}: ${raw.slice(0, 200)}`,
+    );
+    this.name = 'InvalidDescribeJsonError';
+  }
+}
 
 export class IdbBackend implements DeviceBackend {
   readonly kind = 'idb' as const;
@@ -74,6 +117,15 @@ export class IdbBackend implements DeviceBackend {
   #recordingPath: string | null = null;
 
   #stoppingRecording: Promise<string> | undefined;
+
+  /**
+   * `idb describe --json` of the current connection: OS version (for the
+   * describe-all API order) and screen size. Read once per connection, because
+   * every read is an idb process (~0.25 s) and both values are fixed while the
+   * simulator stays booted. Cleared on every (re)connect. A rotation while
+   * connected is not detected; reconnect after rotating.
+   */
+  #describeCache: Promise<Record<string, unknown>> | undefined;
 
   constructor(udid: string) {
     this.#udid = udid;
@@ -143,6 +195,7 @@ export class IdbBackend implements DeviceBackend {
       }
       await this.#connection.connect(this.#idbPath);
       await this.#enableSimulatorAccessibility();
+      this.#describeCache = undefined;
       this.#generation += 1;
       this.#connected = true;
     } catch (error) {
@@ -181,25 +234,8 @@ export class IdbBackend implements DeviceBackend {
     if (command !== this.#idbPath) {
       return execStrict(command, args);
     }
-    return this.#idb(
-      args,
-      async () => execStrict(command, args, { env: this.#connection.env }),
-      () => undefined,
-      true,
-    );
-  }
-
-  async #exec(command: string, args: string[]): Promise<ExecResult> {
-    if (command !== this.#idbPath) {
-      return exec(command, args);
-    }
-    // Non-strict callers keep their semantics: a failure that survives the
-    // retry is returned, not thrown.
-    return this.#idb(
-      args,
-      async () => exec(command, args, { env: this.#connection.env }),
-      (result) => (result.exitCode === 0 ? undefined : result.stderr),
-      false,
+    return this.#idb(args, async () =>
+      execStrict(command, args, { env: this.#connection.env }),
     );
   }
 
@@ -219,24 +255,17 @@ export class IdbBackend implements DeviceBackend {
    * is never resent after the backend is disposed.
    *
    * @param args - The idb arguments (used to decide whether a resend is safe).
-   * @param run - Sends the command once.
-   * @param failureOf - Failure text of a resolved run, if it failed.
-   * @param strict - Throw a typed error when recovery does not help.
-   * @returns The result of the first successful (or unrecoverable) run.
+   * @param run - Sends the command once; rejects when it fails.
+   * @returns The output of the first successful run.
    */
-  async #idb<Result>(
-    args: string[],
-    run: () => Promise<Result>,
-    failureOf: (value: Result) => string | undefined,
-    strict: boolean,
-  ): Promise<Result> {
+  async #idb(args: string[], run: () => Promise<string>): Promise<string> {
     if (!this.#connected || !this.#connection.alive) {
       // The companion died (or a reconnect failed) since this method's own
       // ensureConnected(); start a fresh one before sending.
       await this.ensureConnected();
     }
     const generation = this.#generation;
-    const first = await attempt(run, failureOf);
+    const first = await attempt(run);
     const failure =
       first.text === undefined ? undefined : classifyIdbFailure(first.text);
     if (!failure) {
@@ -252,10 +281,7 @@ export class IdbBackend implements DeviceBackend {
       }
     } catch (error) {
       if (this.#disposed) {
-        return interrupted(first, strict);
-      }
-      if (!strict) {
-        return first.settle();
+        throw interrupted(first);
       }
       throw new IdbUnavailableError(
         'IDB_COMPANION_UNAVAILABLE',
@@ -266,12 +292,9 @@ export class IdbBackend implements DeviceBackend {
     }
     if (this.#disposed) {
       // Disposal started while another call's reconnect was finishing.
-      return interrupted(first, strict);
+      throw interrupted(first);
     }
     if (!resend) {
-      if (!strict) {
-        return first.settle();
-      }
       throw new IdbUnavailableError(
         failure.code,
         this.#udid,
@@ -282,10 +305,10 @@ export class IdbBackend implements DeviceBackend {
         },
       );
     }
-    const second = await attempt(run, failureOf);
+    const second = await attempt(run);
     const again =
       second.text === undefined ? undefined : classifyIdbFailure(second.text);
-    if (!again || !strict) {
+    if (!again) {
       return second.settle();
     }
     throw new IdbUnavailableError(again.code, this.#udid, second.text ?? '', {
@@ -305,7 +328,7 @@ export class IdbBackend implements DeviceBackend {
    */
   async #enableSimulatorAccessibility(): Promise<void> {
     try {
-      await this.#exec('xcrun', [
+      await exec('xcrun', [
         'simctl',
         'spawn',
         this.#udid,
@@ -322,21 +345,60 @@ export class IdbBackend implements DeviceBackend {
     }
   }
 
-  async getDeviceInfo(): Promise<DeviceInfo> {
-    await this.ensureConnected();
+  /**
+   * Runs `idb describe --json`.
+   *
+   * @returns The parsed device description.
+   */
+  async #readDescribe(): Promise<Record<string, unknown>> {
     const raw = await this.#execStrict(this.#idbPath, [
       'describe',
       '--udid',
       this.#udid,
       '--json',
     ]);
-    let info: Record<string, unknown>;
     try {
-      info = JSON.parse(raw) as Record<string, unknown>;
+      return JSON.parse(raw) as Record<string, unknown>;
     } catch {
-      throw new Error(
-        `idb describe returned invalid JSON for device ${this.#udid}: ${raw.slice(0, 200)}`,
-      );
+      throw new InvalidDescribeJsonError(this.#udid, raw);
+    }
+  }
+
+  /**
+   * The cached `idb describe --json` of the current connection (see
+   * `#describeCache`); reads it on first use. Concurrent first callers share
+   * one read; a failed read is dropped from the cache so the next call
+   * retries.
+   *
+   * @returns The parsed device description.
+   */
+  async #cachedDescribe(): Promise<Record<string, unknown>> {
+    if (this.#describeCache) {
+      return this.#describeCache;
+    }
+    const pending = this.#readDescribe();
+    this.#describeCache = pending;
+    pending.catch(() => {
+      if (this.#describeCache === pending) {
+        this.#describeCache = undefined;
+      }
+    });
+    return pending;
+  }
+
+  /**
+   * Reads the device description fresh. A successful read replaces the cache
+   * that snapshots and taps use, unless the connection changed meanwhile;
+   * until then, and after a failed read, they keep the cached description.
+   *
+   * @returns The device info.
+   */
+  async getDeviceInfo(): Promise<DeviceInfo> {
+    await this.ensureConnected();
+    const generation = this.#generation;
+    const info = await this.#readDescribe();
+    if (this.#generation === generation) {
+      this.#describeCache = Promise.resolve(info);
     }
     return {
       platform: 'ios',
@@ -446,16 +508,20 @@ export class IdbBackend implements DeviceBackend {
     if (!this.#idbSupportsApi) {
       return [null];
     }
-    const { osVersion } = await this.getDeviceInfo();
+    const info = await this.#cachedDescribe();
+    const osVersion = (info.os_version as string) ?? 'Unknown';
     const preferred = chooseAxApi(osVersion, true);
     const complement = preferred === 'axbridge' ? 'ax' : 'axbridge';
     return [preferred, complement];
   }
 
-  async tapElement(query: ElementQuery): Promise<TapResult> {
+  async tapElement(
+    query: ElementQuery,
+    options?: TapElementOptions,
+  ): Promise<TapResult> {
     await this.ensureConnected();
-    const snapshot = await this.snapshot();
-    const element = findElement(snapshot.hierarchy, query);
+    const element =
+      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +
@@ -463,7 +529,8 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x, y } = await this.#visibleTapPoint(element);
+    const { x, y } = visibleCenter(element, await this.getWindowSize());
+    await this.#assertHittable(element, { x, y });
     await this.tapCoordinates(x, y);
 
     return {
@@ -475,36 +542,55 @@ export class IdbBackend implements DeviceBackend {
   }
 
   /**
-   * Returns the center of the part of the element's frame that lies inside
-   * the device viewport, in logical points. Tapping there is safer than
-   * tapping the raw frame center, which can fall outside the screen for
-   * off-screen or partially scrolled elements and either hit nothing or an
-   * unrelated on-screen control.
+   * Check that a tap at the point reaches the element, with one
+   * `idb ui describe-point` (about 0.25 s). Throws when another element (an
+   * overlay, a sheet, the keyboard) is on top. When the hit-test finds no
+   * element, or the idb version cannot run it, the tap goes ahead: the check
+   * only blocks taps it knows are wrong.
    *
    * @param element - The element to tap.
-   * @returns The tap point in logical points.
-   * @throws When the element's frame does not intersect the viewport at all.
+   * @param point - The tap point.
+   * @param point.x - X in points.
+   * @param point.y - Y in points.
+   * @throws {TargetObscuredError} When another element is at the point.
    */
-  async #visibleTapPoint(
+  async #assertHittable(
     element: UIElement,
-  ): Promise<{ x: number; y: number }> {
-    const { width, height } = await this.getWindowSize();
-    const x0 = Math.max(element.frame.x, 0);
-    const y0 = Math.max(element.frame.y, 0);
-    const x1 = Math.min(element.frame.x + element.frame.width, width);
-    const y1 = Math.min(element.frame.y + element.frame.height, height);
-    if (x1 <= x0 || y1 <= y0) {
-      throw new Error(
-        `Element is outside the ${width}x${height} viewport: ` +
-          `${describeElement(element)} at (${element.frame.x}, ${element.frame.y} ` +
-          `${element.frame.width}x${element.frame.height}). ` +
-          'Scroll it into view first (device_swipe or scroll_to_element).',
-      );
+    point: { x: number; y: number },
+  ): Promise<void> {
+    if (!this.#idbSupportsApi) {
+      return;
     }
-    return {
-      x: Math.round((x0 + x1) / 2),
-      y: Math.round((y0 + y1) / 2),
-    };
+    let raw: string;
+    try {
+      raw = await this.#execStrict(this.#idbPath, [
+        'ui',
+        'describe-point',
+        String(point.x),
+        String(point.y),
+        '--api',
+        'axbridge',
+        '--json',
+        '--udid',
+        this.#udid,
+      ]);
+    } catch (error) {
+      if (error instanceof IdbUnavailableError) {
+        throw error;
+      }
+      // "found no element at (x, y)" and other hit-test failures: unknown,
+      // not obscured.
+      return;
+    }
+    let hit: UIElement;
+    try {
+      hit = mapIdbElement(JSON.parse(raw) as Record<string, unknown>);
+    } catch {
+      return;
+    }
+    if (!hitsTarget(element, hit)) {
+      throw new TargetObscuredError(element, hit, point);
+    }
   }
 
   async getElementText(query: ElementQuery): Promise<string> {
@@ -532,20 +618,29 @@ export class IdbBackend implements DeviceBackend {
     ]);
   }
 
+  /**
+   * Replaces the content of the focused text field with `text`.
+   *
+   * Clears first with select-all (Command+A) and Backspace, both through
+   * strict execution so a failed clear rejects instead of appending to the
+   * old value. On an empty field the two keys do nothing.
+   *
+   * @param text - The text to type.
+   */
   async typeText(text: string): Promise<void> {
     await this.ensureConnected();
-    await this.#exec(this.#idbPath, [
+    await this.#execStrict(this.#idbPath, [
       'ui',
-      'key-sequence',
-      '--',
-      'cmd+a',
+      'key',
+      String(HID_KEY.a),
+      '--command',
       '--udid',
       this.#udid,
     ]);
-    await this.#exec(this.#idbPath, [
+    await this.#execStrict(this.#idbPath, [
       'ui',
       'key',
-      'DELETE',
+      String(HID_KEY.backspace),
       '--udid',
       this.#udid,
     ]);
@@ -620,17 +715,11 @@ export class IdbBackend implements DeviceBackend {
     timeoutMs = 10_000,
     intervalMs = 500,
   ): Promise<UIElement> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const snapshot = await this.snapshot();
-      const element = findElement(snapshot.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    throw new Error(
-      `Timed out waiting for element: ${JSON.stringify(query)} (${timeoutMs}ms)`,
+    return pollForElement(
+      async () => this.snapshot(),
+      query,
+      timeoutMs,
+      intervalMs,
     );
   }
 
@@ -670,11 +759,7 @@ export class IdbBackend implements DeviceBackend {
   }
 
   async #getAppStateViaSimctl(bundleId: string): Promise<AppStateResult> {
-    const result = await this.#exec('xcrun', [
-      'simctl',
-      'listapps',
-      this.#udid,
-    ]);
+    const result = await exec('xcrun', ['simctl', 'listapps', this.#udid]);
     if (result.exitCode === 0 && result.stdout.includes(bundleId)) {
       return { bundleId, state: 'Running' };
     }
@@ -755,28 +840,37 @@ export class IdbBackend implements DeviceBackend {
   }
 
   async pressButton(button: DeviceButton): Promise<void> {
+    if (button === 'back') {
+      throw Object.assign(
+        new Error(
+          "UNSUPPORTED_ON_IOS: iOS has no back button. Tap the screen's own " +
+            'back control (usually top left) instead.',
+        ),
+        { code: 'UNSUPPORTED_ON_IOS' },
+      );
+    }
     await this.ensureConnected();
-    const keyMap: Record<DeviceButton, string> = {
-      home: 'HOME',
-      lock: 'LOCK',
-      back: 'HOME',
-      enter: 'RETURN',
-    };
-    await this.#execStrict(this.#idbPath, [
-      'ui',
-      'key',
-      keyMap[button],
-      '--udid',
-      this.#udid,
-    ]);
+    const args =
+      button === 'enter'
+        ? ['ui', 'key', String(HID_KEY.return)]
+        : ['ui', 'button', button === 'home' ? 'HOME' : 'LOCK'];
+    await this.#execStrict(this.#idbPath, [...args, '--udid', this.#udid]);
   }
 
+  /**
+   * Hides the software keyboard by pressing Return, and does nothing when no
+   * keyboard is shown. Return can also submit a single-field form.
+   */
   async dismissKeyboard(): Promise<void> {
     await this.ensureConnected();
+    const { hierarchy } = await this.snapshot();
+    if (!hasKeyboard(hierarchy)) {
+      return;
+    }
     await this.#execStrict(this.#idbPath, [
       'ui',
       'key',
-      'RETURN',
+      String(HID_KEY.return),
       '--udid',
       this.#udid,
     ]);
@@ -837,7 +931,8 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x: cx, y: cy } = await this.#visibleTapPoint(element);
+    const { x: cx, y: cy } = visibleCenter(element, await this.getWindowSize());
+    await this.#assertHittable(element, { x: cx, y: cy });
     await this.#execStrict(this.#idbPath, [
       'ui',
       'tap',
@@ -859,28 +954,20 @@ export class IdbBackend implements DeviceBackend {
 
   async scrollToElement(
     query: ElementQuery,
-    direction: 'up' | 'down' = 'down',
+    direction: ScrollDirection = 'auto',
     maxAttempts = 10,
-  ): Promise<UIElement> {
+  ): Promise<ScrollToElementResult> {
     await this.ensureConnected();
     const windowSize = await this.getWindowSize();
-    let previousRaw = '';
-
-    for (let i = 0; i < maxAttempts; i++) {
-      const snap = await this.snapshot();
-      const element = findElement(snap.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      if (snap.raw === previousRaw) {
-        break;
-      }
-      previousRaw = snap.raw;
-      await this.#swipe(direction, windowSize);
-    }
-    throw new Error(
-      `Element not found after scrolling: ${JSON.stringify(query)}\n` +
-        'Use device_snapshot to inspect the current UI hierarchy.',
+    return scrollUntilInViewport(
+      {
+        snapshot: async () => this.snapshot(),
+        windowSize,
+        swipe: async (finger) => this.#swipe(finger, windowSize),
+      },
+      query,
+      direction,
+      maxAttempts,
     );
   }
 
@@ -899,31 +986,28 @@ export class IdbBackend implements DeviceBackend {
 
   async getWindowSize(): Promise<WindowSize> {
     await this.ensureConnected();
-    const raw = await this.#execStrict(this.#idbPath, [
-      'describe',
-      '--udid',
-      this.#udid,
-      '--json',
-    ]);
-    try {
-      const info = JSON.parse(raw) as Record<string, unknown>;
-      const dims = info.screen_dimensions as
-        | {
-            width?: number;
-            height?: number;
-            // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
-            width_points?: number;
-            // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
-            height_points?: number;
-          }
-        | undefined;
-      // Gestures and accessibility frames are in logical points, while
-      // `width`/`height` are hardware pixels; prefer the point dimensions.
-      if (dims?.width_points && dims?.height_points) {
-        return { width: dims.width_points, height: dims.height_points };
+    // Transport errors throw; only a non-JSON description falls back to the
+    // snapshot.
+    const info = await this.#cachedDescribe().catch((error: unknown) => {
+      if (error instanceof InvalidDescribeJsonError) {
+        return undefined;
       }
-    } catch {
-      // fall through to snapshot-based approach
+      throw error;
+    });
+    const dims = info?.screen_dimensions as
+      | {
+          width?: number;
+          height?: number;
+          // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
+          width_points?: number;
+          // eslint-disable-next-line @typescript-eslint/naming-convention -- idb wire field
+          height_points?: number;
+        }
+      | undefined;
+    // Gestures and accessibility frames are in logical points, while
+    // `width`/`height` are hardware pixels; prefer the point dimensions.
+    if (dims?.width_points && dims?.height_points) {
+      return { width: dims.width_points, height: dims.height_points };
     }
     const snap = await this.snapshot();
     if (snap.hierarchy.length > 0) {
@@ -1018,11 +1102,10 @@ type Attempt<Result> = {
 
 async function attempt<Result>(
   run: () => Promise<Result>,
-  failureOf: (value: Result) => string | undefined,
 ): Promise<Attempt<Result>> {
   try {
     const value = await run();
-    return { text: failureOf(value), error: undefined, settle: () => value };
+    return { text: undefined, error: undefined, settle: () => value };
   } catch (error) {
     return {
       text: error instanceof Error ? error.message : String(error),
@@ -1035,19 +1118,15 @@ async function attempt<Result>(
 }
 
 /**
- * Settle a failed first attempt when the backend was disposed before the
- * recovery could run. Disposal is a teardown, not a device fault, so the
+ * The error for a failed first attempt when the backend was disposed before
+ * the recovery could run. Disposal is a teardown, not a device fault, so the
  * command is not resent and no device remediation is given.
  *
  * @param first - The failed first attempt.
- * @param strict - Throw instead of returning the failed result.
- * @returns The first result, for non-strict callers.
+ * @returns The error to throw.
  */
-function interrupted<Result>(first: Attempt<Result>, strict: boolean): Result {
-  if (!strict) {
-    return first.settle();
-  }
-  throw new Error(
+function interrupted<Result>(first: Attempt<Result>): Error {
+  return new Error(
     'IDB command interrupted: the backend was disposed during the call',
     { cause: first.error },
   );

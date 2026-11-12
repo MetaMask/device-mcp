@@ -13,7 +13,8 @@ export function registerWaitForTool(
     {
       title: 'Wait For Element',
       description:
-        'Poll the UI hierarchy until an element matching the query appears. ' +
+        'Poll the UI hierarchy until an element matching the query appears ' +
+        '(and, when it appears during the wait, stops moving). ' +
         'Useful for waiting on transitions, loading states, or navigation.',
       inputSchema: {
         label: z.string().optional().describe('Accessibility label to match'),

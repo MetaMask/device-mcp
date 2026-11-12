@@ -3,13 +3,14 @@ import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { parseIdbHierarchy, mapIdbElement, IdbBackend } from './idb-backend.js';
 import { IdbUnavailableError } from './idb-errors.js';
 import type { UIElement } from './types.js';
 import { findElement, generateLocators } from '../utils/element.js';
 import * as execModule from '../utils/exec.js';
+import { TargetObscuredError } from '../utils/hit-test.js';
 import * as platformModule from '../utils/platform.js';
 
 const connectionMocks = vi.hoisted(() => ({
@@ -701,9 +702,9 @@ describe('IdbBackend.swipe and getWindowSize', () => {
         snapshotCount += 1;
         return JSON.stringify([
           {
-            type: snapshotCount === 3 ? 'Button' : 'StaticText',
-            AXLabel: snapshotCount === 3 ? 'Settings' : `Page ${snapshotCount}`,
-            frame: { x: 10, y: 20, width: 100, height: 44 },
+            type: snapshotCount >= 3 ? 'Button' : 'StaticText',
+            AXLabel: snapshotCount >= 3 ? 'Settings' : `Page ${snapshotCount}`,
+            frame: { x: 10, y: 200, width: 100, height: 44 },
             enabled: true,
           },
         ]);
@@ -823,6 +824,461 @@ describe('IdbBackend.tapElement and longPress viewport handling', () => {
     await expect(
       backend.longPress({ identifier: 'hidden-btn' }),
     ).rejects.toThrow('outside the 402x874 viewport');
+  });
+
+  it('taps a caller-resolved element without a new snapshot', async () => {
+    mockScreen([]);
+
+    const result = await backend.tapElement(
+      { identifier: 'submit-btn' },
+      {
+        element: {
+          type: 'Button',
+          identifier: 'submit-btn',
+          frame: { x: 10, y: 20, width: 100, height: 44 },
+          enabled: true,
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ success: true, x: 60, y: 42 });
+    expect(mockExecStrict).not.toHaveBeenCalledWith(
+      '/usr/local/bin/idb',
+      expect.arrayContaining(['describe-all']),
+      connectionOptions,
+    );
+  });
+
+  it('keeps the viewport check for a caller-resolved element', async () => {
+    mockScreen([]);
+
+    await expect(
+      backend.tapElement(
+        { identifier: 'hidden-btn' },
+        {
+          element: {
+            type: 'Button',
+            identifier: 'hidden-btn',
+            frame: { x: 0, y: 1000, width: 402, height: 100 },
+            enabled: true,
+          },
+        },
+      ),
+    ).rejects.toThrow('outside the 402x874 viewport');
+  });
+});
+
+describe('IdbBackend tap hit-test', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  const loginButton: UIElement = {
+    type: 'Button',
+    label: 'Unlock',
+    identifier: 'log-in-button',
+    frame: { x: 16.3, y: 532.3, width: 369.3, height: 48 },
+    enabled: true,
+  };
+
+  /**
+   * @param hit - What `describe-point` returns: a node, an error, or raw text.
+   */
+  const mockDevice = (hit: Record<string, unknown> | Error | string): void => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.[0] === 'describe' && args.includes('--json')) {
+        return JSON.stringify({
+          os_version: '26.5',
+          screen_dimensions: { width_points: 402, height_points: 874 },
+        });
+      }
+      if (args?.[1] === 'describe-point') {
+        if (hit instanceof Error) {
+          throw hit;
+        }
+        return typeof hit === 'string' ? hit : JSON.stringify(hit);
+      }
+      return '';
+    });
+  };
+
+  const tapCalls = (): unknown[][] =>
+    mockExecStrict.mock.calls.filter(([, args]) => args?.[1] === 'tap');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    connectionState.alive = true;
+    mockSupportsApi.mockResolvedValue(true);
+    mockSupportsNested.mockResolvedValue(true);
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    backend = new IdbBackend(udid);
+  });
+
+  it('hit-tests the tap point with describe-point before tapping', async () => {
+    mockDevice({
+      type: 'Button',
+      AXLabel: 'Unlock',
+      AXUniqueId: 'log-in-button',
+      frame: loginButton.frame,
+    });
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    const calls = mockExecStrict.mock.calls
+      .map(([, args]) => args)
+      .filter((args) => args[0] === 'ui');
+    expect(calls).toStrictEqual([
+      [
+        'ui',
+        'describe-point',
+        '201',
+        '556',
+        '--api',
+        'axbridge',
+        '--json',
+        '--udid',
+        udid,
+      ],
+      ['ui', 'tap', '201', '556', '--udid', udid],
+    ]);
+  });
+
+  it('accepts a child of the target at the point (a label inside the button)', async () => {
+    mockDevice({
+      type: 'StaticText',
+      AXLabel: 'Unlock',
+      frame: { x: 170, y: 545, width: 60, height: 22 },
+    });
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    expect(tapCalls()).toHaveLength(1);
+  });
+
+  it('refuses the tap when the keyboard covers the target (B2)', async () => {
+    // Keyboard up on the login screen: the AutoFill bar sits over Unlock.
+    mockDevice({
+      type: 'Button',
+      AXLabel: 'Passwords',
+      AXUniqueId: null,
+      frame: { x: 30, y: 546, width: 342, height: 44 },
+    });
+
+    const error = await backend
+      .tapElement({ identifier: 'log-in-button' }, { element: loginButton })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(TargetObscuredError);
+    expect(error).toMatchObject({
+      code: 'TARGET_OBSCURED',
+      keyboard: true,
+      x: 201,
+      y: 556,
+      obscuredBy: { type: 'Button', label: 'Passwords' },
+    });
+    expect((error as Error).message).toContain('by the keyboard');
+    expect(tapCalls()).toHaveLength(0);
+  });
+
+  it('refuses the tap when an overlay covers the target', async () => {
+    mockDevice({
+      type: 'Other',
+      AXLabel: 'Bottom sheet',
+      AXUniqueId: 'sheet',
+      frame: { x: 0, y: 400, width: 402, height: 474 },
+    });
+
+    await expect(
+      backend.tapElement(
+        { identifier: 'log-in-button' },
+        { element: loginButton },
+      ),
+    ).rejects.toMatchObject({
+      code: 'TARGET_OBSCURED',
+      keyboard: false,
+      message: expect.stringContaining('Close the overlay'),
+    });
+    expect(tapCalls()).toHaveLength(0);
+  });
+
+  it('taps when the hit-test finds no element at the point', async () => {
+    mockDevice(
+      new Error('The axbridge backend found no element at (201.0, 556.0)'),
+    );
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    expect(tapCalls()).toHaveLength(1);
+  });
+
+  it('taps when the hit-test output is not JSON', async () => {
+    mockDevice('not json');
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    expect(tapCalls()).toHaveLength(1);
+  });
+
+  it('skips the hit-test when idb cannot select the accessibility API', async () => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockDevice(new Error('must not be called'));
+
+    await backend.tapElement(
+      { identifier: 'log-in-button' },
+      { element: loginButton },
+    );
+
+    expect(
+      mockExecStrict.mock.calls.filter(
+        ([, args]) => args?.[1] === 'describe-point',
+      ),
+    ).toHaveLength(0);
+    expect(tapCalls()).toHaveLength(1);
+  });
+
+  it('hit-tests long presses too', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.[0] === 'describe' && args.includes('--json')) {
+        return JSON.stringify({
+          os_version: '26.5',
+          screen_dimensions: { width_points: 402, height_points: 874 },
+        });
+      }
+      if (args?.[1] === 'describe-all') {
+        return JSON.stringify([
+          {
+            type: 'Button',
+            AXLabel: 'Unlock',
+            AXUniqueId: 'log-in-button',
+            frame: loginButton.frame,
+          },
+        ]);
+      }
+      if (args?.[1] === 'describe-point') {
+        return JSON.stringify({
+          type: 'Key',
+          AXLabel: 'space',
+          frame: { x: 100, y: 540, width: 200, height: 40 },
+        });
+      }
+      return '';
+    });
+
+    await expect(
+      backend.longPress({ identifier: 'log-in-button' }),
+    ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+    expect(tapCalls()).toHaveLength(0);
+  });
+});
+
+describe('IdbBackend device description cache', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  let backend: IdbBackend;
+
+  const screenInfo = {
+    name: 'iPhone 17 Pro',
+    os_version: '26.5',
+    state: 'Booted',
+    screen_dimensions: { width_points: 402, height_points: 874 },
+  };
+  const button = {
+    type: 'Button',
+    AXLabel: 'Submit',
+    AXUniqueId: 'submit-btn',
+    frame: { x: 10, y: 20, width: 100, height: 44 },
+    enabled: true,
+  };
+
+  const describeJsonCalls = (): number =>
+    mockExecStrict.mock.calls.filter(
+      ([, args]) => args?.includes('describe') && args?.includes('--json'),
+    ).length;
+  const describeAllCalls = (): number =>
+    mockExecStrict.mock.calls.filter(([, args]) =>
+      args?.includes('describe-all'),
+    ).length;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSupportsApi.mockResolvedValue(true);
+    mockChooseAxApi.mockReturnValue('axbridge');
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return JSON.stringify(screenInfo);
+      }
+      if (args?.includes('describe-all')) {
+        return JSON.stringify([button]);
+      }
+      return '';
+    });
+    backend = new IdbBackend(udid);
+  });
+
+  afterEach(() => {
+    mockSupportsApi.mockResolvedValue(false);
+    mockChooseAxApi.mockReturnValue(null);
+  });
+
+  it('reads idb describe once per connection for snapshots and taps', async () => {
+    const element = await backend.waitForElement({ identifier: 'submit-btn' });
+    await backend.tapElement({ identifier: 'submit-btn' }, { element });
+    await backend.snapshot();
+    await backend.tapElement({ identifier: 'submit-btn' });
+    await backend.swipe('up');
+
+    expect(describeJsonCalls()).toBe(1);
+    // waitForElement, snapshot, and the second (unresolved) tap.
+    expect(describeAllCalls()).toBe(3);
+  });
+
+  it('shares one describe read between concurrent first calls', async () => {
+    await Promise.all([backend.snapshot(), backend.getWindowSize()]);
+
+    expect(describeJsonCalls()).toBe(1);
+  });
+
+  it('reads the description again after a reconnect', async () => {
+    await backend.snapshot();
+    await backend.reconnect();
+    await backend.snapshot();
+
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('does not cache a failed read', async () => {
+    let failures = 1;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error('companion busy');
+        }
+        return JSON.stringify(screenInfo);
+      }
+      return JSON.stringify([button]);
+    });
+
+    await expect(backend.getWindowSize()).rejects.toThrow('companion busy');
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 402,
+      height: 874,
+    });
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('getDeviceInfo reads fresh and refreshes the cache', async () => {
+    await backend.getWindowSize();
+    const info = await backend.getDeviceInfo();
+    await backend.getWindowSize();
+
+    expect(info).toStrictEqual({
+      platform: 'ios',
+      deviceId: udid,
+      name: 'iPhone 17 Pro',
+      osVersion: '26.5',
+      state: 'Booted',
+    });
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('keeps the cached description when a getDeviceInfo read fails', async () => {
+    await backend.getWindowSize();
+    mockExecStrict.mockImplementationOnce(async () => {
+      throw new Error('companion busy');
+    });
+
+    await expect(backend.getDeviceInfo()).rejects.toThrow('companion busy');
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 402,
+      height: 874,
+    });
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('serves the cached description while getDeviceInfo reads', async () => {
+    await backend.getWindowSize();
+    let finishRead: (raw: string) => void = () => undefined;
+    mockExecStrict.mockImplementationOnce(
+      async () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const refreshing = backend.getDeviceInfo();
+
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 402,
+      height: 874,
+    });
+
+    finishRead(
+      JSON.stringify({
+        ...screenInfo,
+        screen_dimensions: { width_points: 874, height_points: 402 },
+      }),
+    );
+    await refreshing;
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 874,
+      height: 402,
+    });
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('does not cache a getDeviceInfo read that a reconnect overtook', async () => {
+    let finishRead: (raw: string) => void = () => undefined;
+    await backend.ensureConnected();
+    mockExecStrict.mockImplementationOnce(
+      async () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const refreshing = backend.getDeviceInfo();
+    await backend.reconnect();
+    finishRead(JSON.stringify(screenInfo));
+    await refreshing;
+
+    await backend.getWindowSize();
+    expect(describeJsonCalls()).toBe(2);
+  });
+
+  it('falls back to the snapshot root when describe is not JSON', async () => {
+    // Without --api support the snapshot does not need the OS version.
+    mockSupportsApi.mockResolvedValue(false);
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('describe') && args?.includes('--json')) {
+        return 'not json';
+      }
+      return JSON.stringify([
+        { type: 'Application', frame: { x: 0, y: 0, width: 390, height: 844 } },
+      ]);
+    });
+
+    expect(await backend.getWindowSize()).toStrictEqual({
+      width: 390,
+      height: 844,
+    });
+  });
+
+  it('getDeviceInfo rejects a non-JSON description', async () => {
+    mockExecStrict.mockResolvedValue('not json');
+
+    await expect(backend.getDeviceInfo()).rejects.toThrow(
+      `idb describe returned invalid JSON for device ${udid}: not json`,
+    );
   });
 });
 
@@ -1298,6 +1754,100 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
   });
 });
 
+describe('IdbBackend keys and buttons', () => {
+  const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
+  const idb = '/usr/local/bin/idb';
+  let backend: IdbBackend;
+
+  const idbCalls = (): unknown[][] =>
+    mockExecStrict.mock.calls
+      .filter(([cmd, args]) => cmd === idb && args?.[0] === 'ui')
+      .filter(([, args]) => args?.[1] !== 'describe-all')
+      .map(([, args]) => args as unknown[]);
+
+  const hierarchyWith = (types: string[]): string =>
+    JSON.stringify([
+      {
+        type: 'Application',
+        AXLabel: 'MetaMask',
+        frame: { x: 0, y: 0, width: 402, height: 874 },
+        children: types.map((type) => ({
+          type,
+          frame: { x: 0, y: 590, width: 402, height: 284 },
+        })),
+      },
+    ]);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    connectionState.alive = true;
+    mockSupportsApi.mockResolvedValue(false);
+    mockSupportsNested.mockResolvedValue(true);
+    mockExec.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    mockExecStrict.mockResolvedValue('');
+    backend = new IdbBackend(udid);
+  });
+
+  it.each([
+    ['enter', ['ui', 'key', '40', '--udid', udid]],
+    ['home', ['ui', 'button', 'HOME', '--udid', udid]],
+    ['lock', ['ui', 'button', 'LOCK', '--udid', udid]],
+  ] as const)('pressButton(%s) sends %j', async (button, args) => {
+    await backend.pressButton(button);
+
+    expect(mockExecStrict).toHaveBeenCalledWith(idb, args, connectionOptions);
+    expect(idbCalls()).toStrictEqual([args]);
+  });
+
+  it('rejects pressButton(back) without touching the device', async () => {
+    await expect(backend.pressButton('back')).rejects.toMatchObject({
+      code: 'UNSUPPORTED_ON_IOS',
+      message: expect.stringContaining('iOS has no back button'),
+    });
+    expect(mockExecStrict).not.toHaveBeenCalled();
+    expect(connectionMocks.connect).not.toHaveBeenCalled();
+  });
+
+  it('clears with Command+A and Backspace before typing, all strict', async () => {
+    await backend.typeText('hello world');
+
+    expect(idbCalls()).toStrictEqual([
+      ['ui', 'key', '4', '--command', '--udid', udid],
+      ['ui', 'key', '42', '--udid', udid],
+      ['ui', 'text', 'hello world', '--udid', udid],
+    ]);
+    expect(mockExec).not.toHaveBeenCalledWith(
+      idb,
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('presses Return to dismiss a visible keyboard', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) =>
+      args?.[1] === 'describe-all' ? hierarchyWith(['Keyboard']) : '',
+    );
+
+    await backend.dismissKeyboard();
+
+    expect(idbCalls()).toStrictEqual([['ui', 'key', '40', '--udid', udid]]);
+  });
+
+  it('does nothing when no keyboard is shown', async () => {
+    // React Native's full-screen KeyboardControllerView is always present
+    // and must not count as a keyboard.
+    mockExecStrict.mockImplementation(async (_cmd, args) =>
+      args?.[1] === 'describe-all'
+        ? hierarchyWith(['KeyboardControllerView'])
+        : '',
+    );
+
+    await backend.dismissKeyboard();
+
+    expect(idbCalls()).toStrictEqual([]);
+  });
+});
+
 describe('IdbBackend companion recovery', () => {
   const udid = 'AAAA1111-BBBB-CCCC-DDDD-EEEE2222FFFF';
   const hidInvalidated =
@@ -1516,33 +2066,6 @@ describe('IdbBackend companion recovery', () => {
     expect(connectionMocks.connect).toHaveBeenCalledTimes(1);
   });
 
-  it('returns the first non-strict failure when disposed during a command', async () => {
-    await backend.ensureConnected();
-    let finish!: (result: execModule.ExecResult) => void;
-    mockExec.mockImplementation(async (cmd, args) =>
-      cmd !== 'xcrun' && args?.[1] === 'key-sequence'
-        ? new Promise((resolve) => {
-            finish = resolve;
-          })
-        : { exitCode: 0, stdout: '', stderr: '' },
-    );
-    const typing = backend.typeText('abc').catch((e: unknown) => e);
-    await vi.waitFor(() => expect(finish).toBeDefined());
-
-    await backend.dispose();
-    finish({ exitCode: 1, stdout: '', stderr: hidInvalidated });
-
-    // The failed key-sequence is returned, not resent; the next idb command
-    // then fails fast because the backend is disposed.
-    expect(await typing).toMatchObject({
-      message: 'IDB backend has been disposed',
-    });
-    expect(
-      mockExec.mock.calls.filter(([, args]) => args?.[1] === 'key-sequence'),
-    ).toHaveLength(1);
-    expect(connectionMocks.connect).toHaveBeenCalledTimes(1);
-  });
-
   it('does not resend when disposed after joining a newer companion', async () => {
     await backend.ensureConnected();
     let fail!: (error: Error) => void;
@@ -1614,54 +2137,50 @@ describe('IdbBackend companion recovery', () => {
     expect(connectionMocks.connect).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps non-strict commands non-throwing and retries them once', async () => {
-    mockExecStrict.mockResolvedValue('');
-    mockExec.mockImplementation(async (cmd, args) => {
-      if (cmd !== 'xcrun' && args?.[1] === 'key-sequence') {
-        return { exitCode: 1, stdout: '', stderr: hidInvalidated };
-      }
-      return { exitCode: 0, stdout: '', stderr: '' };
-    });
-
-    expect(await backend.typeText('abc')).toBeUndefined();
-    const keySequence = mockExec.mock.calls.filter(
-      ([, args]) => args?.[1] === 'key-sequence',
+  const keyCalls = (key: string): unknown[][] =>
+    mockExecStrict.mock.calls.filter(
+      ([, args]) => args?.[1] === 'key' && args?.[2] === key,
     );
-    expect(keySequence).toHaveLength(2);
-  });
 
-  it('returns the first non-strict failure when the reconnect fails', async () => {
+  it('resends the typeText clear when the HID connection was invalidated', async () => {
     await backend.ensureConnected();
-    mockExecStrict.mockResolvedValue('');
-    mockExec.mockImplementation(async (cmd, args) =>
-      cmd !== 'xcrun' && args?.[1] === 'key-sequence'
-        ? { exitCode: 1, stdout: '', stderr: hidInvalidated }
-        : { exitCode: 0, stdout: '', stderr: '' },
-    );
-    connectionMocks.connect.mockRejectedValueOnce(new Error('no companion'));
-
-    // The failed key-sequence result is returned (not resent); the next
-    // command starts a fresh companion first, and the strict `ui text` succeeds.
-    expect(await backend.typeText('abc')).toBeUndefined();
-    expect(
-      mockExec.mock.calls.filter(([, args]) => args?.[1] === 'key-sequence'),
-    ).toHaveLength(1);
-    expect(connectionMocks.connect).toHaveBeenCalledTimes(3);
-  });
-
-  it('returns a non-strict failure without resending when delivery is uncertain', async () => {
-    mockExecStrict.mockResolvedValue('');
-    mockExec.mockImplementation(async (cmd, args) =>
-      cmd !== 'xcrun' && args?.[1] === 'key'
-        ? { exitCode: 1, stdout: '', stderr: 'StatusCode.UNAVAILABLE' }
-        : { exitCode: 0, stdout: '', stderr: '' },
-    );
+    let failures = 1;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.[1] === 'key' && args?.[2] === '4' && failures > 0) {
+        failures -= 1;
+        throw new Error(hidInvalidated);
+      }
+      return '';
+    });
 
     await backend.typeText('abc');
 
+    // Command+A failed undelivered, was resent once on a fresh companion,
+    // and the rest of the sequence ran.
+    expect(keyCalls('4')).toHaveLength(2);
+    expect(keyCalls('42')).toHaveLength(1);
+    expect(connectionMocks.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects typeText instead of appending when the clear cannot be delivered', async () => {
+    await backend.ensureConnected();
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.[1] === 'key' && args?.[2] === '42') {
+        throw new Error('StatusCode.UNAVAILABLE');
+      }
+      return '';
+    });
+
+    await expect(backend.typeText('abc')).rejects.toMatchObject({
+      code: 'IDB_COMPANION_UNAVAILABLE',
+      message: expect.stringContaining('may have run'),
+    });
+    // Backspace is mutating with uncertain delivery: not resent, and the
+    // text is never typed onto the old value.
+    expect(keyCalls('42')).toHaveLength(1);
     expect(
-      mockExec.mock.calls.filter(([, args]) => args?.[1] === 'key'),
-    ).toHaveLength(1);
+      mockExecStrict.mock.calls.filter(([, args]) => args?.[1] === 'text'),
+    ).toHaveLength(0);
   });
 
   it('shares one reconnect between concurrent failing calls', async () => {

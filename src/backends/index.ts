@@ -4,23 +4,26 @@ import { AppiumBackend } from './appium-backend.js';
 import { IdbBackend } from './idb-backend.js';
 import { readSessionFile } from './session-file.js';
 import type {
+  AppStateResult,
   BackendKind,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,
+  ElementQuery,
   LogsResult,
-  ScreenshotResult,
+  Platform,
   ScreenshotFileResult,
   ScreenshotOptions,
+  ScreenshotResult,
+  ScrollDirection,
+  ScrollToElementResult,
   SnapshotResult,
+  TapElementOptions,
   TapResult,
-  AppStateResult,
-  ElementQuery,
   UIElement,
-  Platform,
-  WindowSize,
   WebViewCdpInput,
   WebViewCdpOutcome,
+  WindowSize,
 } from './types.js';
 import {
   detectPlatform,
@@ -229,8 +232,11 @@ export function createLazyBackend(
       return (await resolve()).snapshot();
     },
 
-    async tapElement(query: ElementQuery): Promise<TapResult> {
-      return (await resolve()).tapElement(query);
+    async tapElement(
+      query: ElementQuery,
+      options?: TapElementOptions,
+    ): Promise<TapResult> {
+      return (await resolve()).tapElement(query, options);
     },
 
     async tapCoordinates(x: number, y: number): Promise<void> {
@@ -300,9 +306,9 @@ export function createLazyBackend(
 
     async scrollToElement(
       query: ElementQuery,
-      direction?: 'up' | 'down',
+      direction?: ScrollDirection,
       maxAttempts?: number,
-    ): Promise<UIElement> {
+    ): Promise<ScrollToElementResult> {
       return (await resolve()).scrollToElement(query, direction, maxAttempts);
     },
 
