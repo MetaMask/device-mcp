@@ -151,11 +151,7 @@ export function hitsTarget(
  * @returns True when at least one element has children.
  */
 function isNestedHierarchy(elements: UIElement[]): boolean {
-  return elements.some(
-    (element) =>
-      (element.children?.length ?? 0) > 0 ||
-      (element.children ? isNestedHierarchy(element.children) : false),
-  );
+  return elements.some((element) => (element.children?.length ?? 0) > 0);
 }
 
 /**

@@ -826,7 +826,7 @@ describe('IdbBackend.tapElement and longPress viewport handling', () => {
     ).rejects.toThrow('outside the 402x874 viewport');
   });
 
-  it('taps a caller-resolved element without a new snapshot', async () => {
+  it('takes one snapshot for a caller-resolved element when none is stored', async () => {
     mockScreen([]);
 
     const result = await backend.tapElement(
@@ -842,11 +842,10 @@ describe('IdbBackend.tapElement and longPress viewport handling', () => {
     );
 
     expect(result).toMatchObject({ success: true, x: 60, y: 42 });
-    expect(mockExecStrict).not.toHaveBeenCalledWith(
-      '/usr/local/bin/idb',
-      expect.arrayContaining(['describe-all']),
-      connectionOptions,
+    const describeAll = mockExecStrict.mock.calls.filter(([, args]) =>
+      args?.includes('describe-all'),
     );
+    expect(describeAll).toHaveLength(1);
   });
 
   it('keeps the viewport check for a caller-resolved element', async () => {
@@ -937,6 +936,11 @@ describe('IdbBackend tap hit-test', () => {
       AXUniqueId: 'log-in-button',
       frame: loginButton.frame,
     });
+    // A caller-resolved element on a fresh backend resolves its (unknown)
+    // ancestors against one snapshot; clear it from the call log so this test
+    // stays about the hit-test order.
+    await backend.snapshot();
+    mockExecStrict.mockClear();
 
     await backend.tapElement(
       { identifier: 'log-in-button' },
@@ -1279,6 +1283,54 @@ describe('IdbBackend tap hit-test', () => {
       await expect(
         backend.tapElement({ label: 'Confirm' }, { element }),
       ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('snapshots once to resolve a caller element when none is stored', async () => {
+      // A fresh backend has no stored hierarchy. Resolving the caller's
+      // element against a nested snapshot refuses the larger button instead
+      // of falling back to the flat label rule.
+      const callerElement: UIElement = {
+        type: 'StaticText',
+        label: 'Confirm',
+        frame: { x: 100, y: 700, width: 60, height: 22 },
+        enabled: true,
+      };
+      mockDevice(
+        {
+          type: 'Button',
+          AXLabel: 'Close, Confirm',
+          frame: { x: 0, y: 600, width: 390, height: 244 },
+        },
+        [
+          {
+            type: 'Application',
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+            enabled: true,
+            children: [
+              {
+                type: 'Other',
+                frame: { x: 0, y: 600, width: 390, height: 244 },
+                enabled: true,
+                children: [
+                  {
+                    type: 'Button',
+                    AXLabel: 'Primary action',
+                    frame: { x: 20, y: 610, width: 350, height: 48 },
+                    enabled: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        { widthPoints: 390, heightPoints: 844 },
+      );
+
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element: callerElement }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(describeAllCalls()).toBe(1);
       expect(tapCalls()).toHaveLength(0);
     });
 

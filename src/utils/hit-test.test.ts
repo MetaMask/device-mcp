@@ -172,6 +172,8 @@ describe('hitsTarget', () => {
       });
 
       it('rejects a larger element whose label is only whitespace', () => {
+        // A Button (not an Other) so the flat label rule runs and reaches the
+        // label comparison with an empty normalized label.
         expect(
           hitsTarget(
             el(
@@ -180,7 +182,17 @@ describe('hitsTarget', () => {
               { label: '  ' },
             ),
             el(
-              'Other',
+              'Button',
+              { x: 16, y: 532, width: 370, height: 48 },
+              { label: ' ' },
+            ),
+          ),
+        ).toBe(false);
+        expect(
+          hitsTarget(
+            label,
+            el(
+              'Button',
               { x: 16, y: 532, width: 370, height: 48 },
               { label: ' ' },
             ),

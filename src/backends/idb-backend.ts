@@ -503,6 +503,11 @@ export class IdbBackend implements DeviceBackend {
     if (!element) {
       element =
         findElement((await this.snapshot()).hierarchy, query) ?? undefined;
+    } else if (!this.#lastHierarchy) {
+      // A caller-resolved element with no stored hierarchy: snapshot once, so
+      // its ancestors are resolved against it (unknown when it is not in it)
+      // instead of falling back to the flat label rule for a nested screen.
+      await this.snapshot();
     }
     if (!element) {
       throw new Error(
