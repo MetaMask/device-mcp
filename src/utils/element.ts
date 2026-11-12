@@ -54,6 +54,22 @@ function fuzzyMatch(actual: string | undefined, expected: string): boolean {
   return actual.toLowerCase().includes(expected.toLowerCase());
 }
 
+/**
+ * Whether two elements have the same frame.
+ *
+ * @param a - One element.
+ * @param b - The other element.
+ * @returns True when the frames are equal.
+ */
+export function sameFrame(a: UIElement, b: UIElement): boolean {
+  return (
+    a.frame.x === b.frame.x &&
+    a.frame.y === b.frame.y &&
+    a.frame.width === b.frame.width &&
+    a.frame.height === b.frame.height
+  );
+}
+
 export function describeElement(element: UIElement): string {
   const parts: string[] = [element.type];
   if (element.label) {

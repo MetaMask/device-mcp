@@ -8,6 +8,7 @@ import {
   formatHierarchy,
   generateLocators,
   formatLocators,
+  sameFrame,
 } from './element.js';
 import type { UIElement } from '../backends/types.js';
 
@@ -97,6 +98,26 @@ describe('findElement', () => {
     expect(
       findElement([makeElement({ identifier: 'a' })], { identifier: 'x' }),
     ).toBeNull();
+  });
+});
+
+describe('sameFrame', () => {
+  it('compares position and size', () => {
+    const a = makeElement({ label: 'a' });
+
+    expect(sameFrame(a, makeElement({ label: 'b' }))).toBe(true);
+    expect(
+      sameFrame(
+        a,
+        makeElement({ frame: { x: 0, y: 1, width: 100, height: 44 } }),
+      ),
+    ).toBe(false);
+    expect(
+      sameFrame(
+        a,
+        makeElement({ frame: { x: 0, y: 0, width: 100, height: 40 } }),
+      ),
+    ).toBe(false);
   });
 });
 

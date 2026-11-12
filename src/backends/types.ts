@@ -46,6 +46,14 @@ export type TapResult = {
   targetDescription: string;
 };
 
+export type TapElementOptions = {
+  /**
+   * The element to tap, already resolved by the caller. Its frame is used as
+   * is; the backend does not check that it still matches `query`.
+   */
+  element?: UIElement;
+};
+
 export type AppStateResult = {
   bundleId: string;
   state: string;
@@ -127,7 +135,15 @@ export type DeviceBackend = {
 
   snapshot(): Promise<SnapshotResult>;
 
-  tapElement(query: ElementQuery): Promise<TapResult>;
+  /**
+   * Taps the element that matches `query`. Pass `options.element` (an element
+   * the caller already resolved, for example from `waitForElement`) to tap it
+   * without taking a new snapshot.
+   */
+  tapElement(
+    query: ElementQuery,
+    options?: TapElementOptions,
+  ): Promise<TapResult>;
 
   tapCoordinates(x: number, y: number): Promise<void>;
 
@@ -140,6 +156,12 @@ export type DeviceBackend = {
     distance?: number,
   ): Promise<void>;
 
+  /**
+   * Polls snapshots until an element matches `query`. An element that appears
+   * during the wait is returned once its frame stops changing (a sheet that
+   * is still sliding in), so a tap on the returned frame lands where the
+   * element stops.
+   */
   waitForElement(
     query: ElementQuery,
     timeoutMs?: number,

@@ -621,6 +621,53 @@ describe('AdbBackend.getElementText', () => {
   });
 });
 
+describe('AdbBackend.tapElement', () => {
+  let backend: AdbBackend;
+  const element: UIElement = {
+    type: 'android.widget.Button',
+    identifier: 'submit',
+    frame: { x: 100, y: 200, width: 400, height: 60 },
+    enabled: true,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecStrict.mockResolvedValue('');
+    backend = new AdbBackend('emulator-5554');
+  });
+
+  it('taps a caller-resolved element without a new snapshot', async () => {
+    const result = await backend.tapElement(
+      { identifier: 'submit' },
+      { element },
+    );
+
+    expect(result).toMatchObject({ success: true, x: 300, y: 230 });
+    expect(mockExecStrict).toHaveBeenCalledTimes(1);
+    expect(mockExecStrict).toHaveBeenCalledWith('adb', [
+      '-s',
+      'emulator-5554',
+      'shell',
+      'input',
+      'tap',
+      '300',
+      '230',
+    ]);
+  });
+
+  it('snapshots to find the element when none is passed', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) =>
+      args?.includes('cat') || args?.includes('dump')
+        ? SAMPLE_UIAUTOMATOR_XML
+        : '',
+    );
+
+    await expect(
+      backend.tapElement({ identifier: 'not-on-screen' }),
+    ).rejects.toThrow('Element not found');
+  });
+});
+
 describe('AdbBackend.screenshot', () => {
   let backend: AdbBackend;
 

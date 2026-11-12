@@ -34,21 +34,22 @@ import {
   reassembleInstrumentationXml,
 } from './android-instrumentation/snapshot.js';
 import type {
+  AppStateResult,
   DeviceBackend,
   DeviceButton,
   DeviceInfo,
-  SnapshotResult,
-  ScreenshotResult,
+  ElementQuery,
+  LogsResult,
   ScreenshotFileResult,
   ScreenshotOptions,
-  LogsResult,
+  ScreenshotResult,
+  SnapshotResult,
+  TapElementOptions,
   TapResult,
-  AppStateResult,
-  ElementQuery,
   UIElement,
-  WindowSize,
   WebViewCdpInput,
   WebViewCdpOutcome,
+  WindowSize,
 } from './types.js';
 import { runWebViewCdp } from './webview-cdp.js';
 import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
@@ -62,6 +63,7 @@ import {
   hardenArtifactFile,
   resolveArtifactPath,
 } from '../utils/output-path.js';
+import { pollForElement } from '../utils/wait-for-element.js';
 
 // `uiautomator dump` exits 0 and prints its success banner even when it fails, so
 // the XML payload is the only trustworthy signal.
@@ -296,9 +298,12 @@ export class AdbBackend implements DeviceBackend {
     };
   }
 
-  async tapElement(query: ElementQuery): Promise<TapResult> {
-    const snapshot = await this.snapshot();
-    const element = findElement(snapshot.hierarchy, query);
+  async tapElement(
+    query: ElementQuery,
+    options?: TapElementOptions,
+  ): Promise<TapResult> {
+    const element =
+      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +
@@ -380,17 +385,11 @@ export class AdbBackend implements DeviceBackend {
     timeoutMs = 10_000,
     intervalMs = 500,
   ): Promise<UIElement> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const snapshot = await this.snapshot();
-      const element = findElement(snapshot.hierarchy, query);
-      if (element) {
-        return element;
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    throw new Error(
-      `Timed out waiting for element: ${JSON.stringify(query)} (${timeoutMs}ms)`,
+    return pollForElement(
+      async () => this.snapshot(),
+      query,
+      timeoutMs,
+      intervalMs,
     );
   }
 
