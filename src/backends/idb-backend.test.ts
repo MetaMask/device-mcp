@@ -1176,6 +1176,56 @@ describe('IdbBackend tap hit-test', () => {
       expect(tapCalls()).toHaveLength(0);
     });
   });
+
+  describe('for an element returned by waitForElement', () => {
+    const confirmLabel: Record<string, unknown> = {
+      type: 'StaticText',
+      AXLabel: 'Confirm',
+      frame: { x: 170, y: 545, width: 60, height: 22 },
+      enabled: true,
+    };
+    const container: Record<string, unknown> = {
+      type: 'Button',
+      AXLabel: 'Primary action',
+      AXUniqueId: 'primary-btn',
+      frame: loginButton.frame,
+      enabled: true,
+      children: [confirmLabel],
+    };
+    const containerHit = {
+      type: 'Button',
+      AXLabel: 'Primary action',
+      AXUniqueId: 'primary-btn',
+      frame: loginButton.frame,
+    };
+
+    const describeAllCalls = (): number =>
+      mockExecStrict.mock.calls.filter(
+        ([, args]) => args?.[1] === 'describe-all',
+      ).length;
+
+    it('finds its ancestors in the last snapshot although the labels differ', async () => {
+      mockDevice(containerHit, [container]);
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await backend.tapElement({ label: 'Confirm' }, { element });
+
+      // The element came from the snapshot waitForElement took: no new one.
+      expect(describeAllCalls()).toBe(1);
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('has no ancestors when the element is not from the last snapshot', async () => {
+      mockDevice(containerHit, [container]);
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      // A copy is not the object in the hierarchy: identity fails.
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element: { ...element } }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(tapCalls()).toHaveLength(0);
+    });
+  });
 });
 
 describe('IdbBackend device description cache', () => {

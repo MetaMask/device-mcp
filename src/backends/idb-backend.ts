@@ -128,6 +128,14 @@ export class IdbBackend implements DeviceBackend {
    */
   #describeCache: Promise<Record<string, unknown>> | undefined;
 
+  /**
+   * The hierarchy of the most recent `snapshot()`. `waitForElement` returns
+   * an element from it by reference, so `tapElement(query, { element })` can
+   * recover the element's ancestors without another snapshot. Identity-based:
+   * an element copied or taken from another snapshot finds no ancestors.
+   */
+  #lastHierarchy: UIElement[] | undefined;
+
   constructor(udid: string) {
     this.#udid = udid;
     this.#connection = new IdbConnection(udid);
@@ -414,6 +422,7 @@ export class IdbBackend implements DeviceBackend {
     await this.ensureConnected();
     const raw = await this.#describeAll();
     const hierarchy = parseIdbHierarchy(raw);
+    this.#lastHierarchy = hierarchy;
     return {
       platform: 'ios',
       hierarchy,
@@ -473,16 +482,25 @@ export class IdbBackend implements DeviceBackend {
     return [preferred, complement];
   }
 
+  /**
+   * Tap the element that matches `query`. A caller-resolved
+   * `options.element` (from `waitForElement`) is used without a new snapshot;
+   * its ancestors still come from the most recent snapshot, so a tap whose
+   * hit-test lands on the element's own container is accepted.
+   *
+   * @param query - The element to tap.
+   * @param options - A caller-resolved element, to skip the snapshot.
+   * @returns The tap result.
+   */
   async tapElement(
     query: ElementQuery,
     options?: TapElementOptions,
   ): Promise<TapResult> {
     await this.ensureConnected();
-    let hierarchy: UIElement[] | undefined;
     let element = options?.element;
     if (!element) {
-      hierarchy = (await this.snapshot()).hierarchy;
-      element = findElement(hierarchy, query) ?? undefined;
+      element =
+        findElement((await this.snapshot()).hierarchy, query) ?? undefined;
     }
     if (!element) {
       throw new Error(
@@ -495,7 +513,8 @@ export class IdbBackend implements DeviceBackend {
     await this.#assertHittable(
       element,
       { x, y },
-      hierarchy ? (findAncestors(hierarchy, element) ?? undefined) : undefined,
+      // Identity-based: resolves only for an element from the last snapshot.
+      findAncestors(this.#lastHierarchy ?? [], element) ?? undefined,
     );
     await this.tapCoordinates(x, y);
 

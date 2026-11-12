@@ -60,16 +60,19 @@ export class TargetObscuredError extends Error {
  * button whose label is the matched static text). A container is accepted
  * only when its frame contains the target's frame and it is provably the
  * target's own: it is one of the `ancestors` from the snapshot the target
- * came from, or its label or identifier relates to the target's. A larger
- * overlay, sheet, backdrop or keyboard that merely contains the target has
- * no such relation and is still refused.
+ * came from, or it carries the target's label exactly (equal after trimming
+ * and ignoring case, or as one of its comma-separated segments, as iOS joins
+ * a container's child labels and icon names: "Unlock, lock icon"). Nothing
+ * else is a match: "OK" is not carried by "Look at your balance". A larger
+ * overlay, sheet, backdrop or keyboard that merely contains the target is
+ * still refused.
  *
  * @param target - The element the caller wants to tap.
  * @param hit - The element at the tap point.
  * @param ancestors - The target's ancestors in its snapshot, root first and
- * parent last. Omit when the hierarchy is unavailable (for example for a
- * caller-resolved element): the label/identifier relation is then the only
- * container signal.
+ * parent last. Omit when the hierarchy is unavailable (for example for an
+ * element copied from another snapshot): the strict label rule is then the
+ * only container signal.
  * @returns True when the tap reaches the target.
  */
 export function hitsTarget(
@@ -94,7 +97,7 @@ export function hitsTarget(
 
 /**
  * Whether the hit is the target's own container: an ancestor in the snapshot,
- * or an element whose label or identifier relates to the target's.
+ * or an element that carries the target's label.
  *
  * @param target - The element the caller wants to tap.
  * @param hit - The element at the tap point, whose frame contains the target's.
@@ -114,34 +117,34 @@ function isOwnContainer(
         !hit.identifier ||
         ancestor.identifier === hit.identifier),
   );
-  if (isAncestor) {
-    return true;
-  }
-  return (
-    relates(target.label, hit.label) ||
-    relates(target.identifier, hit.identifier)
-  );
+  return isAncestor || labelCarries(target.label, hit.label);
 }
 
 /**
- * Whether a string relates to another: both are non-empty and one contains
- * the other, ignoring case. A button that wraps a label usually carries the
- * label, sometimes with an icon name added ("Unlock, lock icon").
+ * Whether the hit's label carries the target's label exactly: equal after
+ * trimming and ignoring case, or equal to one of the hit label's
+ * comma-separated segments. iOS joins a container's child labels and icon
+ * names with ", " ("Unlock, lock icon"), so a button around a static text
+ * repeats it as a segment. No substring or prefix matching: "OK" is not
+ * carried by "Look at your balance", nor "Send" by "Sending in progress".
  *
- * @param a - One string.
- * @param b - The other string.
- * @returns True when the strings relate.
+ * @param target - The target's label.
+ * @param hit - The hit's label.
+ * @returns True when the hit carries the target's label.
  */
-function relates(a: string | undefined, b: string | undefined): boolean {
-  if (!a || !b) {
+function labelCarries(
+  target: string | undefined,
+  hit: string | undefined,
+): boolean {
+  const wanted = target?.trim().toLowerCase();
+  if (!wanted) {
     return false;
   }
-  const left = a.trim().toLowerCase();
-  const right = b.trim().toLowerCase();
-  if (!left || !right) {
-    return false;
-  }
-  return left.includes(right) || right.includes(left);
+  return (
+    hit
+      ?.split(',')
+      .some((segment) => segment.trim().toLowerCase() === wanted) ?? false
+  );
 }
 
 /**

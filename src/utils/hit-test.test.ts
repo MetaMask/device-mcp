@@ -100,6 +100,52 @@ describe('hitsTarget', () => {
       ).toBe(true);
     });
 
+    it('accepts a button that joins the label with an icon name', () => {
+      expect(
+        hitsTarget(
+          label,
+          el(
+            'Button',
+            { x: 16, y: 532, width: 370, height: 48 },
+            { label: 'Unlock, lock icon' },
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it('rejects a label that merely contains the target label', () => {
+      // Regression: "OK" is a substring of "Look at your balance", and
+      // "Send" is a prefix of "Sending in progress". Neither is the button
+      // around the target; both are sheets on top of it.
+      const short = (text: string): UIElement =>
+        el(
+          'StaticText',
+          { x: 170, y: 545, width: 60, height: 22 },
+          { label: text },
+        );
+
+      expect(
+        hitsTarget(
+          short('OK'),
+          el(
+            'Other',
+            { x: 0, y: 400, width: 402, height: 474 },
+            { label: 'Look at your balance' },
+          ),
+        ),
+      ).toBe(false);
+      expect(
+        hitsTarget(
+          short('Send'),
+          el(
+            'Other',
+            { x: 0, y: 400, width: 402, height: 474 },
+            { label: 'Sending in progress' },
+          ),
+        ),
+      ).toBe(false);
+    });
+
     it('accepts a larger ancestor of the target whatever its label', () => {
       const container = el(
         'Button',
