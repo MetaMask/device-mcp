@@ -74,21 +74,29 @@ export class TargetObscuredError extends Error {
  * With a non-empty ancestor chain the label rule is never consulted: React
  * Native Fabric joins any accessible container's child labels with `", "`, so
  * a sheet labelled `"Review transaction, 0.5 ETH, Cancel, Confirm"` would
- * otherwise be accepted for a `"Confirm"` target. Without a chain (flat idb
- * snapshots), the hit's label must carry the target's label exactly: equal
- * after trimming, lowercasing and collapsing whitespace, or equal to one of
- * the hit label's `", "` segments (`"Unlock, lock icon"` around `"Unlock"`).
- * No substring or prefix matching, and a hit that covers the screen is never
- * accepted this way. The flat rule does not cover React Native Paper (old
- * architecture), which joins labels with a space instead of `", "`; that
- * fails safe with TARGET_OBSCURED.
+ * otherwise be accepted for a `"Confirm"` target.
+ *
+ * Without a chain, a larger hit can be accepted only through the strict label
+ * rule, and only when the structure is genuinely flat: no hierarchy was
+ * passed, or no element in it has children. When the hierarchy is nested but
+ * the target is not in it (a copy, or an element from an earlier snapshot),
+ * the structure is unknown, so no larger hit is accepted. The hit's label
+ * must carry the target's label exactly — equal after trimming, lowercasing
+ * and collapsing whitespace, or equal to one of the hit label's `", "`
+ * segments (`"Unlock, lock icon"` around `"Unlock"`) — with no substring or
+ * prefix matching. The hit must not be an `Other` and must not cover the
+ * screen: accessibility sheets, toasts and other `Other` containers aggregate
+ * their children's labels, so they are never accepted this way. The flat rule
+ * does not cover React Native Paper (old architecture), which joins labels
+ * with a space instead of `", "`; that fails safe with TARGET_OBSCURED.
  *
  * @param target - The element the caller wants to tap.
  * @param hit - The element at the tap point.
  * @param ancestors - The target's ancestors in its snapshot, root first and
- * parent last. Omit or pass an empty array when the target has no known
- * ancestors (flat snapshot or copied element): the strict label rule is then
- * the only container signal.
+ * parent last; empty when the target has none (a flat snapshot or a hierarchy
+ * root), and `null` when the target is not in the hierarchy (a copy, or an
+ * element from another snapshot). With `null`, a larger hit is refused for a
+ * nested hierarchy and the label rule only applies to a flat one.
  * @param window - The window size, when known, to refuse screen-covering
  * ancestors and hits. Without it, the hierarchy root's frame stands in.
  * @param hierarchy - The hierarchy the target came from, when known. Used to
@@ -98,7 +106,7 @@ export class TargetObscuredError extends Error {
 export function hitsTarget(
   target: UIElement,
   hit: UIElement,
-  ancestors: UIElement[] = [],
+  ancestors: UIElement[] | null = [],
   window?: HitTestWindow,
   hierarchy?: UIElement[],
 ): boolean {
@@ -114,15 +122,40 @@ export function hitsTarget(
   if (!containsFrame(hit.frame, target.frame)) {
     return false;
   }
-  const screen = window ?? ancestors[0]?.frame;
-  if (ancestors.length === 0) {
-    // No structure to trust: the strict label rule is the only signal, and a
-    // screen-covering hit is never accepted through it.
-    return (
-      !coversScreen(hit.frame, screen) && labelCarries(target.label, hit.label)
-    );
+  const screen = window ?? ancestors?.[0]?.frame;
+  if (ancestors && ancestors.length > 0) {
+    return ancestorProvesContainer(hit, ancestors, screen, hierarchy);
   }
-  return ancestorProvesContainer(hit, ancestors, screen, hierarchy);
+  if (hierarchy && isNestedHierarchy(hierarchy)) {
+    // The hierarchy is nested, so the target should have had ancestors: it
+    // was not found in it (a copy, or an element from another snapshot). The
+    // structure is unknown, so no larger hit is accepted.
+    return false;
+  }
+  // Genuinely flat snapshot or no hierarchy: the strict label rule is the
+  // only signal, and a screen-covering hit is never accepted through it. An
+  // `Other` aggregates its children's labels (sheets, toasts), so it is never
+  // accepted either.
+  return (
+    hit.type !== 'Other' &&
+    !coversScreen(hit.frame, screen) &&
+    labelCarries(target.label, hit.label)
+  );
+}
+
+/**
+ * Whether any element in the hierarchy has children, i.e. the snapshot
+ * describes a tree rather than a flat list.
+ *
+ * @param elements - The hierarchy to inspect.
+ * @returns True when at least one element has children.
+ */
+function isNestedHierarchy(elements: UIElement[]): boolean {
+  return elements.some(
+    (element) =>
+      (element.children?.length ?? 0) > 0 ||
+      (element.children ? isNestedHierarchy(element.children) : false),
+  );
 }
 
 /**
@@ -182,14 +215,17 @@ function ancestorMatchesHit(
 }
 
 /**
- * Whether the hierarchy has an element that matches the hit's type and frame
- * but is not on the target's ancestor chain. Such an element (for example an
- * absolute-fill loading veil) makes the hit ambiguous, so it is refused.
+ * Whether the hierarchy has an element that matches the hit's type and frame,
+ * label and identifier but is not on the target's ancestor chain. Such an
+ * element (for example an absolute-fill loading veil) makes the hit ambiguous,
+ * so it is refused; an unrelated decoration with the same frame (a same-frame
+ * background inside the button) does not.
  *
  * @param hit - The element at the tap point.
  * @param ancestors - The target's ancestors, root first.
  * @param hierarchy - The hierarchy the target came from, when known.
- * @returns True when a same-type, same-frame element is off the chain.
+ * @returns True when a same-type, same-frame, same-label element is off the
+ * chain.
  */
 function hasSameFrameOutsideChain(
   hit: UIElement,
@@ -200,12 +236,15 @@ function hasSameFrameOutsideChain(
     return false;
   }
   const chain = new Set(ancestors);
+  const matchesHit = (element: UIElement): boolean =>
+    element.type === hit.type &&
+    framesMatch(element.frame, hit.frame) &&
+    normalizeLabel(element.label) === normalizeLabel(hit.label) &&
+    (element.identifier ?? '') === (hit.identifier ?? '');
   const walk = (elements: UIElement[]): boolean =>
     elements.some(
       (element) =>
-        (element.type === hit.type &&
-          framesMatch(element.frame, hit.frame) &&
-          !chain.has(element)) ||
+        (matchesHit(element) && !chain.has(element)) ||
         (element.children ? walk(element.children) : false),
     );
   return walk(hierarchy);

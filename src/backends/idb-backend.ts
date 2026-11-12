@@ -486,7 +486,9 @@ export class IdbBackend implements DeviceBackend {
    * Tap the element that matches `query`. A caller-resolved
    * `options.element` (from `waitForElement`) is used without a new snapshot;
    * its ancestors still come from the most recent snapshot, so a tap whose
-   * hit-test lands on the element's own container is accepted.
+   * hit-test lands on the element's own container is accepted. An element
+   * from another snapshot is not in this one: its ancestors are unknown, and
+   * a hit larger than the element is refused.
    *
    * @param query - The element to tap.
    * @param options - A caller-resolved element, to skip the snapshot.
@@ -517,8 +519,9 @@ export class IdbBackend implements DeviceBackend {
     await this.#assertHittable(
       element,
       { x, y },
-      // Identity-based: resolves only for an element from that hierarchy.
-      hierarchy ? (findAncestors(hierarchy, element) ?? undefined) : undefined,
+      // Identity-based: `null` when the element is not from that hierarchy (a
+      // copy, or another snapshot), so a larger hit is refused there.
+      hierarchy ? findAncestors(hierarchy, element) : [],
       window,
       hierarchy,
     );
@@ -543,9 +546,11 @@ export class IdbBackend implements DeviceBackend {
    * @param point - The tap point.
    * @param point.x - X in points.
    * @param point.y - Y in points.
-   * @param ancestors - The element's ancestors in its snapshot, when known.
-   * Lets a hit on the target's own container (a button around the matched
-   * label) pass, while overlays and the keyboard are still refused.
+   * @param ancestors - The element's ancestors in its snapshot, when known;
+   * `null` when the element is not in the hierarchy it was checked against (a
+   * copy, or another snapshot). Lets a hit on the target's own container (a
+   * button around the matched label) pass, while overlays and the keyboard
+   * are still refused.
    * @param window - The window size, so a full-screen ancestor is never
    * mistaken for the target's container.
    * @param window.width - Window width in points.
@@ -557,7 +562,7 @@ export class IdbBackend implements DeviceBackend {
   async #assertHittable(
     element: UIElement,
     point: { x: number; y: number },
-    ancestors?: UIElement[],
+    ancestors?: UIElement[] | null,
     window?: { width: number; height: number },
     hierarchy?: UIElement[],
   ): Promise<void> {
@@ -939,7 +944,7 @@ export class IdbBackend implements DeviceBackend {
     await this.#assertHittable(
       element,
       { x: cx, y: cy },
-      findAncestors(snap.hierarchy, element) ?? undefined,
+      findAncestors(snap.hierarchy, element),
       window,
       snap.hierarchy,
     );

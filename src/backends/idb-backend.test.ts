@@ -1236,6 +1236,52 @@ describe('IdbBackend tap hit-test', () => {
       expect(tapCalls()).toHaveLength(0);
     });
 
+    it('refuses a larger hit when the element is from an earlier snapshot', async () => {
+      // The target comes from the snapshot `waitForElement` took; a later
+      // `snapshot()` replaces the stored hierarchy. The target is then not in
+      // it, so its ancestors are unknown. The hierarchy is nested, so the
+      // flat label rule must not accept the aggregated sheet on top of it.
+      mockDevice(
+        {
+          type: 'Other',
+          AXLabel: 'Review transaction, 0.5 ETH, Cancel, Confirm',
+          frame: { x: 0, y: 400, width: 390, height: 444 },
+        },
+        [
+          {
+            type: 'Application',
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+            enabled: true,
+            children: [
+              {
+                type: 'Button',
+                AXLabel: 'Primary action',
+                AXUniqueId: 'confirm-btn',
+                frame: { x: 100, y: 600, width: 190, height: 48 },
+                enabled: true,
+                children: [
+                  {
+                    type: 'StaticText',
+                    AXLabel: 'Confirm',
+                    frame: { x: 120, y: 610, width: 150, height: 24 },
+                    enabled: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        { widthPoints: 390, heightPoints: 844 },
+      );
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await backend.snapshot();
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
     it('refuses a full-screen backdrop that matches the root ancestor', async () => {
       const backdrop = {
         type: 'Other',
