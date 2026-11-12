@@ -1,15 +1,38 @@
 import type { UIElement, ElementQuery } from '../backends/types.js';
 
+/**
+ * Finds the element that matches the query. An exact match anywhere in the
+ * tree wins over an earlier fuzzy one (`account-picker` must not return
+ * `account-picker-avatar`); otherwise the first fuzzy match is returned.
+ *
+ * @param elements - The hierarchy to search.
+ * @param query - The query.
+ * @returns The matching element, or null.
+ */
 export function findElement(
   elements: UIElement[],
   query: ElementQuery,
 ): UIElement | null {
+  return findFirst(elements, query, true) ?? findFirst(elements, query, false);
+}
+
+/**
+ * @param elements - The hierarchy to search.
+ * @param query - The query.
+ * @param exact - Whether every query field must equal the element's.
+ * @returns The first matching element in tree order, or null.
+ */
+function findFirst(
+  elements: UIElement[],
+  query: ElementQuery,
+  exact: boolean,
+): UIElement | null {
   for (const el of elements) {
-    if (matchesQuery(el, query)) {
+    if (matchesQuery(el, query, exact)) {
       return el;
     }
     if (el.children) {
-      const found = findElement(el.children, query);
+      const found = findFirst(el.children, query, exact);
       if (found) {
         return found;
       }
@@ -18,27 +41,43 @@ export function findElement(
   return null;
 }
 
-export function matchesQuery(element: UIElement, query: ElementQuery): boolean {
-  if (query.identifier && !fuzzyMatch(element.identifier, query.identifier)) {
+/**
+ * @param element - The element.
+ * @param query - The query. Every given field must match.
+ * @param exact - Require equal strings instead of a fuzzy match
+ * (case-insensitive, contains). Default false.
+ * @returns True when the element matches.
+ */
+export function matchesQuery(
+  element: UIElement,
+  query: ElementQuery,
+  exact = false,
+): boolean {
+  const match = exact ? exactMatch : fuzzyMatch;
+  if (query.identifier && !match(element.identifier, query.identifier)) {
     return false;
   }
-  if (query.label && !fuzzyMatch(element.label, query.label)) {
+  if (query.label && !match(element.label, query.label)) {
     return false;
   }
   if (
     query.text &&
-    !fuzzyMatch(element.value, query.text) &&
-    !fuzzyMatch(element.label, query.text)
+    !match(element.value, query.text) &&
+    !match(element.label, query.text)
   ) {
     return false;
   }
-  if (query.type && !fuzzyMatch(element.type, query.type)) {
+  if (query.type && !match(element.type, query.type)) {
     return false;
   }
 
   const hasAtLeastOneFilter =
     query.identifier ?? query.label ?? query.text ?? query.type;
   return Boolean(hasAtLeastOneFilter);
+}
+
+function exactMatch(actual: string | undefined, expected: string): boolean {
+  return actual === expected;
 }
 
 function fuzzyMatch(actual: string | undefined, expected: string): boolean {
