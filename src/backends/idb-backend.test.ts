@@ -826,7 +826,7 @@ describe('IdbBackend.tapElement and longPress viewport handling', () => {
     ).rejects.toThrow('outside the 402x874 viewport');
   });
 
-  it('taps a caller-resolved element without a new snapshot', async () => {
+  it('takes one snapshot for a caller-resolved element when none is stored', async () => {
     mockScreen([]);
 
     const result = await backend.tapElement(
@@ -842,11 +842,10 @@ describe('IdbBackend.tapElement and longPress viewport handling', () => {
     );
 
     expect(result).toMatchObject({ success: true, x: 60, y: 42 });
-    expect(mockExecStrict).not.toHaveBeenCalledWith(
-      '/usr/local/bin/idb',
-      expect.arrayContaining(['describe-all']),
-      connectionOptions,
+    const describeAll = mockExecStrict.mock.calls.filter(([, args]) =>
+      args?.includes('describe-all'),
     );
+    expect(describeAll).toHaveLength(1);
   });
 
   it('keeps the viewport check for a caller-resolved element', async () => {
@@ -882,14 +881,31 @@ describe('IdbBackend tap hit-test', () => {
 
   /**
    * @param hit - What `describe-point` returns: a node, an error, or raw text.
+   * @param hierarchy - What `describe-all` returns, when the test taps by query.
+   * @param screen - The window size `idb describe` reports, in points.
+   * @param screen.widthPoints - Window width in points.
+   * @param screen.heightPoints - Window height in points.
    */
-  const mockDevice = (hit: Record<string, unknown> | Error | string): void => {
+  const mockDevice = (
+    hit: Record<string, unknown> | Error | string,
+    hierarchy: Record<string, unknown>[] = [],
+    screen: { widthPoints: number; heightPoints: number } = {
+      widthPoints: 402,
+      heightPoints: 874,
+    },
+  ): void => {
     mockExecStrict.mockImplementation(async (_cmd, args) => {
       if (args?.[0] === 'describe' && args.includes('--json')) {
         return JSON.stringify({
           os_version: '26.5',
-          screen_dimensions: { width_points: 402, height_points: 874 },
+          screen_dimensions: {
+            width_points: screen.widthPoints,
+            height_points: screen.heightPoints,
+          },
         });
+      }
+      if (args?.[1] === 'describe-all') {
+        return JSON.stringify(hierarchy);
       }
       if (args?.[1] === 'describe-point') {
         if (hit instanceof Error) {
@@ -920,6 +936,11 @@ describe('IdbBackend tap hit-test', () => {
       AXUniqueId: 'log-in-button',
       frame: loginButton.frame,
     });
+    // A caller-resolved element on a fresh backend resolves its (unknown)
+    // ancestors against one snapshot; clear it from the call log so this test
+    // stays about the hit-test order.
+    await backend.snapshot();
+    mockExecStrict.mockClear();
 
     await backend.tapElement(
       { identifier: 'log-in-button' },
@@ -1079,6 +1100,617 @@ describe('IdbBackend tap hit-test', () => {
       backend.longPress({ identifier: 'log-in-button' }),
     ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
     expect(tapCalls()).toHaveLength(0);
+  });
+
+  describe('when the query matched a label inside a button', () => {
+    const label: Record<string, unknown> = {
+      type: 'StaticText',
+      AXLabel: 'Unlock',
+      frame: { x: 170, y: 545, width: 60, height: 22 },
+      enabled: true,
+    };
+
+    it('accepts the tap when describe-point returns the button around the label', async () => {
+      // Nested snapshot: the static text is a child of the button.
+      mockDevice(
+        {
+          type: 'Button',
+          AXLabel: 'Unlock',
+          AXUniqueId: 'log-in-button',
+          frame: loginButton.frame,
+        },
+        [
+          {
+            type: 'Button',
+            AXUniqueId: 'log-in-button',
+            frame: loginButton.frame,
+            enabled: true,
+            children: [label],
+          },
+        ],
+      );
+
+      await backend.tapElement({ text: 'Unlock' });
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('accepts a flat snapshot whose button repeats the matched label', async () => {
+      // Flat snapshot: no children, so only the label relation links them.
+      mockDevice(
+        {
+          type: 'Button',
+          AXLabel: 'Unlock',
+          frame: loginButton.frame,
+        },
+        [label],
+      );
+
+      await backend.tapElement({ text: 'Unlock' });
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('still refuses an overlay that contains the matched label', async () => {
+      mockDevice(
+        {
+          type: 'Other',
+          AXLabel: 'Bottom sheet',
+          AXUniqueId: 'sheet',
+          frame: { x: 0, y: 400, width: 402, height: 474 },
+        },
+        [label],
+      );
+
+      await expect(
+        backend.tapElement({ text: 'Unlock' }),
+      ).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: false,
+      });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('still refuses the keyboard that contains the matched label', async () => {
+      mockDevice(
+        {
+          type: 'Button',
+          AXLabel: 'Passwords',
+          frame: { x: 30, y: 546, width: 342, height: 44 },
+        },
+        [label],
+      );
+
+      await expect(
+        backend.tapElement({ text: 'Unlock' }),
+      ).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: true,
+      });
+      expect(tapCalls()).toHaveLength(0);
+    });
+  });
+
+  describe('for an element returned by waitForElement', () => {
+    const confirmLabel: Record<string, unknown> = {
+      type: 'StaticText',
+      AXLabel: 'Confirm',
+      frame: { x: 170, y: 545, width: 60, height: 22 },
+      enabled: true,
+    };
+    const container: Record<string, unknown> = {
+      type: 'Button',
+      AXLabel: 'Primary action',
+      AXUniqueId: 'primary-btn',
+      frame: loginButton.frame,
+      enabled: true,
+      children: [confirmLabel],
+    };
+    const containerHit = {
+      type: 'Button',
+      AXLabel: 'Primary action',
+      AXUniqueId: 'primary-btn',
+      frame: loginButton.frame,
+    };
+
+    const describeAllCalls = (): number =>
+      mockExecStrict.mock.calls.filter(
+        ([, args]) => args?.[1] === 'describe-all',
+      ).length;
+
+    it('finds its ancestors in the last snapshot although the labels differ', async () => {
+      mockDevice(containerHit, [container]);
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await backend.tapElement({ label: 'Confirm' }, { element });
+
+      // The element came from the snapshot waitForElement took: no new one.
+      expect(describeAllCalls()).toBe(1);
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('has no ancestors when the element is not from the last snapshot', async () => {
+      mockDevice(containerHit, [container]);
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      // A copy is not the object in the hierarchy: identity fails.
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element: { ...element } }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('refuses a larger hit when the element is from an earlier snapshot', async () => {
+      // The target comes from the snapshot `waitForElement` took; a later
+      // `snapshot()` replaces the stored hierarchy. The target is then not in
+      // it, so its ancestors are unknown. The hierarchy is nested, so the
+      // flat label rule must not accept the aggregated sheet on top of it.
+      mockDevice(
+        {
+          type: 'Other',
+          AXLabel: 'Review transaction, 0.5 ETH, Cancel, Confirm',
+          frame: { x: 0, y: 400, width: 390, height: 444 },
+        },
+        [
+          {
+            type: 'Application',
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+            enabled: true,
+            children: [
+              {
+                type: 'Button',
+                AXLabel: 'Primary action',
+                AXUniqueId: 'confirm-btn',
+                frame: { x: 100, y: 600, width: 190, height: 48 },
+                enabled: true,
+                children: [
+                  {
+                    type: 'StaticText',
+                    AXLabel: 'Confirm',
+                    frame: { x: 120, y: 610, width: 150, height: 24 },
+                    enabled: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        { widthPoints: 390, heightPoints: 844 },
+      );
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await backend.snapshot();
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('snapshots once to resolve a caller element when none is stored', async () => {
+      // A fresh backend has no stored hierarchy. Resolving the caller's
+      // element against a nested snapshot refuses the larger button instead
+      // of falling back to the flat label rule.
+      const callerElement: UIElement = {
+        type: 'StaticText',
+        label: 'Confirm',
+        frame: { x: 100, y: 700, width: 60, height: 22 },
+        enabled: true,
+      };
+      mockDevice(
+        {
+          type: 'Button',
+          AXLabel: 'Close, Confirm',
+          frame: { x: 0, y: 600, width: 390, height: 244 },
+        },
+        [
+          {
+            type: 'Application',
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+            enabled: true,
+            children: [
+              {
+                type: 'Other',
+                frame: { x: 0, y: 600, width: 390, height: 244 },
+                enabled: true,
+                children: [
+                  {
+                    type: 'Button',
+                    AXLabel: 'Primary action',
+                    frame: { x: 20, y: 610, width: 350, height: 48 },
+                    enabled: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        { widthPoints: 390, heightPoints: 844 },
+      );
+
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element: callerElement }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(describeAllCalls()).toBe(1);
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('refuses a full-screen backdrop that matches the root ancestor', async () => {
+      const backdrop = {
+        type: 'Other',
+        frame: { x: 0, y: 0, width: 402, height: 874 },
+        enabled: true,
+      };
+      mockDevice(backdrop, [
+        {
+          ...backdrop,
+          children: [
+            {
+              type: 'Button',
+              AXLabel: 'Primary action',
+              frame: { x: 20, y: 400, width: 360, height: 48 },
+              enabled: true,
+              children: [
+                {
+                  type: 'StaticText',
+                  AXLabel: 'Confirm',
+                  frame: { x: 100, y: 414, width: 60, height: 22 },
+                  enabled: true,
+                },
+              ],
+            },
+          ],
+        },
+      ]);
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED', keyboard: false });
+      expect(tapCalls()).toHaveLength(0);
+    });
+  });
+
+  describe('for an element recovered from ax under a guessed parent', () => {
+    // iOS 18+ axbridge cuts the tree at depth 50: an unlabelled container
+    // loses its children. #52 adds the identified elements only ax sees, as a
+    // child of the smallest axbridge frame that contains them, which need not
+    // be their real parent (here: the send button is attached under the open
+    // confirm sheet, which covers it).
+    const screenFrame = { x: 0, y: 0, width: 402, height: 874 };
+    const sendFrame = { x: 205, y: 500, width: 87, height: 73 };
+    const sheetFrame = { x: 0, y: 400, width: 402, height: 474 };
+
+    const axbridgeTree = [
+      {
+        type: 'Other',
+        frame: screenFrame,
+        children: [
+          // The depth-50 cut: an unlabelled container with no children.
+          { type: 'Other', frame: { x: 0, y: 134, width: 402, height: 700 } },
+          {
+            type: 'Other',
+            AXUniqueId: 'confirm-sheet',
+            AXLabel: 'Confirm swap',
+            frame: sheetFrame,
+            children: [
+              {
+                type: 'Button',
+                AXUniqueId: 'sheet-cancel',
+                AXLabel: 'Cancel',
+                frame: { x: 24, y: 780, width: 354, height: 48 },
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const axTree = [
+      {
+        type: 'Button',
+        AXUniqueId: 'wallet-send-button',
+        AXLabel: 'Send',
+        frame: sendFrame,
+      },
+    ];
+    const sendButton = {
+      type: 'Button',
+      AXUniqueId: 'wallet-send-button',
+      AXLabel: 'Send',
+      frame: sendFrame,
+    };
+    const sheet = {
+      type: 'Other',
+      AXUniqueId: 'confirm-sheet',
+      AXLabel: 'Confirm swap',
+      frame: sheetFrame,
+    };
+    const query = { identifier: 'wallet-send-button' };
+
+    /**
+     * @param hit - What `describe-point` returns at the tap point.
+     */
+    const mockSupplementedDevice = (hit: Record<string, unknown>): void => {
+      mockSupportsApi.mockResolvedValue(true);
+      mockSupportsNested.mockResolvedValue(true);
+      mockChooseAxApi.mockReturnValue('axbridge');
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.[0] === 'describe' && args.includes('--json')) {
+          return JSON.stringify({
+            os_version: '26.5',
+            screen_dimensions: { width_points: 402, height_points: 874 },
+          });
+        }
+        if (args?.[1] === 'describe-all') {
+          return JSON.stringify(
+            args.includes('axbridge') ? axbridgeTree : axTree,
+          );
+        }
+        if (args?.[1] === 'describe-point') {
+          return JSON.stringify(hit);
+        }
+        return '';
+      });
+    };
+
+    it('refuses a larger hit over an element added from ax (core path)', async () => {
+      mockSupplementedDevice(sheet);
+
+      // #52's placement: the button is added under the smallest axbridge frame
+      // that contains it, here the sheet on top of it.
+      const { hierarchy } = await backend.snapshot();
+      expect(
+        findElement(hierarchy, { identifier: 'confirm-sheet' })?.children?.map(
+          (element) => element.identifier,
+        ),
+      ).toStrictEqual(['sheet-cancel', 'wallet-send-button']);
+
+      const element = await backend.waitForElement(query, 2000);
+      await expect(
+        backend.tapElement(query, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED', keyboard: false });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('refuses a larger hit over an element added from ax (tap by query)', async () => {
+      mockSupplementedDevice(sheet);
+
+      await expect(backend.tapElement(query)).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: false,
+      });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('still taps when the hit is the supplemented element itself', async () => {
+      mockSupplementedDevice(sendButton);
+
+      const element = await backend.waitForElement(query, 2000);
+      await backend.tapElement(query, { element });
+      await backend.tapElement(query);
+
+      expect(tapCalls()).toHaveLength(2);
+    });
+
+    it('still taps when the hit lies inside the supplemented element', async () => {
+      mockSupplementedDevice({
+        type: 'StaticText',
+        AXLabel: 'Send',
+        frame: { x: 220, y: 525, width: 60, height: 22 },
+      });
+
+      await backend.tapElement(query);
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('refuses a larger hit over an element added from ax on a long press', async () => {
+      mockSupplementedDevice(sheet);
+
+      await expect(backend.longPress(query, 800)).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: false,
+      });
+      expect(tapCalls()).toHaveLength(0);
+    });
+  });
+
+  describe('overlay and ancestor safety', () => {
+    it('refuses a same-frame unlabelled veil around a nested target', async () => {
+      // Regression: an absoluteFill loading veil with the same type and frame
+      // as a real wrapper must not pass as the target's container.
+      const veil = {
+        type: 'Other',
+        frame: { x: 0, y: 100, width: 390, height: 661 },
+        enabled: true,
+        children: [
+          {
+            type: 'Button',
+            AXLabel: 'Confirm',
+            frame: { x: 100, y: 300, width: 190, height: 48 },
+            enabled: true,
+          },
+        ],
+      };
+      mockDevice(
+        veil,
+        [
+          {
+            type: 'Application',
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+            enabled: true,
+            children: [veil],
+          },
+        ],
+        { widthPoints: 390, heightPoints: 844 },
+      );
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('refuses a Fabric-aggregated sheet label with a nested chain', async () => {
+      const target = {
+        type: 'StaticText',
+        AXLabel: 'Confirm',
+        frame: { x: 120, y: 610, width: 150, height: 24 },
+        enabled: true,
+      };
+      mockDevice(
+        {
+          type: 'Other',
+          AXLabel: 'Review transaction, 0.5 ETH, Cancel, Confirm',
+          frame: { x: 0, y: 400, width: 390, height: 444 },
+        },
+        [
+          {
+            type: 'Application',
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+            enabled: true,
+            children: [
+              {
+                type: 'Button',
+                AXLabel: 'Confirm',
+                AXUniqueId: 'confirm-btn',
+                frame: { x: 100, y: 600, width: 190, height: 48 },
+                enabled: true,
+                children: [target],
+              },
+            ],
+          },
+        ],
+        { widthPoints: 390, heightPoints: 844 },
+      );
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await expect(
+        backend.tapElement({ label: 'Confirm' }, { element }),
+      ).rejects.toMatchObject({ code: 'TARGET_OBSCURED' });
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('keeps ancestors when getWindowSize takes a snapshot', async () => {
+      // Regression: a describe without point dimensions makes getWindowSize
+      // snapshot, which must not replace the hierarchy the element came from.
+      const elementNode = {
+        type: 'StaticText',
+        AXLabel: 'Confirm',
+        frame: { x: 100, y: 414, width: 60, height: 22 },
+        enabled: true,
+      };
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.[0] === 'describe' && args.includes('--json')) {
+          return JSON.stringify({ os_version: '26.5' });
+        }
+        if (args?.[1] === 'describe-all') {
+          return JSON.stringify([
+            {
+              type: 'Application',
+              frame: { x: 0, y: 0, width: 402, height: 874 },
+              enabled: true,
+              children: [
+                {
+                  type: 'Button',
+                  AXLabel: 'Primary action',
+                  AXUniqueId: 'primary-btn',
+                  frame: { x: 20, y: 400, width: 360, height: 48 },
+                  enabled: true,
+                  children: [elementNode],
+                },
+              ],
+            },
+          ]);
+        }
+        if (args?.[1] === 'describe-point') {
+          return JSON.stringify({
+            type: 'Button',
+            AXLabel: 'Primary action',
+            AXUniqueId: 'primary-btn',
+            frame: { x: 20, y: 400, width: 360, height: 48 },
+          });
+        }
+        return '';
+      });
+
+      const element = await backend.waitForElement({ label: 'Confirm' });
+      await backend.tapElement({ label: 'Confirm' }, { element });
+
+      const describeAllCalls = mockExecStrict.mock.calls.filter(
+        ([, args]) => args?.[1] === 'describe-all',
+      );
+      expect(tapCalls()).toHaveLength(1);
+      // One for waitForElement, one for the getWindowSize fallback.
+      expect(describeAllCalls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe('iOS Settings fixtures', () => {
+    const fixture = (name: string): Record<string, unknown>[] =>
+      JSON.parse(
+        readFileSync(join(__dirname, '__fixtures__', name), 'utf8'),
+      ) as Record<string, unknown>[];
+    const nested = fixture('idb-describe-all-settings-nested.json');
+    const flat = fixture('idb-describe-all-settings-flat.json');
+    const screen = { widthPoints: 390, heightPoints: 844 };
+
+    const generalHit = {
+      type: 'Button',
+      AXLabel: 'General',
+      AXUniqueId: 'com.apple.settings.general',
+      frame: { x: 16, y: 80, width: 370, height: 44 },
+    };
+    const accountHit = {
+      type: 'Button',
+      AXLabel:
+        'Apple Account, Sign in to access your iCloud data, the App Store, Apple services, and more.',
+      AXUniqueId: 'com.apple.settings.primaryAppleAccount',
+      frame: { x: 16, y: 168, width: 370, height: 90 },
+    };
+
+    it.each([
+      ['General', { type: 'StaticText', label: 'General' }, generalHit],
+      [
+        'Apple Account',
+        { type: 'StaticText', label: 'Apple Account' },
+        accountHit,
+      ],
+      [
+        'Sign in to access',
+        { type: 'StaticText', label: 'Sign in to access' },
+        accountHit,
+      ],
+    ])(
+      'taps the "%s" row through its button (nested)',
+      async (_, query, hit) => {
+        mockDevice(hit, nested, screen);
+
+        await backend.tapElement(query);
+
+        expect(tapCalls()).toHaveLength(1);
+      },
+    );
+
+    it.each([
+      ['General', { type: 'StaticText', label: 'General' }, generalHit],
+      [
+        'Apple Account',
+        { type: 'StaticText', label: 'Apple Account' },
+        accountHit,
+      ],
+      [
+        'Sign in to access',
+        { type: 'StaticText', label: 'Sign in to access' },
+        accountHit,
+      ],
+    ])('taps the "%s" row through its button (flat)', async (_, query, hit) => {
+      mockDevice(hit, flat, screen);
+
+      await backend.tapElement(query);
+
+      expect(tapCalls()).toHaveLength(1);
+    });
   });
 });
 

@@ -25,6 +25,7 @@ import type {
 import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
 import {
   findElement,
+  findAncestors,
   describeElement,
   computeSwipeEnd,
   visibleCenter,
@@ -126,6 +127,14 @@ export class IdbBackend implements DeviceBackend {
    * connected is not detected; reconnect after rotating.
    */
   #describeCache: Promise<Record<string, unknown>> | undefined;
+
+  /**
+   * The hierarchy of the most recent `snapshot()`. `waitForElement` returns
+   * an element from it by reference, so `tapElement(query, { element })` can
+   * recover the element's ancestors without another snapshot. Identity-based:
+   * an element copied or taken from another snapshot finds no ancestors.
+   */
+  #lastHierarchy: UIElement[] | undefined;
 
   constructor(udid: string) {
     this.#udid = udid;
@@ -437,6 +446,7 @@ export class IdbBackend implements DeviceBackend {
         parseIdbHierarchy(extra),
       );
     }
+    this.#lastHierarchy = hierarchy;
     return {
       platform: 'ios',
       hierarchy,
@@ -515,13 +525,34 @@ export class IdbBackend implements DeviceBackend {
     return [preferred, complement];
   }
 
+  /**
+   * Tap the element that matches `query`. A caller-resolved
+   * `options.element` (from `waitForElement`) is used without a new snapshot;
+   * its ancestors still come from the most recent snapshot, so a tap whose
+   * hit-test lands on the element's own container is accepted. An element
+   * from another snapshot is not in this one: its ancestors are unknown, and
+   * a hit larger than the element is refused. An element added from `ax` has
+   * a guessed parent, so its ancestors are unknown too.
+   *
+   * @param query - The element to tap.
+   * @param options - A caller-resolved element, to skip the snapshot.
+   * @returns The tap result.
+   */
   async tapElement(
     query: ElementQuery,
     options?: TapElementOptions,
   ): Promise<TapResult> {
     await this.ensureConnected();
-    const element =
-      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
+    let element = options?.element;
+    if (!element) {
+      element =
+        findElement((await this.snapshot()).hierarchy, query) ?? undefined;
+    } else if (!this.#lastHierarchy) {
+      // A caller-resolved element with no stored hierarchy: snapshot once, so
+      // its ancestors are resolved against it (unknown when it is not in it)
+      // instead of falling back to the flat label rule for a nested screen.
+      await this.snapshot();
+    }
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +
@@ -529,8 +560,21 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x, y } = visibleCenter(element, await this.getWindowSize());
-    await this.#assertHittable(element, { x, y });
+    // Read before getWindowSize(): it may take a snapshot, which would replace
+    // the hierarchy the element was resolved from.
+    const hierarchy = this.#lastHierarchy;
+    const window = await this.getWindowSize();
+    const { x, y } = visibleCenter(element, window);
+    await this.#assertHittable(
+      element,
+      { x, y },
+      // Identity-based: `null` when the element is not from that hierarchy (a
+      // copy, or another snapshot), or when it was added from ax and so has a
+      // guessed parent, so a larger hit is refused there.
+      hitTestAncestors(hierarchy, element),
+      window,
+      hierarchy,
+    );
     await this.tapCoordinates(x, y);
 
     return {
@@ -552,11 +596,26 @@ export class IdbBackend implements DeviceBackend {
    * @param point - The tap point.
    * @param point.x - X in points.
    * @param point.y - Y in points.
+   * @param ancestors - The element's ancestors in its snapshot, when known;
+   * `null` when the element is not in the hierarchy it was checked against (a
+   * copy, or another snapshot), or when it was added from `ax` (its parent is
+   * a geometric guess). Lets a hit on the target's own container (a button
+   * around the matched label) pass, while overlays and the keyboard are still
+   * refused.
+   * @param window - The window size, so a full-screen ancestor is never
+   * mistaken for the target's container.
+   * @param window.width - Window width in points.
+   * @param window.height - Window height in points.
+   * @param hierarchy - The hierarchy the element came from, when known, so a
+   * hit that also matches an element off the ancestor chain is refused.
    * @throws {TargetObscuredError} When another element is at the point.
    */
   async #assertHittable(
     element: UIElement,
     point: { x: number; y: number },
+    ancestors?: UIElement[] | null,
+    window?: { width: number; height: number },
+    hierarchy?: UIElement[],
   ): Promise<void> {
     if (!this.#idbSupportsApi) {
       return;
@@ -588,7 +647,7 @@ export class IdbBackend implements DeviceBackend {
     } catch {
       return;
     }
-    if (!hitsTarget(element, hit)) {
+    if (!hitsTarget(element, hit, ancestors, window, hierarchy)) {
       throw new TargetObscuredError(element, hit, point);
     }
   }
@@ -931,8 +990,15 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x: cx, y: cy } = visibleCenter(element, await this.getWindowSize());
-    await this.#assertHittable(element, { x: cx, y: cy });
+    const window = await this.getWindowSize();
+    const { x: cx, y: cy } = visibleCenter(element, window);
+    await this.#assertHittable(
+      element,
+      { x: cx, y: cy },
+      hitTestAncestors(snap.hierarchy, element),
+      window,
+      snap.hierarchy,
+    );
     await this.#execStrict(this.#idbPath, [
       'ui',
       'tap',
@@ -1230,6 +1296,39 @@ export function parseIdbHierarchy(raw: string): UIElement[] {
 }
 
 /**
+ * Elements that `addMissingIdentifiedElements` added to a snapshot, by
+ * identity. Their parent in the merged hierarchy is a geometric guess (the
+ * smallest element whose frame contains them), not the accessibility tree's
+ * parent, so the ancestor chain cannot prove that a larger hit is their own
+ * container. Tap and long press treat their ancestors as unknown instead. A
+ * `WeakSet` because the elements are discarded with their snapshot.
+ */
+const supplementedElements = new WeakSet<UIElement>();
+
+/**
+ * The ancestors to give the hit-test for an element: its chain in
+ * `hierarchy`; empty when the hierarchy is unknown; and `null` (unknown) when
+ * the element was added from `ax`, because its parent in the merged hierarchy
+ * is a geometric guess and must not prove that a larger hit is its own
+ * container.
+ *
+ * @param hierarchy - The hierarchy the element came from, when known.
+ * @param element - The element to tap.
+ * @returns The ancestors, or `null` when they must be treated as unknown.
+ */
+function hitTestAncestors(
+  hierarchy: UIElement[] | undefined,
+  element: UIElement,
+): UIElement[] | null {
+  if (!hierarchy) {
+    return [];
+  }
+  return supplementedElements.has(element)
+    ? null
+    : findAncestors(hierarchy, element);
+}
+
+/**
  * Adds to `primary` the elements of `secondary` whose identifier is not in
  * `primary`. Each one is added, without its children, as the last child of
  * the smallest `primary` element whose frame contains its frame, or at the
@@ -1254,6 +1353,7 @@ function addMissingIdentifiedElements(
   for (const el of missing) {
     const { children: _children, ...element } = el;
     const added: UIElement = structuredClone(element);
+    supplementedElements.add(added);
     let host: UIElement | undefined;
     for (const candidate of all) {
       if (

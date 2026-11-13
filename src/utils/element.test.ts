@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   findElement,
+  findAncestors,
   matchesQuery,
   describeElement,
   computeSwipeEnd,
@@ -162,6 +163,28 @@ describe('findElement', () => {
     expect(findElement([], { identifier: 'x' })).toBeNull();
     expect(
       findElement([makeElement({ identifier: 'a' })], { identifier: 'x' }),
+    ).toBeNull();
+  });
+});
+
+describe('findAncestors', () => {
+  it('returns the chain from the root to the parent', () => {
+    const label = makeElement({ type: 'StaticText' });
+    const button = makeElement({ identifier: 'btn', children: [label] });
+    const window = makeElement({ type: 'Window', children: [button] });
+
+    expect(findAncestors([window], label)).toStrictEqual([window, button]);
+  });
+
+  it('returns an empty chain for a root element', () => {
+    const root = makeElement({ identifier: 'root' });
+    expect(findAncestors([root], root)).toStrictEqual([]);
+  });
+
+  it('returns null when the element is not in the hierarchy', () => {
+    const orphan = makeElement({ identifier: 'orphan' });
+    expect(
+      findAncestors([makeElement({ children: [makeElement()] })], orphan),
     ).toBeNull();
   });
 });
