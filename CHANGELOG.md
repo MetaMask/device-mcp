@@ -9,19 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0]
 
-### Uncategorized
-
-- fix: exact element match first; add elements idb axbridge drops on iOS 18+ ([#52](https://github.com/MetaMask/device-mcp/pull/52))
-- fix: hit-test iOS taps; refuse off-screen Android taps ([#51](https://github.com/MetaMask/device-mcp/pull/51))
-- fix!: scrollToElement succeeds only when the element is in the viewport ([#50](https://github.com/MetaMask/device-mcp/pull/50))
-- fix: iOS key presses, back and text clearing ([#48](https://github.com/MetaMask/device-mcp/pull/48))
-- perf: one snapshot per tap; cache idb describe per connection ([#47](https://github.com/MetaMask/device-mcp/pull/47))
-- ci: pin Node.js to 24.22.1 in .nvmrc ([#53](https://github.com/MetaMask/device-mcp/pull/53))
-- chore: fix critical/high vulnerabilities and upgrade npm publish to v7 ([#46](https://github.com/MetaMask/device-mcp/pull/46))
-
 ### Fixed
 
 - fix: accept a tap that hits the target's own container ([#55](https://github.com/MetaMask/device-mcp/pull/55))
+- fix: exact element match first; add elements idb axbridge drops on iOS 18+ ([#52](https://github.com/MetaMask/device-mcp/pull/52))
+- fix: hit-test iOS taps; refuse off-screen Android taps ([#51](https://github.com/MetaMask/device-mcp/pull/51))
+- fix: scrollToElement succeeds only when the element is in the viewport ([#50](https://github.com/MetaMask/device-mcp/pull/50))
+- fix: iOS key presses, back and text clearing ([#48](https://github.com/MetaMask/device-mcp/pull/48))
+- fix: one snapshot per tap; cache idb describe per connection ([#47](https://github.com/MetaMask/device-mcp/pull/47))
+- fix: pin Node.js to 24.22.1 in .nvmrc ([#53](https://github.com/MetaMask/device-mcp/pull/53))
+- fix: fix critical/high vulnerabilities and upgrade npm publish to v7 ([#46](https://github.com/MetaMask/device-mcp/pull/46))
 
 ## [0.7.0]
 
