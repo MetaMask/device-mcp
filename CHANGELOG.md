@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0]
+
+### Uncategorized
+
+- fix: exact element match first; add elements idb axbridge drops on iOS 18+ ([#52](https://github.com/MetaMask/device-mcp/pull/52))
+- fix: hit-test iOS taps; refuse off-screen Android taps ([#51](https://github.com/MetaMask/device-mcp/pull/51))
+- fix!: scrollToElement succeeds only when the element is in the viewport ([#50](https://github.com/MetaMask/device-mcp/pull/50))
+- fix: iOS key presses, back and text clearing ([#48](https://github.com/MetaMask/device-mcp/pull/48))
+- perf: one snapshot per tap; cache idb describe per connection ([#47](https://github.com/MetaMask/device-mcp/pull/47))
+- ci: pin Node.js to 24.22.1 in .nvmrc ([#53](https://github.com/MetaMask/device-mcp/pull/53))
+- chore: fix critical/high vulnerabilities and upgrade npm publish to v7 ([#46](https://github.com/MetaMask/device-mcp/pull/46))
+
 ### Fixed
 
 - fix: accept a tap that hits the target's own container ([#55](https://github.com/MetaMask/device-mcp/pull/55))
@@ -110,7 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.device-session` file for attaching to existing Appium sessions or creating new ones
 - 16 MCP tools: `device_snapshot`, `device_screenshot`, `device_info`, `device_tap_element`, `device_tap_coordinates`, `device_type`, `device_swipe`, `device_long_press`, `device_wait_for`, `device_app_state`, `device_open_app`, `device_close_app`, `device_press_button`, `device_dismiss_keyboard`, `device_dismiss_alert`, `device_logs`
 
-[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/MetaMask/device-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/MetaMask/device-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/MetaMask/device-mcp/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/MetaMask/device-mcp/compare/v0.4.2...v0.5.0
