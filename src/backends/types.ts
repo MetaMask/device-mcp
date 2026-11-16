@@ -45,7 +45,8 @@ export type SnapshotResult = {
    * - `ax-tree-truncated(backend=<name>,depth=<n>,nodes=<n>)` (iOS): the
    *   accessibility read stopped at the idb companion's size bound, so
    *   elements on screen can be missing from `hierarchy`. `backend` is the
-   *   backend that served the read (as idb names it), `depth` the deepest
+   *   backend that served the read (as idb names it; left out when idb names
+   *   none), `depth` the deepest
    *   level and `nodes` the number of elements of the tree that came back.
    *   Only reported when the idb client supports
    *   `describe-all --format complete`.
