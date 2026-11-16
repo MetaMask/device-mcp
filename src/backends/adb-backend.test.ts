@@ -737,6 +737,52 @@ describe('AdbBackend.tapElement', () => {
   });
 });
 
+describe('AdbBackend.typeText', () => {
+  let backend: AdbBackend;
+
+  const inputCalls = (): string[][] =>
+    mockExecStrict.mock.calls.map(([, args]) => (args ?? []).slice(3));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecStrict.mockResolvedValue('');
+    backend = new AdbBackend('emulator-5554');
+  });
+
+  it('clears the field, then types the escaped text', async () => {
+    await backend.typeText('a b&c');
+
+    expect(inputCalls()).toStrictEqual([
+      ['input', 'keyevent', 'KEYCODE_MOVE_HOME'],
+      [
+        'input',
+        'keyevent',
+        '--longpress',
+        'KEYCODE_SHIFT_LEFT',
+        'KEYCODE_MOVE_END',
+      ],
+      ['input', 'keyevent', '67'],
+      ['input', 'text', 'a%sb\\&c'],
+    ]);
+  });
+
+  it('only clears the field for an empty string', async () => {
+    await backend.typeText('');
+
+    expect(inputCalls()).toStrictEqual([
+      ['input', 'keyevent', 'KEYCODE_MOVE_HOME'],
+      [
+        'input',
+        'keyevent',
+        '--longpress',
+        'KEYCODE_SHIFT_LEFT',
+        'KEYCODE_MOVE_END',
+      ],
+      ['input', 'keyevent', '67'],
+    ]);
+  });
+});
+
 describe('AdbBackend.screenshot', () => {
   let backend: AdbBackend;
 

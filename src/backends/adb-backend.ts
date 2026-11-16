@@ -356,6 +356,11 @@ export class AdbBackend implements DeviceBackend {
       'KEYCODE_MOVE_END',
     ]);
     await this.#adb(['shell', 'input', 'keyevent', '67']);
+    // `input text` with no argument throws on the device, and the field is
+    // already empty.
+    if (text.length === 0) {
+      return;
+    }
     // Android input text requires escaping spaces and special chars
     const escaped = text.replace(/ /gu, '%s').replace(/[&|;<>]/gu, '\\$&');
     await this.#adb(['shell', 'input', 'text', escaped]);
