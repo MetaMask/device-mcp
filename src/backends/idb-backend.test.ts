@@ -243,6 +243,59 @@ describe('parseIdbHierarchy with synthetic flat and nested fixtures', () => {
     });
   });
 
+  it.each(['null', '42', '"text"', 'true'])(
+    'reads a JSON root that is neither an array nor an object (%s) as invalid',
+    (raw) => {
+      expect(parseIdbDescribeAll(raw)).toStrictEqual({
+        hierarchy: [
+          {
+            type: 'raw',
+            label: raw,
+            frame: { x: 0, y: 0, width: 0, height: 0 },
+            enabled: true,
+          },
+        ],
+        format: 'invalid',
+        truncated: false,
+      });
+    },
+  );
+
+  it('reads a document with backend null as complete, without a backend', () => {
+    const document = JSON.parse(
+      fixture('idb-describe-all-login-complete.json'),
+    ) as Record<string, unknown>;
+
+    expect(
+      parseIdbDescribeAll(
+        JSON.stringify({ ...document, backend: null, truncated: true }),
+      ),
+    ).toStrictEqual({
+      hierarchy: nested,
+      format: 'complete',
+      truncated: true,
+    });
+  });
+
+  it.each([
+    ['missing', {}],
+    ['null', { elements: null }],
+  ])(
+    'reads a document whose elements are %s as complete and empty',
+    (_name, elements) => {
+      expect(
+        parseIdbDescribeAll(
+          JSON.stringify({ backend: 'ax', truncated: false, ...elements }),
+        ),
+      ).toStrictEqual({
+        hierarchy: [],
+        format: 'complete',
+        truncated: false,
+        backend: 'ax',
+      });
+    },
+  );
+
   it('preserves tree shape and maps both formats identically in pre-order', () => {
     expect(flat.every((el) => el.children === undefined)).toBe(true);
     expect(nested).toHaveLength(1);
@@ -2474,15 +2527,55 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
       ]);
     });
 
-    it('leaves out the backend when the document has none to report', async () => {
-      mockExecStrict.mockResolvedValue(document(true, ''));
+    it('reports backend=ax when the ax fallback serves a truncated read', async () => {
+      mockSupportsApi.mockResolvedValue(true);
+      mockChooseAxApi.mockReturnValue('axbridge');
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.includes('describe') && args?.includes('--json')) {
+          return JSON.stringify({ os_version: '27.0', name: 'iPhone' });
+        }
+        if (args?.includes('axbridge')) {
+          throw new Error('axbridge backend requested accessibility failed');
+        }
+        return document(true, 'ax');
+      });
 
       const result = await backend.snapshot();
 
       expect(result.warnings).toStrictEqual([
-        'ax-tree-truncated(depth=3,nodes=3)',
+        'ax-tree-truncated(backend=ax,depth=3,nodes=3)',
       ]);
+      expect(result.hierarchy).toStrictEqual(
+        parseIdbHierarchy(JSON.stringify(tree)),
+      );
     });
+
+    it.each([
+      ['empty', ''],
+      ['null', null],
+    ])(
+      'leaves out a backend that is %s and keeps --format complete',
+      async (_name, servedBy) => {
+        mockExecStrict.mockResolvedValue(
+          JSON.stringify({
+            backend: servedBy,
+            elements: tree,
+            truncated: true,
+          }),
+        );
+
+        const result = await backend.snapshot();
+        await backend.snapshot();
+
+        expect(result.warnings).toStrictEqual([
+          'ax-tree-truncated(depth=3,nodes=3)',
+        ]);
+        expect(describeCalls()).toStrictEqual([
+          describeArgs(['--format', 'complete']),
+          describeArgs(['--format', 'complete']),
+        ]);
+      },
+    );
 
     it('falls back to --nested for good when the companion ignores --format complete', async () => {
       // A companion that predates format selection answers with a flat tree.
@@ -2509,18 +2602,21 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
       }
     });
 
-    it('keeps requesting --format complete after output that is not JSON', async () => {
-      mockExecStrict.mockResolvedValueOnce('not json');
-      mockExecStrict.mockResolvedValue(document(false));
+    it.each(['not json', 'null'])(
+      'keeps requesting --format complete after the output %s',
+      async (first) => {
+        mockExecStrict.mockResolvedValueOnce(first);
+        mockExecStrict.mockResolvedValue(document(false));
 
-      await backend.snapshot();
-      await backend.snapshot();
+        await backend.snapshot();
+        await backend.snapshot();
 
-      expect(describeCalls()).toStrictEqual([
-        describeArgs(['--format', 'complete']),
-        describeArgs(['--format', 'complete']),
-      ]);
-    });
+        expect(describeCalls()).toStrictEqual([
+          describeArgs(['--format', 'complete']),
+          describeArgs(['--format', 'complete']),
+        ]);
+      },
+    );
   });
 
   it.each([

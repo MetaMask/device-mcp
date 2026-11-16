@@ -1320,12 +1320,15 @@ type IdbDescribeAll = {
   hierarchy: UIElement[];
   /**
    * `complete`: the `--format complete` document; `legacy`: a flat or nested
-   * tree; `invalid`: not JSON.
+   * tree; `invalid`: not JSON, or JSON that is neither an array nor an object.
    */
   format: 'complete' | 'legacy' | 'invalid';
   /** `--format complete` only: the companion cut the tree at its bound. */
   truncated: boolean;
-  /** `--format complete` only: the backend that served the read. */
+  /**
+   * `--format complete` only: the backend that served the read, when the
+   * document names one.
+   */
   backend?: string;
 };
 
@@ -1339,22 +1342,23 @@ type IdbDescribeAll = {
  * @returns The read; its hierarchy is a `raw` element when parsing fails.
  */
 export function parseIdbDescribeAll(raw: string): IdbDescribeAll {
+  const invalid: IdbDescribeAll = {
+    hierarchy: [
+      {
+        type: 'raw',
+        label: raw.slice(0, 200),
+        frame: { x: 0, y: 0, width: 0, height: 0 },
+        enabled: true,
+      },
+    ],
+    format: 'invalid',
+    truncated: false,
+  };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return {
-      hierarchy: [
-        {
-          type: 'raw',
-          label: raw.slice(0, 200),
-          frame: { x: 0, y: 0, width: 0, height: 0 },
-          enabled: true,
-        },
-      ],
-      format: 'invalid',
-      truncated: false,
-    };
+    return invalid;
   }
   if (Array.isArray(parsed)) {
     return {
@@ -1363,13 +1367,21 @@ export function parseIdbDescribeAll(raw: string): IdbDescribeAll {
       truncated: false,
     };
   }
-  const root = (parsed ?? {}) as Record<string, unknown>;
-  if (Array.isArray(root.elements) && typeof root.backend === 'string') {
+  if (typeof parsed !== 'object' || parsed === null) {
+    return invalid;
+  }
+  const root = parsed as Record<string, unknown>;
+  // Same test as idb's own (`_warn_if_complete_downgraded`): only the
+  // complete document has a `backend` key.
+  if ('backend' in root) {
     return {
-      hierarchy: root.elements.map(mapIdbElement),
+      hierarchy: Array.isArray(root.elements)
+        ? root.elements.map(mapIdbElement)
+        : [],
       format: 'complete',
       truncated: root.truncated === true,
-      backend: root.backend,
+      ...(typeof root.backend === 'string' &&
+        root.backend !== '' && { backend: root.backend }),
     };
   }
   const hierarchy =
