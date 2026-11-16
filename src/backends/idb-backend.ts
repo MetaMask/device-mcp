@@ -39,6 +39,7 @@ import {
 import {
   chooseAxApi,
   idbSupportsApiSelection,
+  idbSupportsCompleteDescribe,
   idbSupportsNestedDescribe,
   resolveIdbPath,
 } from '../utils/platform.js';
@@ -112,6 +113,13 @@ export class IdbBackend implements DeviceBackend {
   #idbSupportsApi = false;
 
   #idbSupportsNested = false;
+
+  /**
+   * Whether to request `describe-all --format complete`. Set from the client's
+   * help text; cleared when the companion answers such a request in an older
+   * format (it predates format selection).
+   */
+  #idbSupportsComplete = false;
 
   #recordingProcess: ChildProcess | null = null;
 
@@ -196,9 +204,14 @@ export class IdbBackend implements DeviceBackend {
     try {
       if (!this.#probed) {
         this.#idbPath = await resolveIdbPath();
-        [this.#idbSupportsApi, this.#idbSupportsNested] = await Promise.all([
+        [
+          this.#idbSupportsApi,
+          this.#idbSupportsNested,
+          this.#idbSupportsComplete,
+        ] = await Promise.all([
           idbSupportsApiSelection(this.#idbPath),
           idbSupportsNestedDescribe(this.#idbPath),
+          idbSupportsCompleteDescribe(this.#idbPath),
         ]);
         this.#probed = true;
       }
@@ -425,6 +438,10 @@ export class IdbBackend implements DeviceBackend {
    * its identified elements missing from the `axbridge` tree are added to it.
    * `raw` stays the `axbridge` output.
    *
+   * When the idb client supports it, the read uses `--format complete`, which
+   * also reports whether the companion cut the tree at its size bound; a cut
+   * tree adds an `ax-tree-truncated` warning (see `SnapshotResult.warnings`).
+   *
    * @returns The snapshot.
    */
   async snapshot(): Promise<SnapshotResult> {
@@ -437,8 +454,8 @@ export class IdbBackend implements DeviceBackend {
             env: this.#connection.env,
           }).catch(() => undefined)
         : undefined;
-    const { raw, api } = await this.#describeAll(apis);
-    let hierarchy = parseIdbHierarchy(raw);
+    const { raw, api, read } = await this.#describeAll(apis);
+    let { hierarchy } = read;
     const extra = await supplement;
     if (api === 'axbridge' && extra !== undefined) {
       hierarchy = addMissingIdentifiedElements(
@@ -447,11 +464,15 @@ export class IdbBackend implements DeviceBackend {
       );
     }
     this.#lastHierarchy = hierarchy;
+    const warnings = read.truncated
+      ? [truncationWarning(read.backend, read.hierarchy)]
+      : undefined;
     return {
       platform: 'ios',
       hierarchy,
       raw,
       timestamp: Date.now(),
+      ...(warnings && { warnings }),
     };
   }
 
@@ -466,10 +487,42 @@ export class IdbBackend implements DeviceBackend {
     if (api !== null) {
       args.push('--api', api);
     }
-    if (this.#idbSupportsNested) {
+    // idb rejects --nested together with --format.
+    if (this.#idbSupportsComplete) {
+      args.push('--format', 'complete');
+    } else if (this.#idbSupportsNested) {
       args.push('--nested');
     }
     return args;
+  }
+
+  /**
+   * Run `idb ui describe-all` for one accessibility backend and parse it.
+   * When `--format complete` was requested but the companion predates format
+   * selection (it answers with a flat tree), stop requesting it and read
+   * again in the format used before, so the tree keeps its nesting.
+   *
+   * @param api - The `--api` value, or null to omit it.
+   * @returns The raw output and the parsed read.
+   */
+  async #describeAllOnce(
+    api: 'ax' | 'axbridge' | null,
+  ): Promise<{ raw: string; read: IdbDescribeAll }> {
+    const requestedComplete = this.#idbSupportsComplete;
+    const raw = await this.#execStrict(
+      this.#idbPath,
+      this.#describeAllArgs(api),
+    );
+    const read = parseIdbDescribeAll(raw);
+    if (!requestedComplete || read.format !== 'legacy') {
+      return { raw, read };
+    }
+    this.#idbSupportsComplete = false;
+    const legacy = await this.#execStrict(
+      this.#idbPath,
+      this.#describeAllArgs(api),
+    );
+    return { raw: legacy, read: parseIdbDescribeAll(legacy) };
   }
 
   /**
@@ -478,23 +531,19 @@ export class IdbBackend implements DeviceBackend {
    * snapshots working across iOS 17-26 regardless of the user's idb client.
    *
    * @param apis - The `--api` values to try, in order.
-   * @returns The raw JSON hierarchy from the first backend that succeeds, and
-   * that backend.
+   * @returns The raw output of the first backend that succeeds, its parsed
+   * read, and that backend.
    * @throws When every attempted backend fails.
    */
-  async #describeAll(
-    apis: ('ax' | 'axbridge' | null)[],
-  ): Promise<{ raw: string; api: 'ax' | 'axbridge' | null }> {
+  async #describeAll(apis: ('ax' | 'axbridge' | null)[]): Promise<{
+    raw: string;
+    read: IdbDescribeAll;
+    api: 'ax' | 'axbridge' | null;
+  }> {
     let lastError: unknown;
     for (const api of apis) {
       try {
-        return {
-          raw: await this.#execStrict(
-            this.#idbPath,
-            this.#describeAllArgs(api),
-          ),
-          api,
-        };
+        return { ...(await this.#describeAllOnce(api)), api };
       } catch (error) {
         if (error instanceof IdbUnavailableError) {
           // Already reconnected and retried; another --api will not help.
@@ -1266,33 +1315,121 @@ function collectTextsFromChildren(
   }
 }
 
+/** One parsed `idb ui describe-all` read. */
+type IdbDescribeAll = {
+  hierarchy: UIElement[];
+  /**
+   * `complete`: the `--format complete` document; `legacy`: a flat or nested
+   * tree; `invalid`: not JSON.
+   */
+  format: 'complete' | 'legacy' | 'invalid';
+  /** `--format complete` only: the companion cut the tree at its bound. */
+  truncated: boolean;
+  /** `--format complete` only: the backend that served the read. */
+  backend?: string;
+};
+
 /**
- * Parse flat or nested idb output. Legacy object roots expose their children
- * at the top level; array roots keep their tree shape.
+ * Parse any `idb ui describe-all` output: the `--format complete` document
+ * (`{ backend, elements, truncated, screen, … }`, whose `elements` is the
+ * nested tree), or a flat or nested tree. Legacy object roots expose their
+ * children at the top level; array roots keep their tree shape.
+ *
+ * @param raw - The raw stdout of `idb ui describe-all`.
+ * @returns The read; its hierarchy is a `raw` element when parsing fails.
+ */
+export function parseIdbDescribeAll(raw: string): IdbDescribeAll {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      hierarchy: [
+        {
+          type: 'raw',
+          label: raw.slice(0, 200),
+          frame: { x: 0, y: 0, width: 0, height: 0 },
+          enabled: true,
+        },
+      ],
+      format: 'invalid',
+      truncated: false,
+    };
+  }
+  if (Array.isArray(parsed)) {
+    return {
+      hierarchy: parsed.map(mapIdbElement),
+      format: 'legacy',
+      truncated: false,
+    };
+  }
+  const root = (parsed ?? {}) as Record<string, unknown>;
+  if (Array.isArray(root.elements) && typeof root.backend === 'string') {
+    return {
+      hierarchy: root.elements.map(mapIdbElement),
+      format: 'complete',
+      truncated: root.truncated === true,
+      backend: root.backend,
+    };
+  }
+  const hierarchy =
+    Array.isArray(root.children) && root.children.length > 0
+      ? root.children.map(mapIdbElement)
+      : [mapIdbElement(root)];
+  return { hierarchy, format: 'legacy', truncated: false };
+}
+
+/**
+ * Parse any `idb ui describe-all` output into a hierarchy (see
+ * `parseIdbDescribeAll`).
  *
  * @param raw - The raw stdout of `idb ui describe-all`.
  * @returns The hierarchy, or a `raw` element when parsing fails.
  */
 export function parseIdbHierarchy(raw: string): UIElement[] {
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      return parsed.map(mapIdbElement);
+  return parseIdbDescribeAll(raw).hierarchy;
+}
+
+/**
+ * The `ax-tree-truncated` warning of a cut read (format documented on
+ * `SnapshotResult.warnings`).
+ *
+ * @param backend - The backend that served the read, when reported.
+ * @param hierarchy - The tree the read returned.
+ * @returns The warning.
+ */
+function truncationWarning(
+  backend: string | undefined,
+  hierarchy: UIElement[],
+): string {
+  const { depth, nodes } = treeSize(hierarchy);
+  const details = [
+    ...(backend ? [`backend=${backend}`] : []),
+    `depth=${depth}`,
+    `nodes=${nodes}`,
+  ];
+  return `ax-tree-truncated(${details.join(',')})`;
+}
+
+/**
+ * The deepest level (top-level elements are level 1) and the element count of
+ * a tree.
+ *
+ * @param elements - The tree.
+ * @returns Its depth and node count.
+ */
+function treeSize(elements: UIElement[]): { depth: number; nodes: number } {
+  let depth = 0;
+  let nodes = 0;
+  const stack = elements.map((element) => ({ element, level: 1 }));
+  for (let next = stack.pop(); next; next = stack.pop()) {
+    nodes += 1;
+    depth = Math.max(depth, next.level);
+    for (const child of next.element.children ?? []) {
+      stack.push({ element: child, level: next.level + 1 });
     }
-    if (Array.isArray(parsed.children) && parsed.children.length > 0) {
-      return parsed.children.map(mapIdbElement);
-    }
-    return [mapIdbElement(parsed)];
-  } catch {
-    return [
-      {
-        type: 'raw',
-        label: raw.slice(0, 200),
-        frame: { x: 0, y: 0, width: 0, height: 0 },
-        enabled: true,
-      },
-    ];
   }
+  return { depth, nodes };
 }
 
 /**
