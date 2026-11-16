@@ -98,7 +98,7 @@ Find an element by query and tap its center. Specify at least one of: `label`, `
 3. `text` — visible text content (matches both `value` and `label`)
 4. `type` — element class (least specific, combine with other fields)
 
-**Matching is fuzzy:** partial text and case-insensitive matches work. `{ label: "Confirm" }` matches `"Confirm Transaction"`.
+**Matching is fuzzy:** partial text and case-insensitive matches work. `{ label: "Confirm" }` matches `"Confirm Transaction"`. An exact match anywhere on screen wins over a partial one.
 
 **Examples:**
 

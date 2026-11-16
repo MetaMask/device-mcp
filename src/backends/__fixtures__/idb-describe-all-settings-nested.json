@@ -1,0 +1,83 @@
+[
+  {
+    "type": "Application",
+    "AXLabel": "Settings",
+    "enabled": null,
+    "frame": { "x": 0, "y": 0, "width": 390, "height": 844 },
+    "children": [
+      {
+        "type": "Window",
+        "frame": { "x": 0, "y": 0, "width": 390, "height": 844 },
+        "children": [
+          {
+            "type": "Other",
+            "frame": { "x": 0, "y": 0, "width": 390, "height": 844 },
+            "children": [
+              {
+                "type": "Cell",
+                "frame": { "x": 16, "y": 80, "width": 370, "height": 44 },
+                "children": [
+                  {
+                    "type": "Button",
+                    "AXLabel": "General",
+                    "AXUniqueId": "com.apple.settings.general",
+                    "frame": { "x": 16, "y": 80, "width": 370, "height": 44 },
+                    "children": [
+                      {
+                        "type": "StaticText",
+                        "AXLabel": "General",
+                        "frame": {
+                          "x": 100,
+                          "y": 90,
+                          "width": 80,
+                          "height": 24
+                        },
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Cell",
+                "frame": { "x": 16, "y": 168, "width": 370, "height": 90 },
+                "children": [
+                  {
+                    "type": "Button",
+                    "AXLabel": "Apple Account, Sign in to access your iCloud data, the App Store, Apple services, and more.",
+                    "AXUniqueId": "com.apple.settings.primaryAppleAccount",
+                    "frame": { "x": 16, "y": 168, "width": 370, "height": 90 },
+                    "children": [
+                      {
+                        "type": "StaticText",
+                        "AXLabel": "Apple Account",
+                        "frame": {
+                          "x": 100,
+                          "y": 183,
+                          "width": 138,
+                          "height": 24
+                        },
+                        "children": []
+                      },
+                      {
+                        "type": "StaticText",
+                        "AXLabel": "Sign in to access your iCloud data, the App Store, Apple services, and more.",
+                        "frame": {
+                          "x": 100,
+                          "y": 210,
+                          "width": 236,
+                          "height": 34
+                        },
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

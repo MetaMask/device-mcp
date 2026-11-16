@@ -25,6 +25,7 @@ import type {
 import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
 import {
   findElement,
+  findAncestors,
   describeElement,
   computeSwipeEnd,
   visibleCenter,
@@ -126,6 +127,14 @@ export class IdbBackend implements DeviceBackend {
    * connected is not detected; reconnect after rotating.
    */
   #describeCache: Promise<Record<string, unknown>> | undefined;
+
+  /**
+   * The hierarchy of the most recent `snapshot()`. `waitForElement` returns
+   * an element from it by reference, so `tapElement(query, { element })` can
+   * recover the element's ancestors without another snapshot. Identity-based:
+   * an element copied or taken from another snapshot finds no ancestors.
+   */
+  #lastHierarchy: UIElement[] | undefined;
 
   constructor(udid: string) {
     this.#udid = udid;
@@ -409,10 +418,35 @@ export class IdbBackend implements DeviceBackend {
     };
   }
 
+  /**
+   * Capture the UI hierarchy. `axbridge` (iOS 18+) can report a React Native
+   * container as one unlabelled view without children (for example the
+   * MetaMask wallet home action row), so `ax` is read at the same time and
+   * its identified elements missing from the `axbridge` tree are added to it.
+   * `raw` stays the `axbridge` output.
+   *
+   * @returns The snapshot.
+   */
   async snapshot(): Promise<SnapshotResult> {
     await this.ensureConnected();
-    const raw = await this.#describeAll();
-    const hierarchy = parseIdbHierarchy(raw);
+    const apis = await this.#describeAllApiOrder();
+    // Best effort and without companion recovery: the main read handles that.
+    const supplement =
+      apis[0] === 'axbridge'
+        ? execStrict(this.#idbPath, this.#describeAllArgs('ax'), {
+            env: this.#connection.env,
+          }).catch(() => undefined)
+        : undefined;
+    const { raw, api } = await this.#describeAll(apis);
+    let hierarchy = parseIdbHierarchy(raw);
+    const extra = await supplement;
+    if (api === 'axbridge' && extra !== undefined) {
+      hierarchy = addMissingIdentifiedElements(
+        hierarchy,
+        parseIdbHierarchy(extra),
+      );
+    }
+    this.#lastHierarchy = hierarchy;
     return {
       platform: 'ios',
       hierarchy,
@@ -422,26 +456,45 @@ export class IdbBackend implements DeviceBackend {
   }
 
   /**
+   * Arguments of `idb ui describe-all` for one accessibility backend.
+   *
+   * @param api - The `--api` value, or null to omit it.
+   * @returns The idb arguments.
+   */
+  #describeAllArgs(api: 'ax' | 'axbridge' | null): string[] {
+    const args = ['ui', 'describe-all', '--udid', this.#udid];
+    if (api !== null) {
+      args.push('--api', api);
+    }
+    if (this.#idbSupportsNested) {
+      args.push('--nested');
+    }
+    return args;
+  }
+
+  /**
    * Run `idb ui describe-all`, trying the version-appropriate accessibility
    * backend first and falling back to the others if it errors. This keeps
    * snapshots working across iOS 17-26 regardless of the user's idb client.
    *
-   * @returns The raw JSON hierarchy from the first backend that succeeds.
+   * @param apis - The `--api` values to try, in order.
+   * @returns The raw JSON hierarchy from the first backend that succeeds, and
+   * that backend.
    * @throws When every attempted backend fails.
    */
-  async #describeAll(): Promise<string> {
-    const apis = await this.#describeAllApiOrder();
+  async #describeAll(
+    apis: ('ax' | 'axbridge' | null)[],
+  ): Promise<{ raw: string; api: 'ax' | 'axbridge' | null }> {
     let lastError: unknown;
     for (const api of apis) {
-      const args = ['ui', 'describe-all', '--udid', this.#udid];
-      if (api !== null) {
-        args.push('--api', api);
-      }
-      if (this.#idbSupportsNested) {
-        args.push('--nested');
-      }
       try {
-        return await this.#execStrict(this.#idbPath, args);
+        return {
+          raw: await this.#execStrict(
+            this.#idbPath,
+            this.#describeAllArgs(api),
+          ),
+          api,
+        };
       } catch (error) {
         if (error instanceof IdbUnavailableError) {
           // Already reconnected and retried; another --api will not help.
@@ -472,13 +525,34 @@ export class IdbBackend implements DeviceBackend {
     return [preferred, complement];
   }
 
+  /**
+   * Tap the element that matches `query`. A caller-resolved
+   * `options.element` (from `waitForElement`) is used without a new snapshot;
+   * its ancestors still come from the most recent snapshot, so a tap whose
+   * hit-test lands on the element's own container is accepted. An element
+   * from another snapshot is not in this one: its ancestors are unknown, and
+   * a hit larger than the element is refused. An element added from `ax` has
+   * a guessed parent, so its ancestors are unknown too.
+   *
+   * @param query - The element to tap.
+   * @param options - A caller-resolved element, to skip the snapshot.
+   * @returns The tap result.
+   */
   async tapElement(
     query: ElementQuery,
     options?: TapElementOptions,
   ): Promise<TapResult> {
     await this.ensureConnected();
-    const element =
-      options?.element ?? findElement((await this.snapshot()).hierarchy, query);
+    let element = options?.element;
+    if (!element) {
+      element =
+        findElement((await this.snapshot()).hierarchy, query) ?? undefined;
+    } else if (!this.#lastHierarchy) {
+      // A caller-resolved element with no stored hierarchy: snapshot once, so
+      // its ancestors are resolved against it (unknown when it is not in it)
+      // instead of falling back to the flat label rule for a nested screen.
+      await this.snapshot();
+    }
     if (!element) {
       throw new Error(
         `Element not found: ${JSON.stringify(query)}\n` +
@@ -486,8 +560,21 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x, y } = visibleCenter(element, await this.getWindowSize());
-    await this.#assertHittable(element, { x, y });
+    // Read before getWindowSize(): it may take a snapshot, which would replace
+    // the hierarchy the element was resolved from.
+    const hierarchy = this.#lastHierarchy;
+    const window = await this.getWindowSize();
+    const { x, y } = visibleCenter(element, window);
+    await this.#assertHittable(
+      element,
+      { x, y },
+      // Identity-based: `null` when the element is not from that hierarchy (a
+      // copy, or another snapshot), or when it was added from ax and so has a
+      // guessed parent, so a larger hit is refused there.
+      hitTestAncestors(hierarchy, element),
+      window,
+      hierarchy,
+    );
     await this.tapCoordinates(x, y);
 
     return {
@@ -509,11 +596,26 @@ export class IdbBackend implements DeviceBackend {
    * @param point - The tap point.
    * @param point.x - X in points.
    * @param point.y - Y in points.
+   * @param ancestors - The element's ancestors in its snapshot, when known;
+   * `null` when the element is not in the hierarchy it was checked against (a
+   * copy, or another snapshot), or when it was added from `ax` (its parent is
+   * a geometric guess). Lets a hit on the target's own container (a button
+   * around the matched label) pass, while overlays and the keyboard are still
+   * refused.
+   * @param window - The window size, so a full-screen ancestor is never
+   * mistaken for the target's container.
+   * @param window.width - Window width in points.
+   * @param window.height - Window height in points.
+   * @param hierarchy - The hierarchy the element came from, when known, so a
+   * hit that also matches an element off the ancestor chain is refused.
    * @throws {TargetObscuredError} When another element is at the point.
    */
   async #assertHittable(
     element: UIElement,
     point: { x: number; y: number },
+    ancestors?: UIElement[] | null,
+    window?: { width: number; height: number },
+    hierarchy?: UIElement[],
   ): Promise<void> {
     if (!this.#idbSupportsApi) {
       return;
@@ -545,7 +647,7 @@ export class IdbBackend implements DeviceBackend {
     } catch {
       return;
     }
-    if (!hitsTarget(element, hit)) {
+    if (!hitsTarget(element, hit, ancestors, window, hierarchy)) {
       throw new TargetObscuredError(element, hit, point);
     }
   }
@@ -888,8 +990,15 @@ export class IdbBackend implements DeviceBackend {
       );
     }
 
-    const { x: cx, y: cy } = visibleCenter(element, await this.getWindowSize());
-    await this.#assertHittable(element, { x: cx, y: cy });
+    const window = await this.getWindowSize();
+    const { x: cx, y: cy } = visibleCenter(element, window);
+    await this.#assertHittable(
+      element,
+      { x: cx, y: cy },
+      hitTestAncestors(snap.hierarchy, element),
+      window,
+      snap.hierarchy,
+    );
     await this.#execStrict(this.#idbPath, [
       'ui',
       'tap',
@@ -1184,6 +1293,103 @@ export function parseIdbHierarchy(raw: string): UIElement[] {
       },
     ];
   }
+}
+
+/**
+ * Elements that `addMissingIdentifiedElements` added to a snapshot, by
+ * identity. Their parent in the merged hierarchy is a geometric guess (the
+ * smallest element whose frame contains them), not the accessibility tree's
+ * parent, so the ancestor chain cannot prove that a larger hit is their own
+ * container. Tap and long press treat their ancestors as unknown instead. A
+ * `WeakSet` because the elements are discarded with their snapshot.
+ */
+const supplementedElements = new WeakSet<UIElement>();
+
+/**
+ * The ancestors to give the hit-test for an element: its chain in
+ * `hierarchy`; empty when the hierarchy is unknown; and `null` (unknown) when
+ * the element was added from `ax`, because its parent in the merged hierarchy
+ * is a geometric guess and must not prove that a larger hit is its own
+ * container.
+ *
+ * @param hierarchy - The hierarchy the element came from, when known.
+ * @param element - The element to tap.
+ * @returns The ancestors, or `null` when they must be treated as unknown.
+ */
+function hitTestAncestors(
+  hierarchy: UIElement[] | undefined,
+  element: UIElement,
+): UIElement[] | null {
+  if (!hierarchy) {
+    return [];
+  }
+  return supplementedElements.has(element)
+    ? null
+    : findAncestors(hierarchy, element);
+}
+
+/**
+ * Adds to `primary` the elements of `secondary` whose identifier is not in
+ * `primary`. Each one is added, without its children, as the last child of
+ * the smallest `primary` element whose frame contains its frame, or at the
+ * top level when none does. Elements with no identifier are not added. The
+ * inputs are not modified.
+ *
+ * @param primary - The main hierarchy (idb `--api axbridge`).
+ * @param secondary - The other hierarchy (idb `--api ax`).
+ * @returns `primary` with the missing elements added.
+ */
+function addMissingIdentifiedElements(
+  primary: UIElement[],
+  secondary: UIElement[],
+): UIElement[] {
+  const result = structuredClone(primary);
+  const all = flatten(result);
+  const known = new Set(all.map((el) => el.identifier).filter(Boolean));
+  const missing = flatten(secondary).filter(
+    (el) => el.identifier && !known.has(el.identifier),
+  );
+
+  for (const el of missing) {
+    const { children: _children, ...element } = el;
+    const added: UIElement = structuredClone(element);
+    supplementedElements.add(added);
+    let host: UIElement | undefined;
+    for (const candidate of all) {
+      if (
+        containsFrame(candidate.frame, el.frame) &&
+        (!host || area(candidate.frame) < area(host.frame))
+      ) {
+        host = candidate;
+      }
+    }
+    if (host) {
+      host.children = [...(host.children ?? []), added];
+    } else {
+      result.push(added);
+    }
+  }
+  return result;
+}
+
+function flatten(elements: UIElement[]): UIElement[] {
+  return elements.flatMap((el) => [el, ...flatten(el.children ?? [])]);
+}
+
+type Frame = UIElement['frame'];
+
+function area(frame: Frame): number {
+  return frame.width * frame.height;
+}
+
+function containsFrame(outer: Frame, inner: Frame): boolean {
+  return (
+    area(outer) > 0 &&
+    inner.x >= outer.x &&
+    inner.y >= outer.y &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y + inner.height <= outer.y + outer.height
+  );
 }
 
 /**
