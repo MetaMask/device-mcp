@@ -783,6 +783,123 @@ describe('AdbBackend.typeText', () => {
   });
 });
 
+describe('AdbBackend.dismissKeyboard', () => {
+  let backend: AdbBackend;
+
+  const imeDump = (shown: boolean): string =>
+    `  mServedInputConnection=null\n  mInputShown=${String(shown)}\n  mShowRequested=false\n`;
+
+  const keyEvents = (): string[] =>
+    mockExecStrict.mock.calls
+      .map(([, args]) => args ?? [])
+      .filter((args) => args.includes('keyevent'))
+      .map((args) => args[args.length - 1]);
+
+  const dumpCount = (): number =>
+    mockExecStrict.mock.calls.filter(([, args]) =>
+      args?.includes('input_method'),
+    ).length;
+
+  /**
+   * Fake device: the keyboard is shown until one of `hidesOn` keycodes is
+   * sent, then it hides after `lag` more `dumpsys` reads.
+   *
+   * @param options - The fake's behaviour.
+   * @param options.shown - Whether the keyboard is shown at the start.
+   * @param options.hidesOn - The keycodes that hide it.
+   * @param options.lag - Reads that still see it shown after the key.
+   * @param options.dump - Overrides the dump text.
+   */
+  const fakeDevice = ({
+    shown,
+    hidesOn = ['111', '4'],
+    lag = 0,
+    dump,
+  }: {
+    shown: boolean;
+    hidesOn?: string[];
+    lag?: number;
+    dump?: string;
+  }): void => {
+    let isShown = shown;
+    let reads = -1;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('input_method')) {
+        if (reads >= 0) {
+          reads -= 1;
+          if (reads < 0) {
+            isShown = false;
+          }
+        }
+        return dump ?? imeDump(isShown);
+      }
+      const key = args?.[args.length - 1] ?? '';
+      if (args?.includes('keyevent') && hidesOn.includes(key) && isShown) {
+        reads = lag;
+      }
+      return '';
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    backend = new AdbBackend('emulator-5554');
+  });
+
+  it('sends no key when the keyboard is not shown', async () => {
+    fakeDevice({ shown: false });
+
+    await backend.dismissKeyboard();
+
+    expect(keyEvents()).toStrictEqual([]);
+    expect(dumpCount()).toBe(1);
+  });
+
+  it('sends ESCAPE and checks that the keyboard hid', async () => {
+    fakeDevice({ shown: true });
+
+    await backend.dismissKeyboard();
+
+    expect(keyEvents()).toStrictEqual(['111']);
+    expect(dumpCount()).toBe(2);
+  });
+
+  it('polls until the keyboard hides after ESCAPE', async () => {
+    fakeDevice({ shown: true, lag: 3 });
+
+    await withoutRetryDelay(async () => backend.dismissKeyboard());
+
+    expect(keyEvents()).toStrictEqual(['111']);
+    expect(dumpCount()).toBe(5);
+  });
+
+  it('sends BACK once when ESCAPE does not hide the keyboard', async () => {
+    fakeDevice({ shown: true, hidesOn: ['4'] });
+
+    await withoutRetryDelay(async () => backend.dismissKeyboard());
+
+    expect(keyEvents()).toStrictEqual(['111', '4']);
+  });
+
+  it('throws when the keyboard stays shown after ESCAPE and BACK', async () => {
+    fakeDevice({ shown: true, hidesOn: [] });
+
+    await expect(
+      withoutRetryDelay(async () => backend.dismissKeyboard()),
+    ).rejects.toThrow('Keyboard still shown after ESCAPE and BACK');
+    expect(keyEvents()).toStrictEqual(['111', '4']);
+  });
+
+  it('sends only ESCAPE when the keyboard state cannot be read', async () => {
+    fakeDevice({ shown: true, dump: 'Can not get service input_method' });
+
+    await backend.dismissKeyboard();
+
+    expect(keyEvents()).toStrictEqual(['111']);
+    expect(dumpCount()).toBe(1);
+  });
+});
+
 describe('AdbBackend.screenshot', () => {
   let backend: AdbBackend;
 

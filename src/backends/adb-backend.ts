@@ -111,6 +111,15 @@ const HELPER_RETRY_MIN_REMAINING_MS = 1_000;
 // A failed capture suggests a busy screen, where each dump can waste ~11 s.
 const HELPER_FIRST_FALLBACK_DUMP_ATTEMPTS = 1;
 
+const KEYCODE_ESCAPE = '111';
+
+const KEYCODE_BACK = '4';
+
+// How long the keyboard may take to hide after each key.
+const KEYBOARD_HIDE_TIMEOUT_MS = 1_000;
+
+const KEYBOARD_POLL_INTERVAL_MS = 100;
+
 /**
  * - `helper-first`: helper, then dump on non-trust failures (default with APK).
  * - `auto`: quick dump, then helper; skip later quick dumps once the helper wins.
@@ -827,8 +836,69 @@ export class AdbBackend implements DeviceBackend {
     await this.#adb(['shell', 'input', 'keyevent', keyMap[button]]);
   }
 
+  /**
+   * Hides the software keyboard, and does nothing when no keyboard is shown.
+   * Sends ESCAPE, then BACK once if the keyboard stays up (while the keyboard
+   * is shown, BACK only hides it), and checks the result after each key.
+   *
+   * @throws When the keyboard is still shown after ESCAPE and BACK.
+   */
   async dismissKeyboard(): Promise<void> {
-    await this.#adb(['shell', 'input', 'keyevent', '111']);
+    const shown = await this.#isKeyboardShown();
+    if (shown === false) {
+      return;
+    }
+    await this.#adb(['shell', 'input', 'keyevent', KEYCODE_ESCAPE]);
+    if (shown === undefined) {
+      // The state can't be read, so BACK could navigate instead.
+      return;
+    }
+    if (await this.#waitForKeyboardHidden()) {
+      return;
+    }
+    // The last poll above is the check right before BACK.
+    await this.#adb(['shell', 'input', 'keyevent', KEYCODE_BACK]);
+    if (await this.#waitForKeyboardHidden()) {
+      return;
+    }
+    throw new Error(
+      'Keyboard still shown after ESCAPE and BACK. ' +
+        'Use device_snapshot to inspect the current UI hierarchy.',
+    );
+  }
+
+  /**
+   * Whether the input method (software keyboard) is shown, from
+   * `dumpsys input_method`.
+   *
+   * @returns The state, or `undefined` when the dump has no `mInputShown`.
+   */
+  async #isKeyboardShown(): Promise<boolean | undefined> {
+    const dump = await this.#adb(['shell', 'dumpsys', 'input_method']);
+    const match = dump.match(/\bmInputShown=(true|false)\b/u);
+    return match ? match[1] === 'true' : undefined;
+  }
+
+  /**
+   * Polls until the keyboard is hidden. A state that can't be read counts as
+   * hidden, so BACK is never sent blind.
+   *
+   * @returns True once it is hidden; false when it is still shown after
+   * {@link KEYBOARD_HIDE_TIMEOUT_MS}.
+   */
+  async #waitForKeyboardHidden(): Promise<boolean> {
+    const deadline = Date.now() + KEYBOARD_HIDE_TIMEOUT_MS;
+    for (;;) {
+      if ((await this.#isKeyboardShown()) !== true) {
+        return true;
+      }
+      if (Date.now() + KEYBOARD_POLL_INTERVAL_MS > deadline) {
+        return false;
+      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, KEYBOARD_POLL_INTERVAL_MS);
+      });
+    }
   }
 
   async dismissAlert(accept: boolean): Promise<void> {
