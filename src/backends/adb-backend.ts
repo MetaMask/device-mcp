@@ -1070,18 +1070,15 @@ export class AdbBackend implements DeviceBackend {
     point: { x: number; y: number },
     screen: WindowSize,
   ): Promise<void> {
-    let keyboardRegion;
-    if (hasInputMethodAbove(element)) {
-      const dump = await this.#adb([
-        'shell',
-        'dumpsys',
-        'window',
-        'InputMethod',
-      ]).catch(() => undefined);
-      keyboardRegion =
-        dump === undefined ? undefined : parseInputMethodTouchableRegion(dump);
-    }
-    assertAndroidHittable(element, point, screen, { keyboardRegion });
+    const dump = hasInputMethodAbove(element)
+      ? await this.#adb(['shell', 'dumpsys', 'window', 'InputMethod']).catch(
+          () => undefined,
+        )
+      : undefined;
+    assertAndroidHittable(element, point, screen, {
+      keyboardRegion:
+        dump === undefined ? undefined : parseInputMethodTouchableRegion(dump),
+    });
   }
 
   /**

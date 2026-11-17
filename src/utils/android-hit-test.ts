@@ -210,17 +210,14 @@ export function assertAndroidHittable(
   }
 
   const higher = info.roots
-    .filter((root) => {
+    .flatMap((root) => {
       const window = nodeInfo.get(root)?.window;
-      return root !== targetRoot && window && window.layer > targetWindow.layer;
+      return root !== targetRoot && window && window.layer > targetWindow.layer
+        ? [{ root, window }]
+        : [];
     })
-    .sort(
-      (a, b) =>
-        (nodeInfo.get(b)?.window?.layer ?? 0) -
-        (nodeInfo.get(a)?.window?.layer ?? 0),
-    );
-  for (const root of higher) {
-    const window = nodeInfo.get(root)?.window as AndroidWindowInfo;
+    .sort((a, b) => b.window.layer - a.window.layer);
+  for (const { root, window } of higher) {
     const hit = deepest(
       root,
       (node) => contains(node.frame, point) && drawsItself(node, window.bounds),
@@ -411,10 +408,11 @@ function drawsAt(node: UIElement, window: Frame): boolean {
     return true;
   }
   const info = nodeInfo.get(node);
-  if (!info?.visibleToUser || !hasArea(node.frame)) {
-    return false;
-  }
-  if (node.frame.width >= window.width) {
+  if (
+    !info?.visibleToUser ||
+    !hasArea(node.frame) ||
+    node.frame.width >= window.width
+  ) {
     return false;
   }
   const drawn = drawnDescendantsInside(node, node.frame, window);
