@@ -7,6 +7,26 @@ const WINDOW_TYPE_INPUT_METHOD = 2;
 
 type Frame = UIElement['frame'];
 
+/**
+ * A wrapper with a drawn node inside counts as drawn over its whole frame
+ * when its area is at most this many times the area its drawn nodes cover.
+ */
+const WRAPPER_MAX_AREA_RATIO = 2;
+
+/**
+ * ...or when each side is at most this share of the window's shorter side
+ * (a small overlay button: the Expo "Tools" background is 137 px around a
+ * 68 px icon on a 1080 px wide screen).
+ */
+const WRAPPER_SMALL_SIDE_RATIO = 0.2;
+
+/**
+ * A non-clickable leaf with no text, content-desc or resource id is a
+ * transparent host, not a surface, when it covers at least this share of the
+ * window's area (or its full width).
+ */
+const LARGE_LEAF_AREA_RATIO = 0.5;
+
 /** Window metadata the snapshot helper puts on each window root. */
 export type AndroidWindowInfo = {
   type: number;
@@ -56,15 +76,27 @@ export function setAndroidNodeInfo(
  * labelled, or leaves).
  * - The target's window: a node drawn after the target (higher
  * `drawing-order` where the two branches split) that contains the point and
- * draws there: it is clickable, labelled or a leaf, or wraps such a node
- * inside its frame (an overlay button's background around its icon). A
- * wrapper as wide as the window is a transparent layout row and is ignored;
- * its drawn children still count. `hitsTarget` then decides, as on iOS, whether the
- * node is part of the target.
+ * draws there (see `drawsItself` and `drawsAt`).
  *
- * Without the helper's window metadata or draw order (a stock uiautomator
- * dump), or for an element that is not from a parsed snapshot, nothing can be
- * told, so the tap goes ahead.
+ * `hitsTarget` then decides, as on iOS, whether the node is part of the
+ * target. Deliberate trade-off: it accepts any node whose frame lies inside
+ * the target's. Here that node is never the target's descendant
+ * (`drawnAfter` excludes those), but a sibling drawn on top; React Native
+ * draws a control's content that way (a field's input over its container, a
+ * label or icon over a pressable's background). So a sibling overlay that
+ * fits inside the target is a false accept, not a refusal.
+ *
+ * The check fails open (the tap goes ahead) when nothing can be told:
+ *
+ * - the target's window root has no window metadata: a stock `uiautomator
+ * dump` (the fallback), which has no `window-*` or `visible-to-user`, and
+ * from android15-qpr2 on has `drawing-order`;
+ * - the element is not a node of a parsed snapshot: a copy, or an
+ * `options.element` that went through JSON, has no recorded node data.
+ *
+ * A helper tree cut at `maxNodes` can miss the nodes drawn last, so an
+ * overlay there is not seen and the tap goes ahead (a false accept, never a
+ * false refusal).
  *
  * @param target - The element to tap.
  * @param point - The tap point.
@@ -85,42 +117,37 @@ export function assertAndroidHittable(
   const chain = ancestorChain(target);
   const targetRoot = chain[0] ?? target;
   const targetWindow = nodeInfo.get(targetRoot)?.window;
+  if (!targetWindow) {
+    return;
+  }
 
-  if (targetWindow) {
-    const higher = info.roots
-      .filter((root) => {
-        const window = nodeInfo.get(root)?.window;
-        return (
-          root !== targetRoot && window && window.layer > targetWindow.layer
-        );
-      })
-      .sort(
-        (a, b) =>
-          (nodeInfo.get(b)?.window?.layer ?? 0) -
-          (nodeInfo.get(a)?.window?.layer ?? 0),
-      );
-    for (const root of higher) {
-      const window = nodeInfo.get(root)?.window as AndroidWindowInfo;
-      const hit = deepest(
-        root,
-        (node) =>
-          contains(node.frame, point) && drawsItself(node, window.bounds),
-      );
-      if (hit) {
-        throw new TargetObscuredError(target, hit, point, {
-          keyboard: window.type === WINDOW_TYPE_INPUT_METHOD,
-          obscuredByDescription: describeObscurer(hit),
-        });
-      }
+  const higher = info.roots
+    .filter((root) => {
+      const window = nodeInfo.get(root)?.window;
+      return root !== targetRoot && window && window.layer > targetWindow.layer;
+    })
+    .sort(
+      (a, b) =>
+        (nodeInfo.get(b)?.window?.layer ?? 0) -
+        (nodeInfo.get(a)?.window?.layer ?? 0),
+    );
+  for (const root of higher) {
+    const window = nodeInfo.get(root)?.window as AndroidWindowInfo;
+    const hit = deepest(
+      root,
+      (node) => contains(node.frame, point) && drawsItself(node, window.bounds),
+    );
+    if (hit) {
+      const keyboard = window.type === WINDOW_TYPE_INPUT_METHOD;
+      throw new TargetObscuredError(target, hit, point, {
+        keyboard,
+        // Keyboard ids are obfuscated and say nothing; the class is enough.
+        obscuredByDescription: keyboard ? hit.type : describeObscurer(hit),
+      });
     }
   }
 
-  const windowBounds = targetWindow?.bounds ?? {
-    x: 0,
-    y: 0,
-    width: screen.width,
-    height: screen.height,
-  };
+  const windowBounds = targetWindow.bounds;
   const hits = matching(
     targetRoot,
     (node) =>
@@ -225,6 +252,15 @@ function drawnAfter(node: UIElement, target: UIElement): boolean {
  * Whether a node draws or takes input itself: visible, with an area, not the
  * size of its window, and clickable, labelled, or a leaf.
  *
+ * A large leaf that is not clickable and has no text, content-desc or
+ * resource id is not counted: React Native renders absolute-fill hosts and
+ * `box-none` / `pointerEvents="none"` layers as such leaves. Without
+ * edge-to-edge they are inset (below the status bar, `[0,63][1080,2400]`),
+ * so they are not window-sized. "Large" is at least half the window's area,
+ * or its full width (a transparent header layer such as `[0,50][1080,400]`).
+ * A real full-width surface still counts when it is clickable or labelled,
+ * or as a wrapper around drawn nodes (`drawsAt`).
+ *
  * @param node - The node.
  * @param window - Its window's bounds.
  * @returns True when the node draws.
@@ -237,16 +273,32 @@ function drawsItself(node: UIElement, window: Frame): boolean {
   if (containsFrame(node.frame, window)) {
     return false;
   }
-  return (
-    info.clickable ||
-    Boolean(node.label ?? node.value) ||
-    !node.children?.length
-  );
+  if (info.clickable || node.label || node.value) {
+    return true;
+  }
+  if (node.children?.length) {
+    return false;
+  }
+  if (node.identifier) {
+    return true;
+  }
+  const large =
+    node.frame.width >= window.width ||
+    area(node.frame) >= area(window) * LARGE_LEAF_AREA_RATIO;
+  return !large;
 }
 
 /**
  * Whether a node in the target's window draws at its frame: it draws itself,
- * or it wraps a node that does and is not a window-sized transparent wrapper.
+ * or it is a wrapper close around nodes that do (an overlay button's
+ * background around its icon).
+ *
+ * A wrapper counts only when its area is at most
+ * {@link WRAPPER_MAX_AREA_RATIO} times the area its drawn nodes cover, or when
+ * it is small (each side at most {@link WRAPPER_SMALL_SIDE_RATIO} of the
+ * window's shorter side). A larger wrapper is a transparent layout container
+ * (a `box-none` host around a floating button, or a row as wide as the
+ * window); its drawn children still count on their own.
  *
  * @param node - The node.
  * @param window - The window's bounds.
@@ -260,30 +312,67 @@ function drawsAt(node: UIElement, window: Frame): boolean {
   if (!info?.visibleToUser || !hasArea(node.frame)) {
     return false;
   }
-  // A wrapper as wide as the window is a transparent layout row (a floating
-  // tab bar's container); its drawn children still count.
   if (node.frame.width >= window.width) {
     return false;
   }
-  return drawnDescendantInside(node, node.frame, window);
+  const drawn = drawnDescendantsInside(node, node.frame, window);
+  if (drawn.length === 0) {
+    return false;
+  }
+  const smallSide =
+    Math.min(window.width, window.height) * WRAPPER_SMALL_SIDE_RATIO;
+  if (node.frame.width <= smallSide && node.frame.height <= smallSide) {
+    return true;
+  }
+  return area(node.frame) <= unionArea(drawn) * WRAPPER_MAX_AREA_RATIO;
 }
 
 /**
  * @param node - The node.
  * @param frame - The wrapper's frame.
  * @param window - Its window's bounds.
- * @returns True when a descendant that draws itself lies inside `frame`.
+ * @returns The frames of the descendants that draw themselves inside `frame`.
  */
-function drawnDescendantInside(
+function drawnDescendantsInside(
   node: UIElement,
   frame: Frame,
   window: Frame,
-): boolean {
-  return (node.children ?? []).some(
-    (child) =>
-      (drawsItself(child, window) && containsFrame(frame, child.frame)) ||
-      drawnDescendantInside(child, frame, window),
-  );
+): Frame[] {
+  return (node.children ?? []).flatMap((child) => [
+    ...(drawsItself(child, window) && containsFrame(frame, child.frame)
+      ? [child.frame]
+      : []),
+    ...drawnDescendantsInside(child, frame, window),
+  ]);
+}
+
+/**
+ * @param frames - Frames.
+ * @returns The area of their union.
+ */
+function unionArea(frames: Frame[]): number {
+  const xs = [
+    ...new Set(frames.flatMap((frame) => [frame.x, frame.x + frame.width])),
+  ].sort((a, b) => a - b);
+  let total = 0;
+  for (let i = 0; i + 1 < xs.length; i++) {
+    const left = xs[i];
+    const right = xs[i + 1];
+    const spans = frames
+      .filter((frame) => frame.x <= left && frame.x + frame.width >= right)
+      .map((frame) => [frame.y, frame.y + frame.height] as const)
+      .sort((a, b) => a[0] - b[0]);
+    let covered = 0;
+    let end = -Infinity;
+    for (const [top, bottom] of spans) {
+      if (bottom > end) {
+        covered += bottom - Math.max(top, end);
+        end = bottom;
+      }
+    }
+    total += covered * (right - left);
+  }
+  return total;
 }
 
 /**
@@ -334,6 +423,14 @@ function describeNamed(node: UIElement): string {
     parts.push(`value="${node.value}"`);
   }
   return parts.join(' ');
+}
+
+/**
+ * @param frame - A frame.
+ * @returns Its area.
+ */
+function area(frame: Frame): number {
+  return frame.width * frame.height;
 }
 
 /**

@@ -126,7 +126,9 @@ describe('assertAndroidHittable (recorded helper XML)', () => {
 
     expect(error).toBeInstanceOf(TargetObscuredError);
     expect(error).toMatchObject({ keyboard: true, x: 150, y: 240 });
-    expect((error as Error).message).toContain('by the keyboard: ');
+    expect((error as Error).message).toContain(
+      'is covered at (150, 240) by the keyboard: android.widget.FrameLayout. ',
+    );
     expect((error as Error).message).toContain(
       'Dismiss the keyboard (device_dismiss_keyboard)',
     );
@@ -238,19 +240,130 @@ describe('assertAndroidHittable (rules)', () => {
     ).toContain('label="Over"');
   });
 
-  it('accepts a later-drawn node inside the target (its own icon)', () => {
+  it('accepts a later-drawn sibling inside the target (trade-off)', () => {
+    // Its own icon drawn as a sibling, or an overlay that fits inside the
+    // target: they can't be told apart, so both go through.
+    const overlay = (bounds: string): UIElement[] =>
+      parseAndroidHierarchy(
+        xml(
+          appWindow(
+            node(`${target} drawing-order="1"`),
+            node(
+              `class="android.widget.ImageView" visible-to-user="true" drawing-order="2" bounds="${bounds}"`,
+            ),
+          ),
+        ),
+      );
+
+    expect(check(targetIn(overlay('[150,120][250,180]')))).toBeUndefined();
+    expect(check(targetIn(overlay('[100,100][300,200]')))).toBeUndefined();
+  });
+
+  it('ignores a box-none container around a floating button', () => {
+    // An RN `box-none` host: a wrapper much larger than what it draws.
     const hierarchy = parseAndroidHierarchy(
       xml(
         appWindow(
           node(`${target} drawing-order="1"`),
           node(
-            'class="android.widget.ImageView" visible-to-user="true" drawing-order="2" bounds="[150,120][250,180]"',
+            'class="android.view.ViewGroup" visible-to-user="true" drawing-order="2" bounds="[42,63][1038,2400]"',
+            node(
+              'resource-id="fab" class="android.widget.Button" content-desc="Add" clickable="true" visible-to-user="true" drawing-order="1" bounds="[870,2100][1000,2230]"',
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(() =>
+      assertAndroidHittable(targetIn(hierarchy), { x: 200, y: 150 }, SCREEN),
+    ).not.toThrow();
+  });
+
+  it('refuses a close wrapper around a drawn node (an overlay button)', () => {
+    // As the Expo "Tools" button: a 137 px background around a 68 px icon.
+    const overlay = (bounds: string, icon: string): UIElement[] =>
+      parseAndroidHierarchy(
+        xml(
+          appWindow(
+            node(`${target} drawing-order="1"`),
+            node(
+              `class="android.view.View" visible-to-user="true" drawing-order="2" bounds="${bounds}"`,
+              node(
+                `class="android.widget.ImageView" content-desc="Tools" visible-to-user="true" drawing-order="1" bounds="${icon}"`,
+              ),
+            ),
+          ),
+        ),
+      );
+
+    expect(
+      check(targetIn(overlay('[150,80][287,217]', '[184,114][252,182]')))
+        ?.message,
+    ).toContain('android.view.View around android.widget.ImageView');
+    // Larger than the small-size rule, but at most twice its drawn content
+    // (400x400 around 350x230); the tap point is on the wrapper only.
+    expect(
+      check(targetIn(overlay('[60,60][460,460]', '[90,210][440,440]')))
+        ?.message,
+    ).toContain('android.view.View around android.widget.ImageView');
+    // Just over twice its drawn content: a transparent container.
+    expect(
+      check(targetIn(overlay('[60,60][460,460]', '[90,230][440,440]'))),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ['an inset absolute-fill host', '[0,63][1080,2400]'],
+    ['a full-width layer', '[0,50][1080,400]'],
+    ['a layer over half the window', '[0,0][800,1700]'],
+  ])('ignores a large unlabelled leaf drawn later: %s', (_name, bounds) => {
+    const hierarchy = parseAndroidHierarchy(
+      xml(
+        appWindow(
+          node(`${target} drawing-order="1"`),
+          node(
+            `class="android.view.ViewGroup" visible-to-user="true" drawing-order="2" bounds="${bounds}"`,
           ),
         ),
       ),
     );
 
     expect(check(targetIn(hierarchy))).toBeUndefined();
+  });
+
+  it.each([
+    ['clickable', 'clickable="true"'],
+    ['labelled', 'content-desc="Backdrop"'],
+    ['with a resource id', 'resource-id="backdrop"'],
+  ])('refuses a large leaf drawn later that is %s', (_name, attr) => {
+    const hierarchy = parseAndroidHierarchy(
+      xml(
+        appWindow(
+          node(`${target} drawing-order="1"`),
+          node(
+            `class="android.view.ViewGroup" ${attr} visible-to-user="true" drawing-order="2" bounds="[0,63][1080,2400]"`,
+          ),
+        ),
+      ),
+    );
+
+    expect(check(targetIn(hierarchy))).toBeInstanceOf(TargetObscuredError);
+  });
+
+  it('refuses a small unlabelled leaf drawn later', () => {
+    const hierarchy = parseAndroidHierarchy(
+      xml(
+        appWindow(
+          node(`${target} drawing-order="1"`),
+          node(
+            'class="android.view.View" visible-to-user="true" drawing-order="2" bounds="[150,120][450,400]"',
+          ),
+        ),
+      ),
+    );
+
+    expect(check(targetIn(hierarchy))).toBeInstanceOf(TargetObscuredError);
   });
 
   it('refuses a node of a higher system window, not as the keyboard', () => {
@@ -291,22 +404,40 @@ describe('assertAndroidHittable (rules)', () => {
   });
 
   it('lets every tap through for a stock uiautomator dump', () => {
-    // No window metadata and no drawing-order: nothing can be told.
+    // From android15-qpr2 on, the stock dumper writes drawing-order, but
+    // never window metadata or visible-to-user: nothing can be told.
     const hierarchy = parseAndroidHierarchy(
       xml(
         node(
-          'class="android.widget.FrameLayout" bounds="[0,0][1080,2400]"',
+          'class="android.widget.FrameLayout" drawing-order="0" bounds="[0,0][1080,2400]"',
           node(
-            'resource-id="target" class="android.widget.Button" clickable="true" bounds="[100,100][300,200]"',
+            'resource-id="target" class="android.widget.Button" clickable="true" drawing-order="1" bounds="[100,100][300,200]"',
           ) +
             node(
-              'class="android.widget.Button" content-desc="Over" clickable="true" bounds="[0,0][1080,900]"',
+              'class="android.widget.Button" content-desc="Over" clickable="true" drawing-order="2" bounds="[0,0][1080,900]"',
             ),
         ),
       ),
     );
 
     expect(check(targetIn(hierarchy))).toBeUndefined();
+  });
+
+  it('lets a tap through for a copy of a snapshot element', () => {
+    const hierarchy = parseAndroidHierarchy(
+      xml(
+        appWindow(
+          node(`${target} drawing-order="1"`),
+          node(
+            'resource-id="sheet" class="android.view.ViewGroup" content-desc="Sheet" visible-to-user="true" drawing-order="2" bounds="[0,150][1080,900]"',
+          ),
+        ),
+      ),
+    );
+    const copy = JSON.parse(JSON.stringify(targetIn(hierarchy))) as UIElement;
+
+    expect(check(targetIn(hierarchy))).toBeInstanceOf(TargetObscuredError);
+    expect(check(copy)).toBeUndefined();
   });
 
   it('lets a tap through for an element that is not from a snapshot', () => {
