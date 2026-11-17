@@ -121,9 +121,14 @@ const KEYCODE_ESCAPE = '111';
 const KEYCODE_BACK = '4';
 
 // How long the keyboard may take to hide after each key.
-const KEYBOARD_HIDE_TIMEOUT_MS = 1_000;
+const KEYBOARD_HIDE_TIMEOUT_MS = 2_000;
 
 const KEYBOARD_POLL_INTERVAL_MS = 100;
+
+// Reads only the `mInputShown` line: the full dump is ~1 MB. `|| true` keeps a
+// missing line from failing the command, so that state reads as unknown.
+const KEYBOARD_STATE_COMMAND =
+  'dumpsys input_method | grep -m1 mInputShown || true';
 
 /**
  * - `helper-first`: helper, then dump on non-trust failures (default with APK).
@@ -858,8 +863,19 @@ export class AdbBackend implements DeviceBackend {
 
   /**
    * Hides the software keyboard, and does nothing when no keyboard is shown.
-   * Sends ESCAPE, then BACK once if the keyboard stays up (while the keyboard
-   * is shown, BACK only hides it), and checks the result after each key.
+   * Sends ESCAPE and polls for up to {@link KEYBOARD_HIDE_TIMEOUT_MS} until the
+   * keyboard hides. If it is still shown, reads the state once more and sends
+   * BACK only when that read still sees the keyboard (while the keyboard is
+   * shown, BACK only hides it), then checks again.
+   *
+   * Remaining risk: if the keyboard hides between that last read and BACK
+   * (one adb round trip, tens of ms), BACK reaches the app and can navigate
+   * back. This needs ESCAPE to take more than the poll window to hide the
+   * keyboard and then finish within that gap.
+   *
+   * When the state can't be read (`mInputShown` is missing), this behaves
+   * like 0.8.0: it sends ESCAPE only and does not check the result, because
+   * BACK sent blind could navigate.
    *
    * @throws When the keyboard is still shown after ESCAPE and BACK.
    */
@@ -870,13 +886,15 @@ export class AdbBackend implements DeviceBackend {
     }
     await this.#adb(['shell', 'input', 'keyevent', KEYCODE_ESCAPE]);
     if (shown === undefined) {
-      // The state can't be read, so BACK could navigate instead.
       return;
     }
     if (await this.#waitForKeyboardHidden()) {
       return;
     }
-    // The last poll above is the check right before BACK.
+    // Keep the gap between the last read and BACK as small as possible.
+    if ((await this.#isKeyboardShown()) !== true) {
+      return;
+    }
     await this.#adb(['shell', 'input', 'keyevent', KEYCODE_BACK]);
     if (await this.#waitForKeyboardHidden()) {
       return;
@@ -888,14 +906,14 @@ export class AdbBackend implements DeviceBackend {
   }
 
   /**
-   * Whether the input method (software keyboard) is shown, from
-   * `dumpsys input_method`.
+   * Whether the input method (software keyboard) is shown, from the
+   * `mInputShown` line of `dumpsys input_method`.
    *
-   * @returns The state, or `undefined` when the dump has no `mInputShown`.
+   * @returns The state, or `undefined` when there is no `mInputShown` line.
    */
   async #isKeyboardShown(): Promise<boolean | undefined> {
-    const dump = await this.#adb(['shell', 'dumpsys', 'input_method']);
-    const match = dump.match(/\bmInputShown=(true|false)\b/u);
+    const line = await this.#adb(['shell', KEYBOARD_STATE_COMMAND]);
+    const match = line.match(/\bmInputShown=(true|false)\b/u);
     return match ? match[1] === 'true' : undefined;
   }
 
