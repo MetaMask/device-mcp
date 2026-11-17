@@ -57,6 +57,8 @@ import { runWebViewCdp } from './webview-cdp.js';
 import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
 import {
   assertAndroidHittable,
+  hasInputMethodAbove,
+  parseInputMethodTouchableRegion,
   setAndroidNodeInfo,
 } from '../utils/android-hit-test.js';
 import type { AndroidWindowInfo } from '../utils/android-hit-test.js';
@@ -338,7 +340,7 @@ export class AdbBackend implements DeviceBackend {
 
     const screen = await this.#cachedWindowSize();
     const { x, y } = visibleCenter(element, screen);
-    assertAndroidHittable(element, { x, y }, screen);
+    await this.#assertHittable(element, { x, y }, screen);
     await this.tapCoordinates(x, y);
 
     return {
@@ -992,7 +994,7 @@ export class AdbBackend implements DeviceBackend {
 
     const screen = await this.#cachedWindowSize();
     const { x: cx, y: cy } = visibleCenter(element, screen);
-    assertAndroidHittable(element, { x: cx, y: cy }, screen);
+    await this.#assertHittable(element, { x: cx, y: cy }, screen);
     await this.#adb([
       'shell',
       'input',
@@ -1047,6 +1049,39 @@ export class AdbBackend implements DeviceBackend {
       );
     }
     return texts.join('\n');
+  }
+
+  /**
+   * Refuse a tap on a covered target (see `assertAndroidHittable`). When the
+   * snapshot has a keyboard window above the target, also read where the
+   * keyboard takes touches now (`dumpsys window InputMethod`, ~20–30 ms), so
+   * a tap under a key the snapshot missed is refused too. Without a keyboard
+   * window there is no extra device call. If the read fails, the check uses
+   * the snapshot only, as before.
+   *
+   * @param element - The element to tap.
+   * @param point - The tap point.
+   * @param point.x - X in pixels.
+   * @param point.y - Y in pixels.
+   * @param screen - The screen size.
+   */
+  async #assertHittable(
+    element: UIElement,
+    point: { x: number; y: number },
+    screen: WindowSize,
+  ): Promise<void> {
+    let keyboardRegion;
+    if (hasInputMethodAbove(element)) {
+      const dump = await this.#adb([
+        'shell',
+        'dumpsys',
+        'window',
+        'InputMethod',
+      ]).catch(() => undefined);
+      keyboardRegion =
+        dump === undefined ? undefined : parseInputMethodTouchableRegion(dump);
+    }
+    assertAndroidHittable(element, point, screen, { keyboardRegion });
   }
 
   /**

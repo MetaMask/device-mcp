@@ -765,6 +765,94 @@ describe('AdbBackend.tapElement', () => {
     ).toHaveLength(0);
   });
 
+  describe('with a keyboard window in the snapshot', () => {
+    // A keyboard window whose snapshot has no node at the target (the key is
+    // missing from the tree), over a free app button at (300, 230).
+    const withKeyboard = parseAndroidHierarchy(
+      `<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0"><node window-index="0" window-type="2" window-layer="1" window-bounds="[0,863][1080,2400]" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" visible-to-user="true" drawing-order="0" bounds="[0,63][1080,2400]"><node class="android.widget.FrameLayout" content-desc="Done" clickable="true" visible-to-user="true" drawing-order="1" bounds="[21,863][169,1553]" /></node><node window-index="1" window-type="1" window-layer="0" window-bounds="[0,0][1080,2400]" class="android.widget.FrameLayout" visible-to-user="true" drawing-order="0" bounds="[0,0][1080,2400]"><node resource-id="submit" class="android.widget.Button" clickable="true" visible-to-user="true" drawing-order="1" bounds="[100,200][500,260]" /></node></hierarchy>`,
+    );
+    const target = findElement(
+      withKeyboard,
+      { identifier: 'submit' },
+      true,
+    ) as UIElement;
+    const imeDump = (region: string, visible = true): string =>
+      `WINDOW MANAGER WINDOWS (dumpsys window windows)\n  Window #0 Window{e7383a7 u0 InputMethod}:\n    mAttrs={(0,0)(fillxfill) ty=INPUT_METHOD fmt=TRANSPARENT}\n    touchable region=SkRegion(${region})\n    isOnScreen=${String(visible)}\n    isVisible=${String(visible)}\n`;
+    const imeReads = (): unknown[][] =>
+      mockExecStrict.mock.calls.filter(([, args]) =>
+        args?.includes('InputMethod'),
+      );
+    const fakeDevice = (dump: string | Error): void => {
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.includes('wm')) {
+          return 'Physical size: 1080x2400';
+        }
+        if (args?.includes('InputMethod')) {
+          if (dump instanceof Error) {
+            throw dump;
+          }
+          return dump;
+        }
+        return '';
+      });
+    };
+
+    it('refuses a tap inside the touchable region the snapshot missed', async () => {
+      fakeDevice(imeDump('(94,137,525,262)(21,863,169,1553)'));
+
+      await expect(
+        backend.tapElement({ identifier: 'submit' }, { element: target }),
+      ).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: true,
+        message: expect.stringContaining(
+          'by the keyboard: touchable area [94,137][525,262]',
+        ),
+      });
+      expect(imeReads()).toStrictEqual([
+        [
+          'adb',
+          ['-s', 'emulator-5554', 'shell', 'dumpsys', 'window', 'InputMethod'],
+        ],
+      ]);
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('taps when the point is outside the touchable region', async () => {
+      fakeDevice(imeDump('(94,137,225,180)(21,863,169,1553)'));
+
+      await backend.tapElement({ identifier: 'submit' }, { element: target });
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('taps when the keyboard window is no longer visible', async () => {
+      fakeDevice(imeDump('(0,0,1080,2400)', false));
+
+      await backend.tapElement({ identifier: 'submit' }, { element: target });
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('falls back to the snapshot when the region cannot be read', async () => {
+      fakeDevice(new Error('adb: device offline'));
+
+      await backend.tapElement({ identifier: 'submit' }, { element: target });
+
+      expect(imeReads()).toHaveLength(1);
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('does not read the region without a keyboard window', async () => {
+      fakeDevice(imeDump('(0,0,1080,2400)'));
+
+      await backend.tapElement({ identifier: 'submit' }, { element });
+
+      expect(imeReads()).toHaveLength(0);
+      expect(tapCalls()).toHaveLength(1);
+    });
+  });
+
   it('snapshots to find the element when none is passed', async () => {
     mockExecStrict.mockImplementation(async (_cmd, args) =>
       args?.includes('cat') || args?.includes('dump')

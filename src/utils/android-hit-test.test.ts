@@ -1,13 +1,27 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-import { assertAndroidHittable } from './android-hit-test.js';
+import {
+  assertAndroidHittable,
+  hasInputMethodAbove,
+  parseInputMethodTouchableRegion,
+} from './android-hit-test.js';
 import { findElement, visibleCenter } from './element.js';
 import { TargetObscuredError } from './hit-test.js';
 import { parseAndroidHierarchy } from '../backends/adb-backend.js';
 import type { UIElement } from '../backends/types.js';
 
 const SCREEN = { width: 1080, height: 2400 };
+
+/**
+ * @param file - A file name under `src/backends/__fixtures__`.
+ * @returns Its text.
+ */
+const fixtureText = (file: string): string =>
+  readFileSync(
+    new URL(`../backends/__fixtures__/${file}`, import.meta.url),
+    'utf8',
+  );
 
 /**
  * Snapshot-helper XML recorded on the Android emulator (1080x2400,
@@ -23,15 +37,41 @@ const SCREEN = { width: 1080, height: 2400 };
  * @returns The parsed hierarchy.
  */
 const fixture = (name: string): UIElement[] =>
-  parseAndroidHierarchy(
-    readFileSync(
-      new URL(
-        `../backends/__fixtures__/adb-helper-${name}.xml`,
-        import.meta.url,
-      ),
-      'utf8',
-    ),
-  );
+  parseAndroidHierarchy(fixtureText(`adb-helper-${name}.xml`));
+
+/**
+ * Remove the subtree of the first node with these bounds.
+ *
+ * @param xml - Helper XML.
+ * @param bounds - The node's `bounds` attribute value.
+ * @returns The XML without that node and its children.
+ */
+const withoutSubtree = (xml: string, bounds: string): string => {
+  const start = xml.indexOf(`bounds="${bounds}"`);
+  const open = xml.lastIndexOf('<node', start);
+  const tag = /<(\/?)node\b[^>]*?(\/?)>/gu;
+  tag.lastIndex = open;
+  let depth = 0;
+  for (let match = tag.exec(xml); match; match = tag.exec(xml)) {
+    if (match[1]) {
+      depth -= 1;
+    } else if (!match[2]) {
+      depth += 1;
+    }
+    if (depth === 0) {
+      return xml.slice(0, open) + xml.slice(tag.lastIndex);
+    }
+  }
+  throw new Error(`no node with bounds ${bounds}`);
+};
+
+/**
+ * `dumpsys window InputMethod` recorded on the same emulator: Gboard's
+ * floating toolbar shown (`isVisible=true`, the touchable region is the
+ * suggestion key, the toolbar and the navigation bar strip), and hidden.
+ */
+const IME_SHOWN = fixtureText('adb-dumpsys-window-ime-shown.txt');
+const IME_HIDDEN = fixtureText('adb-dumpsys-window-ime-hidden.txt');
 
 /**
  * Run the hit test at the element's visible center.
@@ -132,6 +172,120 @@ describe('assertAndroidHittable (recorded helper XML)', () => {
     expect((error as Error).message).toContain(
       'Dismiss the keyboard (device_dismiss_keyboard)',
     );
+  });
+
+  describe('the keyboard touchable region', () => {
+    // As seen live: Gboard's floating "Zz" suggestion key missing from the
+    // snapshot (its container [94,137][1080,2400] and everything under it).
+    const searchXml = fixtureText('adb-helper-search-keyboard.xml');
+    const withoutZz = parseAndroidHierarchy(
+      withoutSubtree(searchXml, '[94,137][1080,2400]'),
+    );
+    const region = parseInputMethodTouchableRegion(IME_SHOWN);
+    const input = byId(withoutZz, 'multichain-account-selector-search-input');
+
+    it('parses the recorded region of the shown keyboard', () => {
+      expect(region).toStrictEqual([
+        { x: 94, y: 137, width: 131, height: 125 },
+        { x: 21, y: 863, width: 148, height: 690 },
+        { x: 0, y: 2337, width: 1080, height: 63 },
+      ]);
+    });
+
+    it('is the only thing that catches a key missing from the snapshot', () => {
+      // Without the region, the snapshot alone lets the tap through.
+      expect(() =>
+        assertAndroidHittable(input, { x: 150, y: 240 }, SCREEN),
+      ).not.toThrow();
+
+      let error: unknown;
+      try {
+        assertAndroidHittable(input, { x: 150, y: 240 }, SCREEN, {
+          keyboardRegion: region,
+        });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(TargetObscuredError);
+      expect(error).toMatchObject({ keyboard: true, x: 150, y: 240 });
+      expect((error as Error).message).toContain(
+        'by the keyboard: touchable area [94,137][225,262]. ',
+      );
+      expect((error as Error).message).toContain(
+        'Dismiss the keyboard (device_dismiss_keyboard)',
+      );
+    });
+
+    it('refuses a point under the toolbar or the navigation bar strip', () => {
+      for (const point of [
+        { x: 95, y: 1324 },
+        { x: 540, y: 2380 },
+      ]) {
+        expect(() =>
+          assertAndroidHittable(input, point, SCREEN, {
+            keyboardRegion: region,
+          }),
+        ).toThrow(TargetObscuredError);
+      }
+    });
+
+    it.each([
+      'multichain-account-selector-search-input',
+      'back-arrow-button',
+      'account-list-add-account-button',
+      'button-icon',
+    ])(
+      'lets a tap on the free %s through (above or beside the keyboard)',
+      (identifier) => {
+        const element = byId(withoutZz, identifier);
+
+        expect(() =>
+          assertAndroidHittable(
+            element,
+            visibleCenter(element, SCREEN),
+            SCREEN,
+            { keyboardRegion: region },
+          ),
+        ).not.toThrow();
+      },
+    );
+
+    it('is empty when the keyboard is hidden', () => {
+      expect(parseInputMethodTouchableRegion(IME_HIDDEN)).toStrictEqual([]);
+    });
+
+    it('is unknown when a visible keyboard has no region line', () => {
+      expect(
+        parseInputMethodTouchableRegion(
+          IME_SHOWN.replace(/touchable region=.*$/mu, ''),
+        ),
+      ).toBeUndefined();
+    });
+
+    it('is empty without an input-method window in the dump', () => {
+      expect(
+        parseInputMethodTouchableRegion(
+          IME_SHOWN.replace(/ty=INPUT_METHOD/u, 'ty=BASE_APPLICATION'),
+        ),
+      ).toStrictEqual([]);
+    });
+
+    it('is only needed when the snapshot has a keyboard window', () => {
+      expect(hasInputMethodAbove(input)).toBe(true);
+      expect(hasInputMethodAbove(byId(home, 'account-picker'))).toBe(false);
+    });
+
+    it('changes nothing without a keyboard window (wallet home)', () => {
+      const hamburger = byId(home, 'navbar-hamburger-menu-button');
+      const picker = byId(home, 'account-picker');
+
+      expect(check(hamburger)?.keyboard).toBe(false);
+      expect(() =>
+        assertAndroidHittable(picker, visibleCenter(picker, SCREEN), SCREEN, {
+          keyboardRegion: [],
+        }),
+      ).not.toThrow();
+    });
   });
 
   it('ignores the keyboard window outside its drawn nodes', () => {

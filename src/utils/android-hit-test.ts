@@ -67,13 +67,96 @@ export function setAndroidNodeInfo(
 }
 
 /**
+ * Whether the snapshot `target` came from has an input-method (keyboard)
+ * window above the target's window. Only then is the keyboard's touchable
+ * region worth reading (see {@link parseInputMethodTouchableRegion}).
+ *
+ * @param target - The element to tap.
+ * @returns True when a keyboard window is above the target's window.
+ */
+export function hasInputMethodAbove(target: UIElement): boolean {
+  const info = nodeInfo.get(target);
+  const targetRoot = ancestorChain(target)[0] ?? target;
+  const targetWindow = nodeInfo.get(targetRoot)?.window;
+  if (!info || !targetWindow) {
+    return false;
+  }
+  return info.roots.some((root) => {
+    const window = nodeInfo.get(root)?.window;
+    return (
+      window?.type === WINDOW_TYPE_INPUT_METHOD &&
+      window.layer > targetWindow.layer
+    );
+  });
+}
+
+/**
+ * Read the keyboard's touchable region from `dumpsys window InputMethod`:
+ * the `touchable region=SkRegion((l,t,r,b)…)` of each input-method window
+ * (`ty=INPUT_METHOD`) that is visible (`isVisible=true`), in screen pixels.
+ *
+ * This is where the keyboard takes touches right now, whatever its
+ * accessibility tree shows. Gboard's floating toolbar (hardware keyboard on)
+ * is `(94,137,225,262)(21,863,169,1553)(0,2337,1080,2400)`: the suggestion
+ * key, the toolbar, and the navigation bar strip. The accessibility tree can
+ * miss the suggestion key, and the window bounds lag behind it.
+ *
+ * @param dump - The `dumpsys window InputMethod` output.
+ * @returns The rects; empty when no keyboard window is visible; undefined
+ * when a visible keyboard window has no readable region (unknown).
+ */
+export function parseInputMethodTouchableRegion(
+  dump: string,
+): Frame[] | undefined {
+  const rects: Frame[] = [];
+  for (const block of dump.split(/^\s*Window #\d+ /mu).slice(1)) {
+    if (!/\bty=INPUT_METHOD\b/u.test(block)) {
+      continue;
+    }
+    if (!/\bisVisible=true\b/u.test(block)) {
+      continue;
+    }
+    const region =
+      /touchable region=SkRegion\(((?:\(-?\d+,-?\d+,-?\d+,-?\d+\))*)\)/u.exec(
+        block,
+      );
+    if (!region) {
+      return undefined;
+    }
+    for (const [, left, top, right, bottom] of (region[1] ?? '').matchAll(
+      /\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)/gu,
+    )) {
+      const frame = {
+        x: Number(left),
+        y: Number(top),
+        width: Number(right) - Number(left),
+        height: Number(bottom) - Number(top),
+      };
+      if (hasArea(frame)) {
+        rects.push(frame);
+      }
+    }
+  }
+  return rects;
+}
+
+/**
  * Find what a tap at `point` would hit instead of `target`, from the
- * snapshot the target came from. No device call.
+ * snapshot the target came from, and, while a keyboard is up, the keyboard's
+ * touchable region read at tap time.
  *
  * - A higher window (the keyboard, a system window): any drawn node of it at
  * the point. A window's root frame is often the whole screen and
  * transparent, so only nodes that draw or take input count (clickable,
  * labelled, or leaves).
+ * - The keyboard's touchable region (`options.keyboardRegion`), when the
+ * caller read it: a point inside it is refused as the keyboard, even when the
+ * snapshot has no keyboard node there. Gboard's floating suggestion key is
+ * sometimes missing from the accessibility tree, and the keyboard window's
+ * bounds lag behind what is drawn, so neither can stand in for it. The
+ * window bounds or the drawn keys widened to the full width would also
+ * refuse free targets on the upper screen, because with a hardware keyboard
+ * the window is much larger than its keys.
  * - The target's window: a node drawn after the target (higher
  * `drawing-order` where the two branches split) that contains the point and
  * draws there (see `drawsItself` and `drawsAt`).
@@ -103,12 +186,17 @@ export function setAndroidNodeInfo(
  * @param point.x - X in pixels.
  * @param point.y - Y in pixels.
  * @param screen - The screen size in pixels.
+ * @param options - Data read from the device at tap time.
+ * @param options.keyboardRegion - The keyboard's touchable region, from
+ * {@link parseInputMethodTouchableRegion}. Omit when there is no keyboard
+ * window in the snapshot, or the region can't be read.
  * @throws {TargetObscuredError} When another node is on top at the point.
  */
 export function assertAndroidHittable(
   target: UIElement,
   point: { x: number; y: number },
   screen: HitTestWindow,
+  options: { keyboardRegion?: Frame[] } = {},
 ): void {
   const info = nodeInfo.get(target);
   if (!info) {
@@ -145,6 +233,20 @@ export function assertAndroidHittable(
         obscuredByDescription: keyboard ? hit.type : describeObscurer(hit),
       });
     }
+  }
+
+  const keyboardRect = options.keyboardRegion?.find((rect) =>
+    contains(rect, point),
+  );
+  if (keyboardRect) {
+    const keyboardRoot =
+      info.roots.find(
+        (root) => nodeInfo.get(root)?.window?.type === WINDOW_TYPE_INPUT_METHOD,
+      ) ?? targetRoot;
+    throw new TargetObscuredError(target, keyboardRoot, point, {
+      keyboard: true,
+      obscuredByDescription: `touchable area ${formatRect(keyboardRect)}`,
+    });
   }
 
   const windowBounds = targetWindow.bounds;
@@ -423,6 +525,14 @@ function describeNamed(node: UIElement): string {
     parts.push(`value="${node.value}"`);
   }
   return parts.join(' ');
+}
+
+/**
+ * @param frame - A frame.
+ * @returns It as Android bounds, `[left,top][right,bottom]`.
+ */
+function formatRect(frame: Frame): string {
+  return `[${frame.x},${frame.y}][${frame.x + frame.width},${frame.y + frame.height}]`;
 }
 
 /**
