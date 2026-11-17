@@ -361,7 +361,8 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async typeText(text: string): Promise<void> {
-    // Android keyevent 29+shift = Ctrl+A (select all), 67 = DEL
+    // Select the text (Shift + MOVE_END from the start, then Ctrl+A), then
+    // delete it with DEL (67).
     await this.#adb(['shell', 'input', 'keyevent', 'KEYCODE_MOVE_HOME']);
     await this.#adb([
       'shell',
@@ -370,6 +371,18 @@ export class AdbBackend implements DeviceBackend {
       '--longpress',
       'KEYCODE_SHIFT_LEFT',
       'KEYCODE_MOVE_END',
+    ]);
+    // In a React Native field (API 36) the Shift selection selects nothing,
+    // so DEL removed one character. `keycombination` (newer Android only) is
+    // best effort: without it the clear is no worse than before.
+    await exec('adb', [
+      '-s',
+      this.#serial,
+      'shell',
+      'input',
+      'keycombination',
+      'KEYCODE_CTRL_LEFT',
+      'KEYCODE_A',
     ]);
     await this.#adb(['shell', 'input', 'keyevent', '67']);
     // `input text` with no argument throws on the device, and the field is
