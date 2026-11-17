@@ -724,6 +724,47 @@ describe('AdbBackend.tapElement', () => {
     ).toHaveLength(0);
   });
 
+  it('refuses to tap an element that another node covers', async () => {
+    const covered = parseAndroidHierarchy(
+      `<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0"><node window-index="0" window-type="1" window-layer="0" window-bounds="[0,0][1080,2400]" class="android.widget.FrameLayout" visible-to-user="true" drawing-order="0" bounds="[0,0][1080,2400]"><node resource-id="submit" class="android.widget.Button" clickable="true" visible-to-user="true" drawing-order="1" bounds="[100,200][500,260]" /><node class="android.widget.ImageView" content-desc="Tools" visible-to-user="true" drawing-order="2" bounds="[250,180][350,280]" /></node></hierarchy>`,
+    );
+    const target = findElement(covered, { identifier: 'submit' }, true);
+
+    await expect(
+      backend.tapElement(
+        { identifier: 'submit' },
+        { element: target as UIElement },
+      ),
+    ).rejects.toMatchObject({
+      code: 'TARGET_OBSCURED',
+      keyboard: false,
+      message: expect.stringContaining('label="Tools"'),
+    });
+    expect(tapCalls()).toHaveLength(0);
+  });
+
+  it('refuses to long-press an element that the keyboard covers', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('wm')) {
+        return 'Physical size: 1080x2400';
+      }
+      return args?.includes('cat') || args?.includes('dump')
+        ? `<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0"><node window-index="0" window-type="2" window-layer="1" window-bounds="[0,1400][1080,2400]" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" visible-to-user="true" drawing-order="0" bounds="[0,1400][1080,2400]"><node class="android.widget.FrameLayout" content-desc="Key" clickable="true" visible-to-user="true" drawing-order="1" bounds="[0,1500][1080,2400]" /></node><node window-index="1" window-type="1" window-layer="0" window-bounds="[0,0][1080,2400]" class="android.widget.FrameLayout" visible-to-user="true" drawing-order="0" bounds="[0,0][1080,2400]"><node resource-id="far" class="android.widget.Button" clickable="true" visible-to-user="true" drawing-order="1" bounds="[0,2000][1080,2100]" /></node></hierarchy>`
+        : '';
+    });
+
+    await expect(
+      backend.longPress({ identifier: 'far' }),
+    ).rejects.toMatchObject({
+      code: 'TARGET_OBSCURED',
+      keyboard: true,
+      message: expect.stringContaining('by the keyboard: '),
+    });
+    expect(
+      mockExecStrict.mock.calls.filter(([, args]) => args?.includes('swipe')),
+    ).toHaveLength(0);
+  });
+
   it('snapshots to find the element when none is passed', async () => {
     mockExecStrict.mockImplementation(async (_cmd, args) =>
       args?.includes('cat') || args?.includes('dump')
