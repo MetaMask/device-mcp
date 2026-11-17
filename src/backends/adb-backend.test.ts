@@ -743,10 +743,34 @@ describe('AdbBackend.typeText', () => {
   const inputCalls = (): string[][] =>
     mockExecStrict.mock.calls.map(([, args]) => (args ?? []).slice(3));
 
+  const selectAllCalls = (): string[][] =>
+    mockExec.mock.calls.map(([, args]) => (args ?? []).slice(3));
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockExecStrict.mockResolvedValue('');
+    mockExec.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
     backend = new AdbBackend('emulator-5554');
+  });
+
+  it('also selects all with Ctrl+A before the delete', async () => {
+    await backend.typeText('abc');
+
+    expect(selectAllCalls()).toStrictEqual([
+      ['input', 'keycombination', 'KEYCODE_CTRL_LEFT', 'KEYCODE_A'],
+    ]);
+  });
+
+  it('still clears and types when Ctrl+A is not supported', async () => {
+    mockExec.mockResolvedValue({
+      stdout: '',
+      stderr: 'Error: Unknown command: keycombination',
+      exitCode: 255,
+    });
+
+    await backend.typeText('abc');
+
+    expect(inputCalls().at(-1)).toStrictEqual(['input', 'text', 'abc']);
   });
 
   it('clears the field, then types the escaped text', async () => {
