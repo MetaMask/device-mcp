@@ -769,8 +769,6 @@ describe('AdbBackend.typeText', () => {
     );
     const [selectAllOrder] = mockExec.mock.invocationCallOrder;
     const delOrder = mockExecStrict.mock.invocationCallOrder[delIndex];
-    expect(selectAllOrder).toBeDefined();
-    expect(delOrder).toBeDefined();
     expect(selectAllOrder).toBeLessThan(delOrder);
   });
 
