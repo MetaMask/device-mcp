@@ -761,6 +761,19 @@ describe('AdbBackend.typeText', () => {
     ]);
   });
 
+  it('sends Ctrl+A before the DEL', async () => {
+    await backend.typeText('abc');
+
+    const delIndex = inputCalls().findIndex(
+      (args) => args.join(' ') === 'input keyevent 67',
+    );
+    const [selectAllOrder] = mockExec.mock.invocationCallOrder;
+    const delOrder = mockExecStrict.mock.invocationCallOrder[delIndex];
+    expect(selectAllOrder).toBeDefined();
+    expect(delOrder).toBeDefined();
+    expect(selectAllOrder).toBeLessThan(delOrder);
+  });
+
   it('still clears and types when Ctrl+A is not supported', async () => {
     mockExec.mockResolvedValue({
       stdout: '',
@@ -810,8 +823,15 @@ describe('AdbBackend.typeText', () => {
 describe('AdbBackend.dismissKeyboard', () => {
   let backend: AdbBackend;
 
-  const imeDump = (shown: boolean): string =>
-    `  mServedInputConnection=null\n  mInputShown=${String(shown)}\n  mShowRequested=false\n`;
+  // `grep -m1 mInputShown` prints only this line.
+  const imeLine = (shown: boolean): string =>
+    `  mInputShown=${String(shown)}\n`;
+
+  const isStateRead = (args?: string[]): boolean =>
+    args?.some((arg) => arg.includes('input_method')) ?? false;
+
+  // Polls in the 2 s window after a key: at 0, 100, …, 2000 ms.
+  const POLL_READS = 21;
 
   const keyEvents = (): string[] =>
     mockExecStrict.mock.calls
@@ -820,9 +840,7 @@ describe('AdbBackend.dismissKeyboard', () => {
       .map((args) => args[args.length - 1]);
 
   const dumpCount = (): number =>
-    mockExecStrict.mock.calls.filter(([, args]) =>
-      args?.includes('input_method'),
-    ).length;
+    mockExecStrict.mock.calls.filter(([, args]) => isStateRead(args)).length;
 
   /**
    * Fake device: the keyboard is shown until one of `hidesOn` keycodes is
@@ -848,14 +866,14 @@ describe('AdbBackend.dismissKeyboard', () => {
     let isShown = shown;
     let reads = -1;
     mockExecStrict.mockImplementation(async (_cmd, args) => {
-      if (args?.includes('input_method')) {
+      if (isStateRead(args)) {
         if (reads >= 0) {
           reads -= 1;
           if (reads < 0) {
             isShown = false;
           }
         }
-        return dump ?? imeDump(isShown);
+        return dump ?? imeLine(isShown);
       }
       const key = args?.[args.length - 1] ?? '';
       if (args?.includes('keyevent') && hidesOn.includes(key) && isShown) {
@@ -877,6 +895,19 @@ describe('AdbBackend.dismissKeyboard', () => {
 
     expect(keyEvents()).toStrictEqual([]);
     expect(dumpCount()).toBe(1);
+  });
+
+  it('reads only the mInputShown line of the input method dump', async () => {
+    fakeDevice({ shown: false });
+
+    await backend.dismissKeyboard();
+
+    expect(mockExecStrict).toHaveBeenCalledWith('adb', [
+      '-s',
+      'emulator-5554',
+      'shell',
+      'dumpsys input_method | grep -m1 mInputShown || true',
+    ]);
   });
 
   it('sends ESCAPE and checks that the keyboard hid', async () => {
@@ -903,6 +934,26 @@ describe('AdbBackend.dismissKeyboard', () => {
     await withoutRetryDelay(async () => backend.dismissKeyboard());
 
     expect(keyEvents()).toStrictEqual(['111', '4']);
+    // The first read, the polls after ESCAPE, the read right before BACK and
+    // the first poll after BACK.
+    expect(dumpCount()).toBe(1 + POLL_READS + 1 + 1);
+  });
+
+  it('waits up to 2 s for ESCAPE to hide the keyboard', async () => {
+    fakeDevice({ shown: true, lag: POLL_READS - 1 });
+
+    await withoutRetryDelay(async () => backend.dismissKeyboard());
+
+    expect(keyEvents()).toStrictEqual(['111']);
+  });
+
+  it('skips BACK when the read right before it sees the keyboard hidden', async () => {
+    fakeDevice({ shown: true, hidesOn: ['111'], lag: POLL_READS });
+
+    await withoutRetryDelay(async () => backend.dismissKeyboard());
+
+    expect(keyEvents()).toStrictEqual(['111']);
+    expect(dumpCount()).toBe(1 + POLL_READS + 1);
   });
 
   it('throws when the keyboard stays shown after ESCAPE and BACK', async () => {
@@ -915,7 +966,8 @@ describe('AdbBackend.dismissKeyboard', () => {
   });
 
   it('sends only ESCAPE when the keyboard state cannot be read', async () => {
-    fakeDevice({ shown: true, dump: 'Can not get service input_method' });
+    // grep prints nothing, for example when the service can't be dumped.
+    fakeDevice({ shown: true, dump: '' });
 
     await backend.dismissKeyboard();
 
