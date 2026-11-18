@@ -30,19 +30,34 @@ export class TargetObscuredError extends Error {
 
   readonly y: number;
 
+  /**
+   * @param target - The element the caller wanted to tap.
+   * @param obscuredBy - The element at the tap point.
+   * @param point - The tap point.
+   * @param point.x - X.
+   * @param point.y - Y.
+   * @param options - Overrides for backends that know more than the element
+   * (Android: the keyboard is a window type, not an element type).
+   * @param options.keyboard - Whether `obscuredBy` belongs to the keyboard.
+   * Defaults to `isKeyboardElement(obscuredBy)`.
+   * @param options.obscuredByDescription - How to name `obscuredBy` in the
+   * message. Defaults to `describeElement(obscuredBy)`.
+   */
   constructor(
     target: UIElement,
     obscuredBy: UIElement,
     point: { x: number; y: number },
+    options: { keyboard?: boolean; obscuredByDescription?: string } = {},
   ) {
-    const keyboard = isKeyboardElement(obscuredBy);
+    const keyboard = options.keyboard ?? isKeyboardElement(obscuredBy);
     const advice = keyboard
       ? 'Dismiss the keyboard (device_dismiss_keyboard) and retry.'
       : 'Close the overlay, or scroll the target into a free area.';
     super(
       `TARGET_OBSCURED: ${describeElement(target)} is covered at ` +
         `(${point.x}, ${point.y}) by ${keyboard ? 'the keyboard: ' : ''}` +
-        `${describeElement(obscuredBy)}. Nothing was tapped. ${advice}`,
+        `${options.obscuredByDescription ?? describeElement(obscuredBy)}. ` +
+        `Nothing was tapped. ${advice}`,
     );
     this.name = 'TargetObscuredError';
     this.obscuredBy = obscuredBy;
