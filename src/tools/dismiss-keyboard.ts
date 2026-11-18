@@ -15,7 +15,9 @@ export function registerDismissKeyboardTool(
         'Hide the on-screen keyboard. Call after typing to reveal elements ' +
         'that may be obscured by the keyboard. On iOS this presses Return ' +
         'when a keyboard is shown (which can submit a single-field form) ' +
-        'and does nothing otherwise.',
+        'and does nothing otherwise. On Android it does nothing when no ' +
+        'keyboard is shown, and fails when the keyboard is still shown ' +
+        'after ESCAPE and BACK.',
       inputSchema: {},
     },
     async () => {

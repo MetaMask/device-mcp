@@ -724,6 +724,135 @@ describe('AdbBackend.tapElement', () => {
     ).toHaveLength(0);
   });
 
+  it('refuses to tap an element that another node covers', async () => {
+    const covered = parseAndroidHierarchy(
+      `<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0"><node window-index="0" window-type="1" window-layer="0" window-bounds="[0,0][1080,2400]" class="android.widget.FrameLayout" visible-to-user="true" drawing-order="0" bounds="[0,0][1080,2400]"><node resource-id="submit" class="android.widget.Button" clickable="true" visible-to-user="true" drawing-order="1" bounds="[100,200][500,260]" /><node class="android.widget.ImageView" content-desc="Tools" visible-to-user="true" drawing-order="2" bounds="[250,180][350,280]" /></node></hierarchy>`,
+    );
+    const target = findElement(covered, { identifier: 'submit' }, true);
+
+    await expect(
+      backend.tapElement(
+        { identifier: 'submit' },
+        { element: target as UIElement },
+      ),
+    ).rejects.toMatchObject({
+      code: 'TARGET_OBSCURED',
+      keyboard: false,
+      message: expect.stringContaining('label="Tools"'),
+    });
+    expect(tapCalls()).toHaveLength(0);
+  });
+
+  it('refuses to long-press an element that the keyboard covers', async () => {
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (args?.includes('wm')) {
+        return 'Physical size: 1080x2400';
+      }
+      return args?.includes('cat') || args?.includes('dump')
+        ? `<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0"><node window-index="0" window-type="2" window-layer="1" window-bounds="[0,1400][1080,2400]" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" visible-to-user="true" drawing-order="0" bounds="[0,1400][1080,2400]"><node class="android.widget.FrameLayout" content-desc="Key" clickable="true" visible-to-user="true" drawing-order="1" bounds="[0,1500][1080,2400]" /></node><node window-index="1" window-type="1" window-layer="0" window-bounds="[0,0][1080,2400]" class="android.widget.FrameLayout" visible-to-user="true" drawing-order="0" bounds="[0,0][1080,2400]"><node resource-id="far" class="android.widget.Button" clickable="true" visible-to-user="true" drawing-order="1" bounds="[0,2000][1080,2100]" /></node></hierarchy>`
+        : '';
+    });
+
+    await expect(
+      backend.longPress({ identifier: 'far' }),
+    ).rejects.toMatchObject({
+      code: 'TARGET_OBSCURED',
+      keyboard: true,
+      message: expect.stringContaining('by the keyboard: '),
+    });
+    expect(
+      mockExecStrict.mock.calls.filter(([, args]) => args?.includes('swipe')),
+    ).toHaveLength(0);
+  });
+
+  describe('with a keyboard window in the snapshot', () => {
+    // A keyboard window whose snapshot has no node at the target (the key is
+    // missing from the tree), over a free app button at (300, 230).
+    const withKeyboard = parseAndroidHierarchy(
+      `<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0"><node window-index="0" window-type="2" window-layer="1" window-bounds="[0,863][1080,2400]" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" visible-to-user="true" drawing-order="0" bounds="[0,63][1080,2400]"><node class="android.widget.FrameLayout" content-desc="Done" clickable="true" visible-to-user="true" drawing-order="1" bounds="[21,863][169,1553]" /></node><node window-index="1" window-type="1" window-layer="0" window-bounds="[0,0][1080,2400]" class="android.widget.FrameLayout" visible-to-user="true" drawing-order="0" bounds="[0,0][1080,2400]"><node resource-id="submit" class="android.widget.Button" clickable="true" visible-to-user="true" drawing-order="1" bounds="[100,200][500,260]" /></node></hierarchy>`,
+    );
+    const target = findElement(
+      withKeyboard,
+      { identifier: 'submit' },
+      true,
+    ) as UIElement;
+    const imeDump = (region: string, visible = true): string =>
+      `WINDOW MANAGER WINDOWS (dumpsys window windows)\n  Window #0 Window{e7383a7 u0 InputMethod}:\n    mAttrs={(0,0)(fillxfill) ty=INPUT_METHOD fmt=TRANSPARENT}\n    touchable region=SkRegion(${region})\n    isOnScreen=${String(visible)}\n    isVisible=${String(visible)}\n`;
+    const imeReads = (): unknown[][] =>
+      mockExecStrict.mock.calls.filter(([, args]) =>
+        args?.includes('InputMethod'),
+      );
+    const fakeDevice = (dump: string | Error): void => {
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.includes('wm')) {
+          return 'Physical size: 1080x2400';
+        }
+        if (args?.includes('InputMethod')) {
+          if (dump instanceof Error) {
+            throw dump;
+          }
+          return dump;
+        }
+        return '';
+      });
+    };
+
+    it('refuses a tap inside the touchable region the snapshot missed', async () => {
+      fakeDevice(imeDump('(94,137,525,262)(21,863,169,1553)'));
+
+      await expect(
+        backend.tapElement({ identifier: 'submit' }, { element: target }),
+      ).rejects.toMatchObject({
+        code: 'TARGET_OBSCURED',
+        keyboard: true,
+        message: expect.stringContaining(
+          'by the keyboard: touchable area [94,137][525,262]',
+        ),
+      });
+      expect(imeReads()).toStrictEqual([
+        [
+          'adb',
+          ['-s', 'emulator-5554', 'shell', 'dumpsys', 'window', 'InputMethod'],
+        ],
+      ]);
+      expect(tapCalls()).toHaveLength(0);
+    });
+
+    it('taps when the point is outside the touchable region', async () => {
+      fakeDevice(imeDump('(94,137,225,180)(21,863,169,1553)'));
+
+      await backend.tapElement({ identifier: 'submit' }, { element: target });
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('taps when the keyboard window is no longer visible', async () => {
+      fakeDevice(imeDump('(0,0,1080,2400)', false));
+
+      await backend.tapElement({ identifier: 'submit' }, { element: target });
+
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('falls back to the snapshot when the region cannot be read', async () => {
+      fakeDevice(new Error('adb: device offline'));
+
+      await backend.tapElement({ identifier: 'submit' }, { element: target });
+
+      expect(imeReads()).toHaveLength(1);
+      expect(tapCalls()).toHaveLength(1);
+    });
+
+    it('does not read the region without a keyboard window', async () => {
+      fakeDevice(imeDump('(0,0,1080,2400)'));
+
+      await backend.tapElement({ identifier: 'submit' }, { element });
+
+      expect(imeReads()).toHaveLength(0);
+      expect(tapCalls()).toHaveLength(1);
+    });
+  });
+
   it('snapshots to find the element when none is passed', async () => {
     mockExecStrict.mockImplementation(async (_cmd, args) =>
       args?.includes('cat') || args?.includes('dump')
@@ -734,6 +863,243 @@ describe('AdbBackend.tapElement', () => {
     await expect(
       backend.tapElement({ identifier: 'not-on-screen' }),
     ).rejects.toThrow('Element not found');
+  });
+});
+
+describe('AdbBackend.typeText', () => {
+  let backend: AdbBackend;
+
+  const inputCalls = (): string[][] =>
+    mockExecStrict.mock.calls.map(([, args]) => (args ?? []).slice(3));
+
+  const selectAllCalls = (): string[][] =>
+    mockExec.mock.calls.map(([, args]) => (args ?? []).slice(3));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecStrict.mockResolvedValue('');
+    mockExec.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+    backend = new AdbBackend('emulator-5554');
+  });
+
+  it('also selects all with Ctrl+A before the delete', async () => {
+    await backend.typeText('abc');
+
+    expect(selectAllCalls()).toStrictEqual([
+      ['input', 'keycombination', 'KEYCODE_CTRL_LEFT', 'KEYCODE_A'],
+    ]);
+  });
+
+  it('sends Ctrl+A before the DEL', async () => {
+    await backend.typeText('abc');
+
+    const delIndex = inputCalls().findIndex(
+      (args) => args.join(' ') === 'input keyevent 67',
+    );
+    const [selectAllOrder] = mockExec.mock.invocationCallOrder;
+    const delOrder = mockExecStrict.mock.invocationCallOrder[delIndex];
+    expect(selectAllOrder).toBeLessThan(delOrder);
+  });
+
+  it('still clears and types when Ctrl+A is not supported', async () => {
+    mockExec.mockResolvedValue({
+      stdout: '',
+      stderr: 'Error: Unknown command: keycombination',
+      exitCode: 255,
+    });
+
+    await backend.typeText('abc');
+
+    expect(inputCalls().at(-1)).toStrictEqual(['input', 'text', 'abc']);
+  });
+
+  it('clears the field, then types the escaped text', async () => {
+    await backend.typeText('a b&c');
+
+    expect(inputCalls()).toStrictEqual([
+      ['input', 'keyevent', 'KEYCODE_MOVE_HOME'],
+      [
+        'input',
+        'keyevent',
+        '--longpress',
+        'KEYCODE_SHIFT_LEFT',
+        'KEYCODE_MOVE_END',
+      ],
+      ['input', 'keyevent', '67'],
+      ['input', 'text', 'a%sb\\&c'],
+    ]);
+  });
+
+  it('only clears the field for an empty string', async () => {
+    await backend.typeText('');
+
+    expect(inputCalls()).toStrictEqual([
+      ['input', 'keyevent', 'KEYCODE_MOVE_HOME'],
+      [
+        'input',
+        'keyevent',
+        '--longpress',
+        'KEYCODE_SHIFT_LEFT',
+        'KEYCODE_MOVE_END',
+      ],
+      ['input', 'keyevent', '67'],
+    ]);
+  });
+});
+
+describe('AdbBackend.dismissKeyboard', () => {
+  let backend: AdbBackend;
+
+  // `grep -m1 mInputShown` prints only this line.
+  const imeLine = (shown: boolean): string =>
+    `  mInputShown=${String(shown)}\n`;
+
+  const isStateRead = (args?: string[]): boolean =>
+    args?.some((arg) => arg.includes('input_method')) ?? false;
+
+  // Polls in the 2 s window after a key: at 0, 100, …, 2000 ms.
+  const POLL_READS = 21;
+
+  const keyEvents = (): string[] =>
+    mockExecStrict.mock.calls
+      .map(([, args]) => args ?? [])
+      .filter((args) => args.includes('keyevent'))
+      .map((args) => args[args.length - 1]);
+
+  const dumpCount = (): number =>
+    mockExecStrict.mock.calls.filter(([, args]) => isStateRead(args)).length;
+
+  /**
+   * Fake device: the keyboard is shown until one of `hidesOn` keycodes is
+   * sent, then it hides after `lag` more `dumpsys` reads.
+   *
+   * @param options - The fake's behaviour.
+   * @param options.shown - Whether the keyboard is shown at the start.
+   * @param options.hidesOn - The keycodes that hide it.
+   * @param options.lag - Reads that still see it shown after the key.
+   * @param options.dump - Overrides the dump text.
+   */
+  const fakeDevice = ({
+    shown,
+    hidesOn = ['111', '4'],
+    lag = 0,
+    dump,
+  }: {
+    shown: boolean;
+    hidesOn?: string[];
+    lag?: number;
+    dump?: string;
+  }): void => {
+    let isShown = shown;
+    let reads = -1;
+    mockExecStrict.mockImplementation(async (_cmd, args) => {
+      if (isStateRead(args)) {
+        if (reads >= 0) {
+          reads -= 1;
+          if (reads < 0) {
+            isShown = false;
+          }
+        }
+        return dump ?? imeLine(isShown);
+      }
+      const key = args?.[args.length - 1] ?? '';
+      if (args?.includes('keyevent') && hidesOn.includes(key) && isShown) {
+        reads = lag;
+      }
+      return '';
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    backend = new AdbBackend('emulator-5554');
+  });
+
+  it('sends no key when the keyboard is not shown', async () => {
+    fakeDevice({ shown: false });
+
+    await backend.dismissKeyboard();
+
+    expect(keyEvents()).toStrictEqual([]);
+    expect(dumpCount()).toBe(1);
+  });
+
+  it('reads only the mInputShown line of the input method dump', async () => {
+    fakeDevice({ shown: false });
+
+    await backend.dismissKeyboard();
+
+    expect(mockExecStrict).toHaveBeenCalledWith('adb', [
+      '-s',
+      'emulator-5554',
+      'shell',
+      'dumpsys input_method | grep -m1 mInputShown || true',
+    ]);
+  });
+
+  it('sends ESCAPE and checks that the keyboard hid', async () => {
+    fakeDevice({ shown: true });
+
+    await backend.dismissKeyboard();
+
+    expect(keyEvents()).toStrictEqual(['111']);
+    expect(dumpCount()).toBe(2);
+  });
+
+  it('polls until the keyboard hides after ESCAPE', async () => {
+    fakeDevice({ shown: true, lag: 3 });
+
+    await withoutRetryDelay(async () => backend.dismissKeyboard());
+
+    expect(keyEvents()).toStrictEqual(['111']);
+    expect(dumpCount()).toBe(5);
+  });
+
+  it('sends BACK once when ESCAPE does not hide the keyboard', async () => {
+    fakeDevice({ shown: true, hidesOn: ['4'] });
+
+    await withoutRetryDelay(async () => backend.dismissKeyboard());
+
+    expect(keyEvents()).toStrictEqual(['111', '4']);
+    // The first read, the polls after ESCAPE, the read right before BACK and
+    // the first poll after BACK.
+    expect(dumpCount()).toBe(1 + POLL_READS + 1 + 1);
+  });
+
+  it('waits up to 2 s for ESCAPE to hide the keyboard', async () => {
+    fakeDevice({ shown: true, lag: POLL_READS - 1 });
+
+    await withoutRetryDelay(async () => backend.dismissKeyboard());
+
+    expect(keyEvents()).toStrictEqual(['111']);
+  });
+
+  it('skips BACK when the read right before it sees the keyboard hidden', async () => {
+    fakeDevice({ shown: true, hidesOn: ['111'], lag: POLL_READS });
+
+    await withoutRetryDelay(async () => backend.dismissKeyboard());
+
+    expect(keyEvents()).toStrictEqual(['111']);
+    expect(dumpCount()).toBe(1 + POLL_READS + 1);
+  });
+
+  it('throws when the keyboard stays shown after ESCAPE and BACK', async () => {
+    fakeDevice({ shown: true, hidesOn: [] });
+
+    await expect(
+      withoutRetryDelay(async () => backend.dismissKeyboard()),
+    ).rejects.toThrow('Keyboard still shown after ESCAPE and BACK');
+    expect(keyEvents()).toStrictEqual(['111', '4']);
+  });
+
+  it('sends only ESCAPE when the keyboard state cannot be read', async () => {
+    // grep prints nothing, for example when the service can't be dumped.
+    fakeDevice({ shown: true, dump: '' });
+
+    await backend.dismissKeyboard();
+
+    expect(keyEvents()).toStrictEqual(['111']);
+    expect(dumpCount()).toBe(1);
   });
 });
 
