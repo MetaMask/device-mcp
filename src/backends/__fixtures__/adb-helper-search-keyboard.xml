@@ -1,0 +1,281 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+<node index="0" window-index="0" window-type="3" window-layer="2" window-active="false" window-focused="false" window-bounds="[0,0][1080,63]" text="" resource-id="" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][1080,63]">
+<node index="0" text="" resource-id="com.android.systemui:id/status_bar_launch_animation_container" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,63]"/>
+<node index="1" text="" resource-id="com.android.systemui:id/status_bar_container" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1080,63]">
+<node index="0" text="" resource-id="" class="androidx.compose.ui.platform.ComposeView" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,63]">
+<node index="0" text="" resource-id="" class="android.view.View" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][1080,63]">
+<node index="0" text="" resource-id="" class="androidx.compose.ui.viewinterop.ViewFactoryHolder" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,63]">
+<node index="0" text="" resource-id="com.android.systemui:id/status_bar" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,63]">
+<node index="0" text="" resource-id="com.android.systemui:id/status_bar_contents" class="android.widget.LinearLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1027,63]">
+<node index="0" text="" resource-id="com.android.systemui:id/status_bar_start_side_container" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[11,0][513,63]">
+<node index="0" text="" resource-id="com.android.systemui:id/status_bar_start_side_content" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[11,0][147,63]">
+<node index="0" text="" resource-id="com.android.systemui:id/status_bar_start_side_except_heads_up" class="android.widget.LinearLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[11,0][147,63]">
+<node index="0" text="" resource-id="" class="androidx.compose.ui.platform.ComposeView" package="com.android.systemui" content-desc="" visible-to-user="false" drawing-order="5" clickable="false" enabled="true" bounds="[147,0][147,0]">
+<node index="0" text="" resource-id="" class="android.view.View" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[147,0][147,0]"/>
+</node>
+<node index="1" text="" resource-id="com.android.systemui:id/clock" class="android.widget.TextView" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[11,2][147,60]"/>
+<node index="2" text="" resource-id="com.android.systemui:id/notification_icon_area" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="false" drawing-order="6" clickable="false" enabled="true" bounds="[147,0][147,63]">
+<node index="0" text="" resource-id="com.android.systemui:id/notificationIcons" class="android.view.ViewGroup" package="com.android.systemui" content-desc="" visible-to-user="false" drawing-order="1" clickable="false" enabled="true" bounds="[147,0][147,63]"/>
+</node>
+</node>
+</node>
+</node>
+<node index="1" text="" resource-id="com.android.systemui:id/status_bar_end_side_container" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="3" clickable="false" enabled="true" bounds="[513,0][1016,63]">
+<node index="0" text="" resource-id="com.android.systemui:id/status_bar_end_side_content" class="android.widget.LinearLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[799,0][1016,63]">
+<node index="0" text="" resource-id="com.android.systemui:id/system_icons" class="android.widget.LinearLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[799,2][1016,60]">
+<node index="0" text="" resource-id="com.android.systemui:id/statusIcons" class="android.widget.LinearLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[807,2][935,60]">
+<node index="0" text="" resource-id="com.android.systemui:id/mobile_combo" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="16" clickable="false" enabled="true" bounds="[807,2][868,60]">
+<node index="0" text="" resource-id="com.android.systemui:id/mobile_group" class="android.widget.LinearLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[815,2][860,60]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="4" clickable="false" enabled="true" bounds="[815,15][860,47]">
+<node index="0" text="" resource-id="com.android.systemui:id/mobile_signal" class="android.widget.ImageView" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[815,15][860,47]"/>
+</node>
+</node>
+</node>
+<node index="1" text="" resource-id="" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="false" drawing-order="15" clickable="false" enabled="true" bounds="[807,31][807,31]"/>
+<node index="2" text="" resource-id="" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="false" drawing-order="13" clickable="false" enabled="true" bounds="[807,31][807,31]"/>
+<node index="3" text="" resource-id="com.android.systemui:id/wifi_combo" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="17" clickable="false" enabled="true" bounds="[868,2][927,60]">
+<node index="0" text="" resource-id="com.android.systemui:id/wifi_group" class="android.widget.LinearLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[876,2][919,60]">
+<node index="0" text="" resource-id="com.android.systemui:id/wifi_combo" class="android.widget.FrameLayout" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[876,15][919,47]">
+<node index="0" text="" resource-id="com.android.systemui:id/wifi_signal" class="android.widget.ImageView" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[876,15][919,47]"/>
+</node>
+</node>
+</node>
+</node>
+<node index="1" text="" resource-id="" class="androidx.compose.ui.platform.ComposeView" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="3" clickable="false" enabled="true" bounds="[935,14][1005,48]">
+<node index="0" text="" resource-id="" class="android.view.View" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[935,14][1005,48]">
+<node index="0" text="" resource-id="com.android.systemui:id/battery" class="android.view.View" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[935,14][1005,48]">
+<node index="0" text="" resource-id="" class="android.view.View" package="com.android.systemui" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[935,14][998,48]"/>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+<node index="1" window-index="1" window-type="2" window-layer="1" window-active="false" window-focused="false" window-bounds="[0,137][1080,2400]" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[0,63][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.LinearLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,63][1080,2400]">
+<node index="0" text="" resource-id="android:id/content" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[0,63][1080,2400]">
+<node index="0" text="" resource-id="android:id/parentPanel" class="android.widget.LinearLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,63][1080,2400]">
+<node index="0" text="" resource-id="android:id/inputArea" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="false" drawing-order="2" clickable="false" enabled="true" bounds="[0,63][1080,63]"/>
+</node>
+<node index="1" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[0,63][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[21,863][1080,2400]">
+<node index="0" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[21,863][169,1553]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="true" enabled="true" bounds="[21,863][169,1553]">
+<node index="0" text="" resource-id="" class="android.widget.LinearLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[21,863][169,1553]">
+<node index="0" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.speech.SpeechRecognizer.VoiceDictationButton" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="true" enabled="true" bounds="[32,873][158,999]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,878][153,994]">
+<node index="0" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,878][153,994]"/>
+</node>
+</node>
+<node index="1" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[32,1004][158,1140]">
+<node index="0" text="" resource-id="" class="android.widget.Button" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="true" enabled="true" bounds="[32,1009][158,1135]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,1014][153,1130]">
+<node index="0" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,1014][153,1130]"/>
+</node>
+</node>
+</node>
+<node index="2" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="3" clickable="false" enabled="true" bounds="[32,1140][158,1412]">
+<node index="0" text="" resource-id="" class="android.widget.Button" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="true" enabled="true" bounds="[32,1145][158,1271]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,1150][153,1266]">
+<node index="0" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,1150][153,1266]"/>
+</node>
+</node>
+<node index="1" text="" resource-id="" class="android.widget.Button" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="2" clickable="true" enabled="true" bounds="[32,1281][158,1407]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,1286][153,1402]">
+<node index="0" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,1286][153,1402]"/>
+</node>
+</node>
+</node>
+<node index="3" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.Button" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="4" clickable="true" enabled="true" bounds="[32,1417][158,1543]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,1422][153,1538]">
+<node index="0" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[37,1422][153,1538]"/>
+</node>
+</node>
+</node>
+<node index="1" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.view.View" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[21,1205][147,1210]"/>
+</node>
+</node>
+</node>
+<node index="1" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[94,137][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[94,137][225,262]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[105,148][214,251]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[105,148][214,251]">
+<node index="0" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[108,151][211,248]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="Zz" visible-to-user="true" drawing-order="1" clickable="true" enabled="true" bounds="[108,151][211,248]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.google.android.inputmethod.latin" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[108,151][211,248]">
+<node index="0" text="" resource-id="com.google.android.inputmethod.latin:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.google.android.inputmethod.latin" content-desc="Zz" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[108,172][211,227]"/>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+<node index="2" window-index="2" window-type="1" window-layer="0" window-active="true" window-focused="true" window-bounds="[0,0][1080,2400]" text="" resource-id="" class="android.widget.FrameLayout" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.LinearLayout" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="io.metamask:id/action_bar_root" class="android.widget.LinearLayout" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="android:id/content" class="android.widget.FrameLayout" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.LinearLayout" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="androidx.compose.ui.platform.ComposeView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.View" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.View" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[0,63][221,284]">
+<node index="0" text="" resource-id="" class="android.view.View" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[902,105][1039,242]">
+<node index="0" text="" resource-id="" class="android.view.View" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[908,111][1034,237]">
+<node index="0" text="" resource-id="" class="android.widget.ImageView" package="io.metamask" content-desc="Tools" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[937,140][1005,208]"/>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+<node index="1" text="" resource-id="" class="android.widget.FrameLayout" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.View" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]"/>
+</node>
+<node index="1" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]">
+<node index="0" text="" resource-id="" class="android.webkit.WebView" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]"/>
+</node>
+</node>
+<node index="1" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]">
+<node index="0" text="" resource-id="" class="android.webkit.WebView" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]"/>
+</node>
+</node>
+<node index="2" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]">
+<node index="0" text="" resource-id="" class="android.webkit.WebView" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]"/>
+</node>
+</node>
+<node index="3" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]">
+<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]">
+<node index="0" text="" resource-id="" class="android.webkit.WebView" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="0" clickable="false" enabled="true" bounds="[0,0][0,0]"/>
+</node>
+</node>
+<node index="4" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="5" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.ScrollView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.LinearLayout" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1080,0]"/>
+<node index="1" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1080,0]"/>
+<node index="1" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.ScrollView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.widget.LinearLayout" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1080,0]"/>
+<node index="1" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="2" clickable="false" enabled="true" bounds="[0,0][1080,0]"/>
+<node index="1" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,0][1080,2400]"/>
+<node index="1" text="" resource-id="back-arrow-button" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="2" clickable="true" enabled="true" bounds="[21,95][105,179]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.SvgView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[32,106][95,169]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.GroupView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[48,115][74,160]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.PathView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[48,115][74,160]"/>
+</node>
+</node>
+</node>
+<node index="2" text="" resource-id="" class="android.widget.TextView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="3" clickable="false" enabled="true" bounds="[445,105][636,168]"/>
+<node index="3" text="" resource-id="account-list-manage-accounts-button" class="android.widget.Button" package="io.metamask" content-desc="Manage accounts" visible-to-user="true" drawing-order="4" clickable="true" enabled="true" bounds="[975,95][1059,179]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.SvgView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[986,106][1049,169]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.GroupView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[991,111][1043,163]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.PathView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[991,111][1043,163]"/>
+</node>
+</node>
+</node>
+<node index="4" text="" resource-id="textfieldsearch" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="5" clickable="false" enabled="true" bounds="[42,231][1038,357]"/>
+<node index="5" text="" resource-id="" class="com.horcrux.svg.SvgView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="6" clickable="false" enabled="true" bounds="[87,268][139,320]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.GroupView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[87,268][135,316]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.PathView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[87,268][135,316]"/>
+</node>
+</node>
+<node index="6" text="" resource-id="multichain-account-selector-search-input" class="android.widget.EditText" package="io.metamask" content-desc="Search your accounts" visible-to-user="true" drawing-order="7" clickable="true" enabled="true" bounds="[170,233][878,355]"/>
+<node index="7" text="" resource-id="button-icon" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="8" clickable="true" enabled="true" bounds="[909,252][993,336]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.SvgView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[920,263][983,326]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.GroupView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[925,268][977,320]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.PathView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[925,268][977,320]"/>
+</node>
+</node>
+</node>
+<node index="8" text="" resource-id="account-list" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="9" clickable="false" enabled="true" bounds="[0,378][1080,2096]"/>
+<node index="9" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="10" clickable="false" enabled="true" bounds="[0,378][1080,2096]">
+<node index="0" text="" resource-id="" class="android.widget.ScrollView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,378][1080,2096]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,378][1080,725]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="2" clickable="false" enabled="true" bounds="[0,378][1080,378]"/>
+<node index="1" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="3" clickable="false" enabled="true" bounds="[0,378][1080,725]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[0,378][1080,557]"/>
+<node index="1" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[42,378][1038,557]"/>
+<node index="2" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="3" clickable="true" enabled="true" bounds="[42,420][784,515]">
+<node index="0" text="" resource-id="" class="android.widget.ImageView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[42,425][126,509]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.SvgView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[42,425][126,509]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.GroupView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[42,425][126,509]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.RectView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[42,425][126,509]"/>
+<node index="1" text="" resource-id="" class="com.horcrux.svg.PathView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[63,446][105,488]"/>
+</node>
+</node>
+</node>
+<node index="1" text="" resource-id="" class="android.widget.TextView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[168,436][784,499]"/>
+</node>
+<node index="3" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="4" clickable="true" enabled="true" bounds="[826,436][965,499]">
+<node index="0" text="" resource-id="" class="android.widget.TextView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[826,436][965,499]"/>
+</node>
+<node index="4" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="5" clickable="true" enabled="true" bounds="[986,441][1038,494]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.SvgView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[986,441][1038,494]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.GroupView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[1008,450][1015,485]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.PathView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[1008,450][1015,485]"/>
+</node>
+</node>
+</node>
+<node index="5" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="6" clickable="true" enabled="true" bounds="[42,599][1038,683]">
+<node index="0" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[42,599][126,683]"/>
+<node index="1" text="" resource-id="" class="com.horcrux.svg.SvgView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="2" clickable="false" enabled="true" bounds="[58,615][110,667]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.GroupView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="0" clickable="false" enabled="true" bounds="[64,621][103,660]">
+<node index="0" text="" resource-id="" class="com.horcrux.svg.PathView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[64,621][103,660]"/>
+</node>
+</node>
+<node index="2" text="" resource-id="" class="android.widget.TextView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="3" clickable="false" enabled="true" bounds="[168,609][416,672]"/>
+</node>
+</node>
+<node index="2" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="1" clickable="false" enabled="true" bounds="[0,2625378][0,725]"/>
+</node>
+</node>
+</node>
+<node index="10" text="" resource-id="account-list-add-account-button" class="android.widget.Button" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="11" clickable="true" enabled="true" bounds="[42,2159][1038,2285]">
+<node index="0" text="" resource-id="" class="android.widget.TextView" package="io.metamask" content-desc="" visible-to-user="true" drawing-order="1" clickable="false" enabled="true" bounds="[436,2191][644,2254]"/>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+<node index="1" text="" resource-id="" class="android.view.ViewGroup" package="io.metamask" content-desc="" visible-to-user="false" drawing-order="3" clickable="false" enabled="true" bounds="[0,2400][1080,2400]"/>
+</node>
+</node>
+</node>
+</node>
+</hierarchy>

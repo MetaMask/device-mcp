@@ -56,6 +56,13 @@ import type {
 import { runWebViewCdp } from './webview-cdp.js';
 import { ACCEPT_LABELS, DENY_LABELS } from '../utils/alert-labels.js';
 import {
+  assertAndroidHittable,
+  hasInputMethodAbove,
+  parseInputMethodTouchableRegion,
+  setAndroidNodeInfo,
+} from '../utils/android-hit-test.js';
+import type { AndroidWindowInfo } from '../utils/android-hit-test.js';
+import {
   findElement,
   describeElement,
   computeSwipeEnd,
@@ -331,7 +338,9 @@ export class AdbBackend implements DeviceBackend {
       );
     }
 
-    const { x, y } = visibleCenter(element, await this.#cachedWindowSize());
+    const screen = await this.#cachedWindowSize();
+    const { x, y } = visibleCenter(element, screen);
+    await this.#assertHittable(element, { x, y }, screen);
     await this.tapCoordinates(x, y);
 
     return {
@@ -983,10 +992,9 @@ export class AdbBackend implements DeviceBackend {
       );
     }
 
-    const { x: cx, y: cy } = visibleCenter(
-      element,
-      await this.#cachedWindowSize(),
-    );
+    const screen = await this.#cachedWindowSize();
+    const { x: cx, y: cy } = visibleCenter(element, screen);
+    await this.#assertHittable(element, { x: cx, y: cy }, screen);
     await this.#adb([
       'shell',
       'input',
@@ -1041,6 +1049,36 @@ export class AdbBackend implements DeviceBackend {
       );
     }
     return texts.join('\n');
+  }
+
+  /**
+   * Refuse a tap on a covered target (see `assertAndroidHittable`). When the
+   * snapshot has a keyboard window above the target, also read where the
+   * keyboard takes touches now (`dumpsys window InputMethod`, ~20–30 ms), so
+   * a tap under a key the snapshot missed is refused too. Without a keyboard
+   * window there is no extra device call. If the read fails, the check uses
+   * the snapshot only, as before.
+   *
+   * @param element - The element to tap.
+   * @param point - The tap point.
+   * @param point.x - X in pixels.
+   * @param point.y - Y in pixels.
+   * @param screen - The screen size.
+   */
+  async #assertHittable(
+    element: UIElement,
+    point: { x: number; y: number },
+    screen: WindowSize,
+  ): Promise<void> {
+    const dump = hasInputMethodAbove(element)
+      ? await this.#adb(['shell', 'dumpsys', 'window', 'InputMethod']).catch(
+          () => undefined,
+        )
+      : undefined;
+    assertAndroidHittable(element, point, screen, {
+      keyboardRegion:
+        dump === undefined ? undefined : parseInputMethodTouchableRegion(dump),
+    });
   }
 
   /**
@@ -1311,6 +1349,8 @@ function collectTextValues(elements: UIElement[], texts: string[]): void {
 export function parseAndroidHierarchy(xml: string): UIElement[] {
   const roots: UIElement[] = [];
   const stack: UIElement[][] = [roots];
+  // The nearest parsed ancestor of each open tag; undefined at the top.
+  const parents: (UIElement | undefined)[] = [undefined];
 
   // Matches all <node ...>, </node>, and <node .../> tags in document order
   const tagRegex = /<(\/?)node(?:\s+([^>]*?))?\s*(\/?)>/gu;
@@ -1325,6 +1365,7 @@ export function parseAndroidHierarchy(xml: string): UIElement[] {
     if (isClosing) {
       if (stack.length > 1) {
         stack.pop();
+        parents.pop();
       }
       continue;
     }
@@ -1336,14 +1377,76 @@ export function parseAndroidHierarchy(xml: string): UIElement[] {
         element.children = [];
       }
       parent.push(element);
+      setAndroidNodeInfo(element, {
+        roots,
+        parent: parents[parents.length - 1],
+        ...parseHitTestAttributes(attrs),
+      });
     }
     if (!isSelfClosing) {
       // Even invalid nodes need a frame, or their closing tag pops the parent.
       stack.push(element?.children ?? parent);
+      parents.push(element ?? parents[parents.length - 1]);
     }
   }
 
   return roots;
+}
+
+/**
+ * Read the attributes the tap hit test needs. The snapshot helper adds
+ * `drawing-order`, `visible-to-user` and, on window roots, `window-*`; a
+ * stock uiautomator dump has none of them.
+ *
+ * @param attrs - The raw attribute string of the tag.
+ * @returns The hit-test data.
+ */
+function parseHitTestAttributes(attrs: string): {
+  drawingOrder: number | undefined;
+  visibleToUser: boolean;
+  clickable: boolean;
+  window: AndroidWindowInfo | undefined;
+} {
+  const get = (name: string): string | undefined =>
+    attrs.match(new RegExp(`\\s${name}="([^"]*)"`, 'u'))?.[1];
+  const drawingOrder = get('drawing-order');
+  const windowType = get('window-type');
+  const windowLayer = get('window-layer');
+  const windowBounds = parseBounds(get('window-bounds'));
+  return {
+    drawingOrder:
+      drawingOrder === undefined ? undefined : parseInt(drawingOrder, 10),
+    visibleToUser: get('visible-to-user') !== 'false',
+    clickable: get('clickable') === 'true',
+    window:
+      windowType !== undefined && windowLayer !== undefined && windowBounds
+        ? {
+            type: parseInt(windowType, 10),
+            layer: parseInt(windowLayer, 10),
+            bounds: windowBounds,
+          }
+        : undefined,
+  };
+}
+
+/**
+ * @param bounds - Bounds in the `[x1,y1][x2,y2]` format.
+ * @returns The frame, or undefined when missing or malformed.
+ */
+function parseBounds(
+  bounds: string | undefined,
+): UIElement['frame'] | undefined {
+  const match = bounds?.match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/u);
+  if (!match) {
+    return undefined;
+  }
+  const [x1, y1, x2, y2] = match.slice(1).map((value) => parseInt(value, 10));
+  return {
+    x: x1,
+    y: y1,
+    width: Math.max(0, x2 - x1),
+    height: Math.max(0, y2 - y1),
+  };
 }
 
 /**
