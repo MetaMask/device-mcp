@@ -111,6 +111,20 @@ const HELPER_RETRY_MIN_REMAINING_MS = 1_000;
 // A failed capture suggests a busy screen, where each dump can waste ~11 s.
 const HELPER_FIRST_FALLBACK_DUMP_ATTEMPTS = 1;
 
+const KEYCODE_ESCAPE = '111';
+
+const KEYCODE_BACK = '4';
+
+// How long the keyboard may take to hide after each key.
+const KEYBOARD_HIDE_TIMEOUT_MS = 2_000;
+
+const KEYBOARD_POLL_INTERVAL_MS = 100;
+
+// Reads only the `mInputShown` line: the full dump is ~1 MB. `|| true` keeps a
+// missing line from failing the command, so that state reads as unknown.
+const KEYBOARD_STATE_COMMAND =
+  'dumpsys input_method | grep -m1 mInputShown || true';
+
 /**
  * - `helper-first`: helper, then dump on non-trust failures (default with APK).
  * - `auto`: quick dump, then helper; skip later quick dumps once the helper wins.
@@ -345,7 +359,8 @@ export class AdbBackend implements DeviceBackend {
   }
 
   async typeText(text: string): Promise<void> {
-    // Android keyevent 29+shift = Ctrl+A (select all), 67 = DEL
+    // Select the text (Shift + MOVE_END from the start, then Ctrl+A), then
+    // delete it with DEL (67).
     await this.#adb(['shell', 'input', 'keyevent', 'KEYCODE_MOVE_HOME']);
     await this.#adb([
       'shell',
@@ -355,7 +370,24 @@ export class AdbBackend implements DeviceBackend {
       'KEYCODE_SHIFT_LEFT',
       'KEYCODE_MOVE_END',
     ]);
+    // In a React Native field (API 36) the Shift selection selects nothing,
+    // so DEL removed one character. `keycombination` (newer Android only) is
+    // best effort: without it the clear is no worse than before.
+    await exec('adb', [
+      '-s',
+      this.#serial,
+      'shell',
+      'input',
+      'keycombination',
+      'KEYCODE_CTRL_LEFT',
+      'KEYCODE_A',
+    ]);
     await this.#adb(['shell', 'input', 'keyevent', '67']);
+    // `input text` with no argument throws on the device, and the field is
+    // already empty.
+    if (text.length === 0) {
+      return;
+    }
     // Android input text requires escaping spaces and special chars
     const escaped = text.replace(/ /gu, '%s').replace(/[&|;<>]/gu, '\\$&');
     await this.#adb(['shell', 'input', 'text', escaped]);
@@ -822,8 +854,82 @@ export class AdbBackend implements DeviceBackend {
     await this.#adb(['shell', 'input', 'keyevent', keyMap[button]]);
   }
 
+  /**
+   * Hides the software keyboard, and does nothing when no keyboard is shown.
+   * Sends ESCAPE and polls for up to {@link KEYBOARD_HIDE_TIMEOUT_MS} until the
+   * keyboard hides. If it is still shown, reads the state once more and sends
+   * BACK only when that read still sees the keyboard (while the keyboard is
+   * shown, BACK only hides it), then checks again.
+   *
+   * Remaining risk: if the keyboard hides between that last read and BACK
+   * (one adb round trip, tens of ms), BACK reaches the app and can navigate
+   * back. This needs ESCAPE to take more than the poll window to hide the
+   * keyboard and then finish within that gap.
+   *
+   * When the state can't be read (`mInputShown` is missing), this behaves
+   * like 0.8.0: it sends ESCAPE only and does not check the result, because
+   * BACK sent blind could navigate.
+   *
+   * @throws When the keyboard is still shown after ESCAPE and BACK.
+   */
   async dismissKeyboard(): Promise<void> {
-    await this.#adb(['shell', 'input', 'keyevent', '111']);
+    const shown = await this.#isKeyboardShown();
+    if (shown === false) {
+      return;
+    }
+    await this.#adb(['shell', 'input', 'keyevent', KEYCODE_ESCAPE]);
+    if (shown === undefined) {
+      return;
+    }
+    if (await this.#waitForKeyboardHidden()) {
+      return;
+    }
+    // Keep the gap between the last read and BACK as small as possible.
+    if ((await this.#isKeyboardShown()) !== true) {
+      return;
+    }
+    await this.#adb(['shell', 'input', 'keyevent', KEYCODE_BACK]);
+    if (await this.#waitForKeyboardHidden()) {
+      return;
+    }
+    throw new Error(
+      'Keyboard still shown after ESCAPE and BACK. ' +
+        'Use device_snapshot to inspect the current UI hierarchy.',
+    );
+  }
+
+  /**
+   * Whether the input method (software keyboard) is shown, from the
+   * `mInputShown` line of `dumpsys input_method`.
+   *
+   * @returns The state, or `undefined` when there is no `mInputShown` line.
+   */
+  async #isKeyboardShown(): Promise<boolean | undefined> {
+    const line = await this.#adb(['shell', KEYBOARD_STATE_COMMAND]);
+    const match = line.match(/\bmInputShown=(true|false)\b/u);
+    return match ? match[1] === 'true' : undefined;
+  }
+
+  /**
+   * Polls until the keyboard is hidden. A state that can't be read counts as
+   * hidden, so BACK is never sent blind.
+   *
+   * @returns True once it is hidden; false when it is still shown after
+   * {@link KEYBOARD_HIDE_TIMEOUT_MS}.
+   */
+  async #waitForKeyboardHidden(): Promise<boolean> {
+    const deadline = Date.now() + KEYBOARD_HIDE_TIMEOUT_MS;
+    for (;;) {
+      if ((await this.#isKeyboardShown()) !== true) {
+        return true;
+      }
+      if (Date.now() + KEYBOARD_POLL_INTERVAL_MS > deadline) {
+        return false;
+      }
+      await new Promise((resolve) => {
+        setTimeout(resolve, KEYBOARD_POLL_INTERVAL_MS);
+      });
+    }
   }
 
   async dismissAlert(accept: boolean): Promise<void> {
