@@ -400,6 +400,14 @@ export class HermesClient {
   #contextDestroyedForReload = false;
 
   /**
+   * Whether the adopted socket was reported to listeners with `contextCreated`.
+   * A socket is adopted before `Runtime.enable` runs; if it is lost before the
+   * connect completes, the connect fails and no `disconnected` is emitted for a
+   * connection listeners never saw.
+   */
+  #socketReported = false;
+
+  /**
    * Whether the last connection was lost unexpectedly (not through
    * {@link close}). Set on an unexpected loss, cleared on a successful connect
    * and by {@link close}. Drives the `reconnect` reason of a caller-driven
@@ -733,6 +741,7 @@ export class HermesClient {
       .then((result) => {
         if (result.ok && epoch === this.#connectEpoch) {
           this.#socketLost = false;
+          this.#socketReported = true;
           this.#resetReconnect();
           if (reconnectAttempts !== undefined) {
             this.#emit('reconnected', {
@@ -1056,6 +1065,7 @@ export class HermesClient {
       closeSocket(previous);
     }
     this.#nextId = 2;
+    this.#socketReported = false;
     this.#socketTracksContexts = false;
     this.#sawContextOnSocket = false;
     this.#contextDestroyedForReload = false;
@@ -1240,6 +1250,12 @@ export class HermesClient {
    * {@link send}, and the socket it opens must already be the one the next
    * scheduled attempt finds.
    *
+   * A socket lost before its connect completed (during `Runtime.enable`) was
+   * never reported: it is released and its pending calls fail, which fails the
+   * connect, but the connection state is left as it was and no `disconnected`
+   * is emitted. The failed connect then follows the normal rules: a first
+   * connect simply fails, and a reconnect continues or restarts the loop.
+   *
    * @param reason - Why the socket was lost, used for the `disconnected` event.
    * @param pendingMessage - Overrides the pending-call failure message.
    */
@@ -1249,11 +1265,15 @@ export class HermesClient {
       return;
     }
 
+    const reported = this.#socketReported;
     this.#detachSocket();
     this.#socket = undefined;
+    this.#socketReported = false;
     this.#target = undefined;
     this.#status = 'closed';
-    this.#socketLost = true;
+    if (reported) {
+      this.#socketLost = true;
+    }
     closeSocket(socket);
 
     this.#failAllPending(
@@ -1261,6 +1281,9 @@ export class HermesClient {
       pendingMessage ?? `Hermes CDP connection closed: ${reason}`,
     );
 
+    if (!reported) {
+      return;
+    }
     if (!this.#explicitlyClosed) {
       this.#startReconnect();
     }

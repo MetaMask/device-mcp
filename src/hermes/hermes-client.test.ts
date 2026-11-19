@@ -1833,6 +1833,83 @@ describe('HermesClient', () => {
     client.close();
   });
 
+  it('fails a first connect whose socket is lost during Runtime.enable, without disconnected (S4)', async () => {
+    vi.useFakeTimers();
+    FakeWebSocket.responseFactory = (request) =>
+      isIdentityProbe(request) ? probeResponse(request) : undefined;
+    const client = createClient({
+      trackContexts: true,
+      reconnect: { initialDelayMs: 5, maxDelayMs: 5, maxAttempts: 2 },
+    });
+    const events: string[] = [];
+    client.on('contextCreated', (event) =>
+      events.push(`created:${event.reason}`),
+    );
+    client.on('disconnected', () => events.push('disconnected'));
+    client.on('reconnectFailed', () => events.push('reconnectFailed'));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socketAt(0).sent.filter(isRuntimeEnable)).toHaveLength(1);
+    socketAt(0).drop('gone');
+
+    expect(await connecting).toStrictEqual({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message:
+        'Hermes CDP connection failed: the socket closed while enabling runtime events',
+    });
+
+    // Listeners never saw this connection, so they hear nothing about it, and
+    // no reconnect loop runs for a connection that never completed.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(events).toStrictEqual([]);
+    expect(client.isConnected).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps reconnecting when a reconnect socket is lost during Runtime.enable', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      trackContexts: true,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 10, maxAttempts: 3 },
+    });
+    const events: string[] = [];
+    client.on('contextCreated', (event) =>
+      events.push(`created:${event.reason}`),
+    );
+    client.on('disconnected', () => events.push('disconnected'));
+    client.on('reconnected', () => events.push('reconnected'));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    // The first reconnect socket never answers Runtime.enable and drops.
+    FakeWebSocket.responseFactory = (request) =>
+      isIdentityProbe(request) ? probeResponse(request) : undefined;
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    FakeWebSocket.responseFactory = defaultResponseFactory;
+    socketAt(1).drop('gone again');
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(events).toStrictEqual([
+      'created:connect',
+      'disconnected',
+      'reconnected',
+      'created:reconnect',
+    ]);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
   it('reports a throwing listener through the listenerError event', async () => {
     const client = createClient();
     const errors: HermesListenerErrorEvent[] = [];
