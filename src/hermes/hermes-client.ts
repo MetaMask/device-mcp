@@ -496,13 +496,8 @@ export class HermesClient {
       return await waitAtMost(joined, timeoutMs);
     }
 
-    // Read before connecting: a failure that ends the loop's own last attempt
-    // (which this call may share) must not restart the loop it just stopped.
-    const loopStopped = !this.#reconnectRunning;
     const result = await this.#connectOnce(timeoutMs);
-    if (loopStopped) {
-      this.#resumeReconnectAfterFailedCall(result);
-    }
+    this.#resumeReconnectAfterFailedCall(result);
     return result;
   }
 
