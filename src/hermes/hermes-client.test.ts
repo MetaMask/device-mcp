@@ -730,6 +730,19 @@ describe('HermesClient', () => {
     expect(onPin).not.toHaveBeenCalled();
   });
 
+  it('treats an empty pinnedDeviceId as no pin and pins on first connect', async () => {
+    const onPin = vi.fn();
+    const client = createClient({ pinnedDeviceId: '', onPin });
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(onPin).toHaveBeenCalledTimes(1);
+    expect(onPin).toHaveBeenCalledWith('logical-device-1');
+  });
+
   it('fails with HERMES_BLOCKED_METHOD without discovering or connecting', async () => {
     const client = createClient();
 

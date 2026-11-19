@@ -100,7 +100,10 @@ export type HermesClientOptions = {
   appId: string;
   /** Override the HTTP(S) Origin for Metro's debugger WebSocket handshake. */
   origin?: string;
-  /** The pinned `logicalDeviceId` for this session, if one has been set. */
+  /**
+   * The pinned `logicalDeviceId` for this session, if one has been set. An
+   * empty string means no pin.
+   */
   pinnedDeviceId?: string;
   /**
    * Callback invoked with the resolved `logicalDeviceId` on the FIRST
@@ -448,7 +451,8 @@ export class HermesClient {
     this.#metroPort = options.metroPort;
     this.#appId = options.appId;
     this.#origin = options.origin;
-    this.#pinnedDeviceId = options.pinnedDeviceId;
+    // An empty pin means no pin, as in the one-shot path's `!pinnedDeviceId`.
+    this.#pinnedDeviceId = options.pinnedDeviceId || undefined;
     this.#onPin = options.onPin;
     this.#trackContexts = options.trackContexts ?? false;
     this.#reconnect = {
