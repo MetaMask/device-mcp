@@ -6,6 +6,7 @@ import {
   HERMES_BLOCKED_METHOD,
   HERMES_CDP_FAILED,
   HERMES_CONNECTION_FAILED,
+  HERMES_DEVICE_PIN_MISMATCH,
   HERMES_TIMEOUT,
   HERMES_WEBSOCKET_UNAVAILABLE,
   IDENTITY_PROBE_EXPR,
@@ -17,6 +18,7 @@ import type {
   HermesContextCreatedEvent,
   HermesContextDestroyedEvent,
   HermesListenerErrorEvent,
+  HermesReconnectFailedEvent,
 } from './hermes-client.js';
 
 const APP_ID = 'io.metamask.MetaMask';
@@ -926,6 +928,213 @@ describe('HermesClient', () => {
     });
 
     client.close();
+  });
+
+  it('emits reconnectFailed once when the loop gives up on a listen-only client', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    const failed: HermesReconnectFailedEvent[] = [];
+    const disconnected = vi.fn();
+    const created = vi.fn();
+    client.on('reconnectFailed', (event) => failed.push(event));
+    client.on('disconnected', disconnected);
+    client.on('contextCreated', created);
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // Three attempts, each trying /json then /json/list.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(failed).toStrictEqual([
+      {
+        attempts: 3,
+        code: HERMES_CONNECTION_FAILED,
+        message: expect.stringContaining('ECONNREFUSED'),
+      },
+    ]);
+    expect(disconnected).toHaveBeenCalledTimes(1);
+
+    // Nothing retries for a client that only listens.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(failed).toHaveLength(1);
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.isConnected).toBe(false);
+  });
+
+  it('restarts the stopped reconnect loop when a send fails after it gave up', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 2 },
+    });
+    const failed: HermesReconnectFailedEvent[] = [];
+    const created: HermesContextCreatedEvent[] = [];
+    const reconnected = vi.fn();
+    client.on('reconnectFailed', (event) => failed.push(event));
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('reconnected', reconnected);
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(failed).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    // A caller tries while Metro is still down: its failure restarts the loop.
+    const sending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expectError(await sending, HERMES_CONNECTION_FAILED);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+
+    // The restarted loop begins at the first backoff delay (10 ms).
+    await vi.advanceTimersByTimeAsync(10);
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+
+    // Metro comes back before the restarted loop gives up.
+    mockDiscovery([target({ id: 'device-page-2' })]);
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(client.isConnected).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(
+      created.filter((event) => event.reason === 'reconnect'),
+    ).toHaveLength(1);
+    expect(created[1]).toMatchObject({
+      reason: 'reconnect',
+      reconnected: true,
+      target: { id: 'device-page-2' },
+    });
+    expect(reconnected).toHaveBeenCalledTimes(1);
+    expect(reconnected).toHaveBeenCalledWith(
+      expect.objectContaining({ attempts: 2 }),
+    );
+    expect(failed).toHaveLength(1);
+
+    // Connected again: no further attempt runs.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    client.close();
+  });
+
+  it('emits reconnectFailed once on a pin mismatch and never restarts the loop', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      pinnedDeviceId: 'logical-device-1',
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    const failed: HermesReconnectFailedEvent[] = [];
+    client.on('reconnectFailed', (event) => failed.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    mockDiscovery([
+      target({
+        id: 'other-device',
+        webSocketDebuggerUrl: `ws://localhost:${METRO_PORT}/inspector/debug?device=device-2&page=1`,
+        reactNative: {
+          logicalDeviceId: 'logical-device-2',
+          capabilities: { nativePageReloads: true },
+        },
+      }),
+    ]);
+    socketAt(0).drop('app reload');
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(failed).toStrictEqual([
+      {
+        attempts: 1,
+        code: HERMES_DEVICE_PIN_MISMATCH,
+        message: expect.stringContaining('logical-device-2'),
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // A caller hitting the same terminal failure does not restart the loop.
+    const sending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expectError(await sending, HERMES_DEVICE_PIN_MISMATCH);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(failed).toHaveLength(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('emits reconnectFailed once when WebSocket becomes unavailable and never restarts the loop', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    const failed: HermesReconnectFailedEvent[] = [];
+    client.on('reconnectFailed', (event) => failed.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    socketAt(0).drop('metro restart');
+    vi.stubGlobal('WebSocket', undefined);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(failed).toStrictEqual([
+      {
+        attempts: 1,
+        code: HERMES_WEBSOCKET_UNAVAILABLE,
+        message: expect.any(String),
+      },
+    ]);
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    expectError(result, HERMES_WEBSOCKET_UNAVAILABLE);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(failed).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not emit reconnectFailed when auto-reconnect is disabled', async () => {
+    const client = createClient({ reconnect: { maxAttempts: 0 } });
+    const failed = vi.fn();
+    client.on('reconnectFailed', failed);
+
+    await client.connect({ timeoutMs: 1_000 });
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    await delay(20);
+
+    expectError(result, HERMES_CONNECTION_FAILED);
+    expect(failed).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('reports reason reconnect when a send reconnects after a socket loss', async () => {

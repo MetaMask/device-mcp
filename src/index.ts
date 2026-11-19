@@ -71,6 +71,7 @@ export type {
   HermesContextDestroyedEvent,
   HermesDisconnectedEvent,
   HermesReconnectedEvent,
+  HermesReconnectFailedEvent,
 } from './hermes/hermes-client.js';
 
 export {
