@@ -1,0 +1,2057 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { HermesCdpResult } from './hermes-cdp.js';
+import {
+  HERMES_ABORTED,
+  HERMES_BLOCKED_METHOD,
+  HERMES_CDP_FAILED,
+  HERMES_CONNECTION_FAILED,
+  HERMES_DEVICE_PIN_MISMATCH,
+  HERMES_TARGET_NOT_FOUND,
+  HERMES_TIMEOUT,
+  HERMES_WEBSOCKET_UNAVAILABLE,
+  IDENTITY_PROBE_EXPR,
+} from './hermes-cdp.js';
+import { HermesClient } from './hermes-client.js';
+import type {
+  HermesCdpEvent,
+  HermesClientOptions,
+  HermesContextCreatedEvent,
+  HermesContextDestroyedEvent,
+  HermesListenerErrorEvent,
+  HermesReconnectFailedEvent,
+} from './hermes-client.js';
+
+const APP_ID = 'io.metamask.MetaMask';
+const METRO_PORT = 8085;
+const SOCKET_URL = `ws://localhost:${METRO_PORT}/inspector/debug?device=device-1&page=1`;
+
+type CdpRequest = {
+  id?: number;
+  method?: string;
+  params?: Record<string, unknown>;
+};
+
+type MockResponse = Record<string, unknown> | string | undefined;
+
+class FakeWebSocket extends EventTarget {
+  static readonly connecting = 0;
+
+  static readonly openState = 1;
+
+  static readonly closing = 2;
+
+  static readonly closed = 3;
+
+  static instances: FakeWebSocket[] = [];
+
+  static autoOpen = true;
+
+  static responseFactory: ((request: CdpRequest) => MockResponse) | undefined;
+
+  readonly url: string;
+
+  readonly options: { headers: { origin: string } } | undefined;
+
+  readonly sent: CdpRequest[] = [];
+
+  readyState = FakeWebSocket.connecting;
+
+  constructor(url: string, options?: { headers: { origin: string } }) {
+    super();
+    this.url = url;
+    this.options = options;
+    FakeWebSocket.instances.push(this);
+
+    if (FakeWebSocket.autoOpen) {
+      queueMicrotask(() => this.open());
+    }
+  }
+
+  send(raw: string): void {
+    const request = JSON.parse(raw) as CdpRequest;
+    this.sent.push(request);
+    const response = FakeWebSocket.responseFactory?.(request);
+    if (response !== undefined) {
+      const payload =
+        typeof response === 'string' ? response : JSON.stringify(response);
+      queueMicrotask(() => this.receive(payload));
+    }
+  }
+
+  /**
+   * Closes the socket. Like Node's WebSocket, closing a CONNECTING socket fires
+   * `error` and then `close` at once.
+   */
+  close(): void {
+    if (this.readyState === FakeWebSocket.closed) {
+      return;
+    }
+    const wasConnecting = this.readyState === FakeWebSocket.connecting;
+    this.readyState = FakeWebSocket.closed;
+    if (wasConnecting) {
+      this.dispatchEvent(new Event('error'));
+    }
+    this.dispatchEvent(new Event('close'));
+  }
+
+  open(): void {
+    if (this.readyState !== FakeWebSocket.connecting) {
+      return;
+    }
+    this.readyState = FakeWebSocket.openState;
+    this.dispatchEvent(new Event('open'));
+  }
+
+  receive(data: string): void {
+    this.dispatchEvent(new MessageEvent('message', { data }));
+  }
+
+  /**
+   * Simulates the app reloading or Metro restarting: the remote end drops the
+   * socket without the client asking for it.
+   *
+   * @param reason - The close reason reported by the remote end.
+   */
+  drop(reason = ''): void {
+    this.readyState = FakeWebSocket.closed;
+    const event = new Event('close');
+    Object.defineProperty(event, 'reason', { value: reason });
+    this.dispatchEvent(event);
+  }
+}
+
+Object.defineProperties(FakeWebSocket, {
+  CONNECTING: { value: FakeWebSocket.connecting },
+  OPEN: { value: FakeWebSocket.openState },
+  CLOSING: { value: FakeWebSocket.closing },
+  CLOSED: { value: FakeWebSocket.closed },
+});
+
+let fetchMock: ReturnType<typeof vi.fn>;
+
+function target(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: 'device-page-1',
+    title: 'io.metamask.MetaMask (iPhone 15)',
+    appId: APP_ID,
+    webSocketDebuggerUrl: SOCKET_URL,
+    reactNative: {
+      logicalDeviceId: 'logical-device-1',
+      capabilities: { nativePageReloads: true },
+    },
+    ...overrides,
+  };
+}
+
+/**
+ * A MetaMask target on another simulator (a different logical device).
+ *
+ * @returns The discovery entry.
+ */
+function otherDeviceTarget(): Record<string, unknown> {
+  return target({
+    id: 'other-device',
+    webSocketDebuggerUrl: `ws://localhost:${METRO_PORT}/inspector/debug?device=device-2&page=1`,
+    reactNative: {
+      logicalDeviceId: 'logical-device-2',
+      capabilities: { nativePageReloads: true },
+    },
+  });
+}
+
+function mockDiscovery(targets: unknown[]): void {
+  fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    json: vi.fn().mockResolvedValue(targets),
+  });
+  vi.stubGlobal('fetch', fetchMock);
+}
+
+function isIdentityProbe(request: CdpRequest): boolean {
+  return request.params?.expression === IDENTITY_PROBE_EXPR;
+}
+
+function probeResponse(request: CdpRequest): Record<string, unknown> {
+  return {
+    id: request.id,
+    result: {
+      result: {
+        type: 'string',
+        value: '{"isHermes":true,"ossVersion":"0.19.0","debuggerEnabled":true}',
+      },
+    },
+  };
+}
+
+function defaultResponseFactory(request: CdpRequest): Record<string, unknown> {
+  if (isIdentityProbe(request)) {
+    return probeResponse(request);
+  }
+  return { id: request.id, result: { result: { type: 'number', value: 2 } } };
+}
+
+function isRuntimeEnable(request: CdpRequest): boolean {
+  return request.method === 'Runtime.enable';
+}
+
+/**
+ * Answers the identity probe and the client's internal `Runtime.enable`, but
+ * leaves user methods unanswered.
+ *
+ * @param request - The sent CDP request.
+ * @returns The mocked response, or undefined to stay pending.
+ */
+function controlOnly(request: CdpRequest): MockResponse {
+  if (isIdentityProbe(request)) {
+    return probeResponse(request);
+  }
+  if (isRuntimeEnable(request)) {
+    return { id: request.id, result: {} };
+  }
+  return undefined;
+}
+
+function socketAt(index: number): FakeWebSocket {
+  const socket = FakeWebSocket.instances[index];
+  if (!socket) {
+    throw new Error(`Missing FakeWebSocket instance ${index}`);
+  }
+  return socket;
+}
+
+function createClient(
+  overrides: Partial<HermesClientOptions> = {},
+): HermesClient {
+  return new HermesClient({
+    metroPort: METRO_PORT,
+    appId: APP_ID,
+    ...overrides,
+  });
+}
+
+function expectError(
+  result: HermesCdpResult,
+  code: string,
+): asserts result is { ok: false; code: string; message: string } {
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.code).toBe(code);
+  }
+}
+
+/**
+ * Lets every pending microtask (discovery, socket open, probe) settle.
+ *
+ * @returns A promise resolved after a macrotask.
+ */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe('HermesClient', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.autoOpen = true;
+    FakeWebSocket.responseFactory = defaultResponseFactory;
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    mockDiscovery([target()]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('connects once and runs the identity probe once across many sends', async () => {
+    const client = createClient({ trackContexts: true });
+
+    const first = await client.send(
+      'Runtime.evaluate',
+      { expression: '1+1', returnByValue: true },
+      { timeoutMs: 1_000 },
+    );
+    const second = await client.send(
+      'Runtime.evaluate',
+      { expression: '2+2', returnByValue: true },
+      { timeoutMs: 1_000 },
+    );
+
+    expect(first).toStrictEqual({
+      ok: true,
+      result: { result: { type: 'number', value: 2 } },
+    });
+    expect(second.ok).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const socket = socketAt(0);
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([
+      1, 2, 3, 4,
+    ]);
+    expect(socket.sent.filter(isIdentityProbe)).toHaveLength(1);
+    expect(socket.sent.filter(isRuntimeEnable)).toHaveLength(1);
+    expect(socket.options?.headers.origin).toBe(
+      `http://127.0.0.1:${METRO_PORT}`,
+    );
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
+  it('shares one in-flight connect and emits contextCreated once', async () => {
+    const client = createClient();
+    const created = vi.fn();
+    client.on('contextCreated', created);
+
+    const [first, second] = await Promise.all([
+      client.connect({ timeoutMs: 1_000 }),
+      client.connect({ timeoutMs: 1_000 }),
+    ]);
+
+    expect(first.ok).toBe(true);
+    expect(second).toStrictEqual(first);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(created).toHaveBeenCalledWith({
+      target: {
+        id: 'device-page-1',
+        logicalDeviceId: 'logical-device-1',
+        title: 'io.metamask.MetaMask (iPhone 15)',
+      },
+      reconnected: false,
+      reason: 'connect',
+    });
+  });
+
+  it('sends Runtime.enable once per socket', async () => {
+    const client = createClient({ trackContexts: true });
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+
+    const enableMessages = socketAt(0).sent.filter(isRuntimeEnable);
+    expect(enableMessages).toStrictEqual([
+      { id: 2, method: 'Runtime.enable', params: {} },
+    ]);
+  });
+
+  it('does not send Runtime.enable or report reloads by default', async () => {
+    const client = createClient();
+    const created: HermesContextCreatedEvent[] = [];
+    const destroyed = vi.fn();
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('contextDestroyed', destroyed);
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    const socket = socketAt(0);
+
+    expect(socket.sent.filter(isRuntimeEnable)).toHaveLength(0);
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([1, 2]);
+
+    // Even if Hermes streamed context events, no reload is reported.
+    for (const message of [
+      {
+        method: 'Runtime.executionContextCreated',
+        params: { context: { id: 1 } },
+      },
+      { method: 'Runtime.executionContextDestroyed', params: {} },
+      { method: 'Runtime.executionContextsCleared', params: {} },
+      {
+        method: 'Runtime.executionContextCreated',
+        params: { context: { id: 2 } },
+      },
+    ]) {
+      socket.receive(JSON.stringify(message));
+    }
+
+    expect(destroyed).not.toHaveBeenCalled();
+    expect(created).toStrictEqual([
+      expect.objectContaining({ reason: 'connect' }),
+    ]);
+  });
+
+  it('does not send Runtime.enable when trackContexts is off', async () => {
+    const client = createClient({ trackContexts: false });
+    const created = vi.fn();
+    client.on('contextCreated', created);
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    const socket = socketAt(0);
+
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([1, 2]);
+    expect(socket.sent.filter(isRuntimeEnable)).toHaveLength(0);
+
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { name: 'main', id: 2 } },
+      }),
+    );
+    expect(created).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits one contextDestroyed and one reload contextCreated when the app reloads on the same socket', async () => {
+    const client = createClient({ trackContexts: true });
+    const created: HermesContextCreatedEvent[] = [];
+    const destroyed: HermesContextDestroyedEvent[] = [];
+    const raw: HermesCdpEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('contextDestroyed', (event) => destroyed.push(event));
+    client.on('Runtime.executionContextCreated', (event) => raw.push(event));
+
+    await client.connect({ timeoutMs: 1_000 });
+    const socket = socketAt(0);
+    const expectedTarget = {
+      id: 'device-page-1',
+      logicalDeviceId: 'logical-device-1',
+      title: 'io.metamask.MetaMask (iPhone 15)',
+    };
+
+    // The first context after Runtime.enable is the one connect already
+    // reported, so it must not produce a second contextCreated.
+    const firstContext = {
+      method: 'Runtime.executionContextCreated',
+      params: { context: { name: 'main', id: 2 } },
+    };
+    socket.receive(JSON.stringify(firstContext));
+    expect(created).toStrictEqual([
+      { target: expectedTarget, reconnected: false, reason: 'connect' },
+    ]);
+    // Raw CDP events still reach listeners.
+    expect(raw).toStrictEqual([firstContext]);
+
+    // Reload: Hermes sends both destroy events; they coalesce into one.
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextDestroyed',
+        params: { executionContextId: 2 },
+      }),
+    );
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextsCleared',
+        params: {},
+      }),
+    );
+    expect(destroyed).toStrictEqual([{ reason: 'reload' }]);
+
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { name: 'main', id: 3 } },
+      }),
+    );
+    expect(created).toHaveLength(2);
+    expect(created[1]).toStrictEqual({
+      target: expectedTarget,
+      reconnected: false,
+      reason: 'reload',
+      executionContextId: 3,
+    });
+  });
+
+  it('keeps the connection when Runtime.enable fails', async () => {
+    FakeWebSocket.responseFactory = (request) => {
+      if (isIdentityProbe(request)) {
+        return probeResponse(request);
+      }
+      if (isRuntimeEnable(request)) {
+        return {
+          id: request.id,
+          error: { message: 'Method not found', code: -32601 },
+        };
+      }
+      return undefined;
+    };
+    const client = createClient({ trackContexts: true });
+    const created = vi.fn();
+    client.on('contextCreated', created);
+
+    const result = await client.connect({ timeoutMs: 1_000 });
+
+    expect(result.ok).toBe(true);
+    expect(client.isConnected).toBe(true);
+
+    socketAt(0).receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { name: 'main', id: 2 } },
+      }),
+    );
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(created).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'connect' }),
+    );
+  });
+
+  it('returns the current target when already connected', async () => {
+    const client = createClient();
+    await client.connect({ timeoutMs: 1_000 });
+
+    const again = await client.connect({ timeoutMs: 1_000 });
+
+    expect(again.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('matches concurrent responses by id, even out of order', async () => {
+    FakeWebSocket.responseFactory = controlOnly;
+    const client = createClient({ trackContexts: true });
+
+    const first = client.send(
+      'Runtime.evaluate',
+      { expression: 'a' },
+      { timeoutMs: 5_000 },
+    );
+    const second = client.send(
+      'Runtime.evaluate',
+      { expression: 'b' },
+      { timeoutMs: 5_000 },
+    );
+
+    await flush();
+    const socket = socketAt(0);
+    expect(socket.sent).toHaveLength(4);
+
+    socket.receive(JSON.stringify({ id: 4, result: 'b' }));
+    socket.receive(JSON.stringify({ id: 3, result: 'a' }));
+
+    expect(await second).toStrictEqual({ ok: true, result: 'b' });
+    expect(await first).toStrictEqual({ ok: true, result: 'a' });
+  });
+
+  it('fails with HERMES_TIMEOUT on a per-call timeout and drops the pending entry', async () => {
+    FakeWebSocket.responseFactory = controlOnly;
+    const client = createClient({ trackContexts: true });
+
+    const result = await client.send(
+      'Runtime.evaluate',
+      { expression: 'never' },
+      { timeoutMs: 30 },
+    );
+
+    expectError(result, HERMES_TIMEOUT);
+    expect(result.message).toBe('Hermes CDP call timed out after 30ms');
+
+    // The late response must be ignored, and the next call gets a fresh id.
+    const socket = socketAt(0);
+    socket.receive(JSON.stringify({ id: 3, result: 'late' }));
+    FakeWebSocket.responseFactory = defaultResponseFactory;
+    const next = await client.send(
+      'Runtime.evaluate',
+      {},
+      { timeoutMs: 1_000 },
+    );
+
+    expect(next.ok).toBe(true);
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([
+      1, 2, 3, 4,
+    ]);
+  });
+
+  it('fails with HERMES_ABORTED when the signal aborts and drops the pending entry', async () => {
+    FakeWebSocket.responseFactory = controlOnly;
+    const controller = new AbortController();
+    const client = createClient({ trackContexts: true });
+
+    const pending = client.send(
+      'Runtime.evaluate',
+      { expression: 'slow' },
+      { timeoutMs: 5_000, signal: controller.signal },
+    );
+    await flush();
+    controller.abort();
+
+    const result = await pending;
+    expectError(result, HERMES_ABORTED);
+    expect(result.message).toContain('aborted');
+
+    const socket = socketAt(0);
+    socket.receive(JSON.stringify({ id: 3, result: 'late' }));
+    FakeWebSocket.responseFactory = defaultResponseFactory;
+    const next = await client.send(
+      'Runtime.evaluate',
+      {},
+      { timeoutMs: 1_000 },
+    );
+
+    expect(next.ok).toBe(true);
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([
+      1, 2, 3, 4,
+    ]);
+  });
+
+  it('does not connect for an already-aborted signal', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const client = createClient();
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+      signal: controller.signal,
+    });
+
+    expectError(result, HERMES_ABORTED);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('formats a CDP error into HERMES_CDP_FAILED', async () => {
+    FakeWebSocket.responseFactory = (request) => {
+      if (isIdentityProbe(request)) {
+        return probeResponse(request);
+      }
+      if (isRuntimeEnable(request)) {
+        return { id: request.id, result: {} };
+      }
+      return {
+        id: request.id,
+        error: {
+          message: 'Bad params',
+          code: -32602,
+          data: { reason: 'invalid' },
+        },
+      };
+    };
+    const client = createClient();
+
+    const result = await client.send('Missing.method', undefined, {
+      timeoutMs: 1_000,
+    });
+
+    expectError(result, HERMES_CDP_FAILED);
+    expect(result.message).toContain('"Missing.method"');
+    expect(result.message).toContain('Bad params');
+    expect(result.message).toContain('{"reason":"invalid"}');
+  });
+
+  it('dispatches CDP events to on() listeners and stops after off()', async () => {
+    const client = createClient();
+    const received: HermesCdpEvent[] = [];
+    const listener = (event: HermesCdpEvent): void => {
+      received.push(event);
+    };
+    client.on('Runtime.consoleAPICalled', listener);
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    const socket = socketAt(0);
+
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.consoleAPICalled',
+        params: { type: 'log', args: [] },
+      }),
+    );
+    expect(received).toStrictEqual([
+      {
+        method: 'Runtime.consoleAPICalled',
+        params: { type: 'log', args: [] },
+      },
+    ]);
+
+    client.off('Runtime.consoleAPICalled', listener);
+    socket.receive(
+      JSON.stringify({ method: 'Runtime.consoleAPICalled', params: {} }),
+    );
+    expect(received).toHaveLength(1);
+  });
+
+  it('keeps dispatching when a listener throws', async () => {
+    const client = createClient();
+    const received: HermesCdpEvent[] = [];
+    client.on('Runtime.consoleAPICalled', () => {
+      throw new Error('listener failed');
+    });
+    client.on('Runtime.consoleAPICalled', (event: HermesCdpEvent) => {
+      received.push(event);
+    });
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    const socket = socketAt(0);
+    socket.receive(
+      JSON.stringify({ method: 'Runtime.consoleAPICalled', params: {} }),
+    );
+
+    expect(received).toHaveLength(1);
+    const next = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    expect(next.ok).toBe(true);
+  });
+
+  it('ignores malformed and unknown-id frames', async () => {
+    const client = createClient();
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    const socket = socketAt(0);
+
+    socket.receive('not json');
+    socket.receive('42');
+    socket.receive(JSON.stringify({ result: { ignored: true } }));
+    socket.receive(JSON.stringify({ id: 999, result: 'unknown' }));
+
+    const next = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    expect(next.ok).toBe(true);
+  });
+
+  it('pins the device on first connect and does not call onPin again', async () => {
+    const onPin = vi.fn();
+    const client = createClient({ onPin });
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+
+    expect(onPin).toHaveBeenCalledTimes(1);
+    expect(onPin).toHaveBeenCalledWith('logical-device-1');
+  });
+
+  it('does not call onPin when a pin already exists', async () => {
+    const onPin = vi.fn();
+    const client = createClient({ pinnedDeviceId: 'logical-device-1', onPin });
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+
+    expect(onPin).not.toHaveBeenCalled();
+  });
+
+  it('treats an empty pinnedDeviceId as no pin and pins on first connect', async () => {
+    const onPin = vi.fn();
+    const client = createClient({ pinnedDeviceId: '', onPin });
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(onPin).toHaveBeenCalledTimes(1);
+    expect(onPin).toHaveBeenCalledWith('logical-device-1');
+  });
+
+  it('fails with HERMES_BLOCKED_METHOD without discovering or connecting', async () => {
+    const client = createClient();
+
+    const result = await client.send('Runtime.terminateExecution', undefined, {
+      timeoutMs: 1_000,
+    });
+
+    expectError(result, HERMES_BLOCKED_METHOD);
+    expect(result.message).toContain('Inspector.detached');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('fails with HERMES_WEBSOCKET_UNAVAILABLE without discovering', async () => {
+    vi.stubGlobal('WebSocket', undefined);
+    const client = createClient();
+
+    const result = await client.connect({ timeoutMs: 1_000 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: HERMES_WEBSOCKET_UNAVAILABLE,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates a discovery failure as HERMES_CONNECTION_FAILED', async () => {
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient();
+
+    const result = await client.connect({ timeoutMs: 1_000 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('ECONNREFUSED'),
+    });
+    expect(client.isConnected).toBe(false);
+  });
+
+  it('closing fails pending calls and closes the socket', async () => {
+    FakeWebSocket.responseFactory = controlOnly;
+    const client = createClient();
+
+    const pending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 5_000,
+    });
+    await flush();
+    client.close();
+    client.close();
+
+    const result = await pending;
+    expectError(result, HERMES_CONNECTION_FAILED);
+    expect(result.message).toContain('HermesClient is closed');
+    expect(socketAt(0).readyState).toBe(FakeWebSocket.closed);
+    expect(client.isConnected).toBe(false);
+  });
+
+  it('fails a send after close() without connecting until connect() reopens', async () => {
+    const client = createClient();
+    client.close();
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+
+    expect(result).toStrictEqual({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: 'HermesClient is closed',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    expect((await client.connect({ timeoutMs: 1_000 })).ok).toBe(true);
+    const reopened = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    expect(reopened.ok).toBe(true);
+
+    client.close();
+  });
+
+  it('fails a call with HERMES_CONNECTION_FAILED when socket.send throws', async () => {
+    const client = createClient();
+    await client.connect({ timeoutMs: 1_000 });
+    const socket = socketAt(0);
+    vi.spyOn(socket, 'send').mockImplementation(() => {
+      throw new Error('socket buffer full');
+    });
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+
+    expect(result).toStrictEqual({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: 'Hermes CDP connection failed: socket buffer full',
+    });
+    // The pending entry was removed: the connection stays usable.
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
+  it('keeps the selection failure on reconnect when the unpinned targets are ambiguous', async () => {
+    const client = createClient({
+      pinnedDeviceId: 'logical-device-1',
+      reconnect: { maxAttempts: 0 },
+    });
+    await client.connect({ timeoutMs: 1_000 });
+
+    mockDiscovery([
+      otherDeviceTarget(),
+      target({
+        id: 'third-device',
+        webSocketDebuggerUrl: `ws://localhost:${METRO_PORT}/inspector/debug?device=device-3&page=1`,
+        reactNative: { logicalDeviceId: 'logical-device-3' },
+      }),
+    ]);
+    socketAt(0).drop('metro restart');
+
+    const result = await client.connect({ timeoutMs: 1_000 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: HERMES_TARGET_NOT_FOUND,
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('keeps the selection failure on reconnect when no target is usable', async () => {
+    const client = createClient({
+      pinnedDeviceId: 'logical-device-1',
+      reconnect: { maxAttempts: 0 },
+    });
+    await client.connect({ timeoutMs: 1_000 });
+
+    // The pinned device is listed, but without a debugger URL: neither the
+    // pinned nor the unpinned selection finds a usable target.
+    const { webSocketDebuggerUrl: _url, ...withoutUrl } = target();
+    mockDiscovery([withoutUrl]);
+    socketAt(0).drop('metro restart');
+
+    const result = await client.connect({ timeoutMs: 1_000 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: HERMES_TARGET_NOT_FOUND,
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('reports the configured port and app id', () => {
+    const client = createClient({ appId: 'io.metamask', metroPort: 9000 });
+
+    expect(client.metroPort).toBe(9000);
+    expect(client.appId).toBe('io.metamask');
+  });
+
+  it('reconnects after an unexpected close, rediscovers the target and emits contextCreated again', async () => {
+    const client = createClient({
+      trackContexts: true,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    const disconnected: { reason: string }[] = [];
+    const reconnected: unknown[] = [];
+    const created: unknown[] = [];
+    client.on('disconnected', (event) => disconnected.push(event));
+    client.on('reconnected', (event) => reconnected.push(event));
+    client.on('contextCreated', (event) => created.push(event));
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    expect(created).toHaveLength(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    FakeWebSocket.responseFactory = controlOnly;
+    const pending = client.send('Network.enable', undefined, {
+      timeoutMs: 5_000,
+    });
+    await flush();
+    expect(socketAt(0).sent).toHaveLength(4);
+
+    // The app reloads: the target id and URL change behind the same Metro port.
+    mockDiscovery([
+      target({
+        id: 'device-page-2',
+        webSocketDebuggerUrl: `ws://localhost:${METRO_PORT}/inspector/debug?device=device-1&page=2`,
+      }),
+    ]);
+    socketAt(0).drop('app reload');
+
+    const pendingResult = await pending;
+    expectError(pendingResult, HERMES_CONNECTION_FAILED);
+    expect(pendingResult.message).toContain('app reload');
+    expect(disconnected).toStrictEqual([{ reason: 'app reload' }]);
+    expect(client.isConnected).toBe(false);
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    await vi.waitFor(() => expect(created).toHaveLength(2));
+
+    expect(socketAt(1).url).toContain('page=2');
+    // The reconnect re-ran discovery through the second fetch stub.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(reconnected).toStrictEqual([
+      {
+        target: {
+          id: 'device-page-2',
+          logicalDeviceId: 'logical-device-1',
+          title: 'io.metamask.MetaMask (iPhone 15)',
+        },
+        attempts: 1,
+      },
+    ]);
+    expect(created[1]).toMatchObject({
+      reconnected: true,
+      reason: 'reconnect',
+      target: { id: 'device-page-2' },
+    });
+    expect(client.isConnected).toBe(true);
+
+    // eslint-disable-next-line require-atomic-updates -- test-double state, not shared across async work
+    FakeWebSocket.responseFactory = defaultResponseFactory;
+    const after = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    expect(after.ok).toBe(true);
+    expect(socketAt(1).sent.map((request) => request.id)).toStrictEqual([
+      1, 2, 3,
+    ]);
+  });
+
+  it('retries with backoff and gives up after maxAttempts', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 5, maxDelayMs: 10, maxAttempts: 2 },
+    });
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('app reload');
+
+    // Backoff is 5 ms, then 10 ms: both attempts have run by 15 ms.
+    await vi.advanceTimersByTimeAsync(4);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Two attempts, then the client gives up (no socket was ever adopted).
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.isConnected).toBe(false);
+  });
+
+  it('does not reconnect to a different device after a reload (pin mismatch)', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      pinnedDeviceId: 'logical-device-1',
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    const reconnected = vi.fn();
+    const created = vi.fn();
+    client.on('reconnected', reconnected);
+    client.on('contextCreated', created);
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    mockDiscovery([
+      target({
+        id: 'other-device',
+        webSocketDebuggerUrl: `ws://localhost:${METRO_PORT}/inspector/debug?device=device-2&page=1`,
+        reactNative: {
+          logicalDeviceId: 'logical-device-2',
+          capabilities: { nativePageReloads: true },
+        },
+      }),
+    ]);
+    socketAt(0).drop('app reload');
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.isConnected).toBe(false);
+    expect(reconnected).not.toHaveBeenCalled();
+    expect(created).toHaveBeenCalledTimes(1);
+    // Three attempts (10, 20, 40 ms), none of which opened a socket.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('close() stops a scheduled reconnect', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 20, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+
+    socketAt(0).drop('app reload');
+    client.close();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('connects again on the next send after the reconnect loop gave up', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 5, maxDelayMs: 10, maxAttempts: 1 },
+    });
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('app reload');
+    await vi.advanceTimersByTimeAsync(5);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    mockDiscovery([target({ id: 'device-page-3' })]);
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(socketAt(1).url).toBe(SOCKET_URL);
+  });
+
+  it('keeps reconnecting when a send fails during the reconnect wait', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 40, maxDelayMs: 80, maxAttempts: 5 },
+    });
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+
+    await client.connect({ timeoutMs: 1_000 });
+
+    // Metro goes down before the first scheduled attempt runs.
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    const failed = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 100,
+    });
+
+    expectError(failed, HERMES_CONNECTION_FAILED);
+    expect(client.isConnected).toBe(false);
+
+    // Metro comes back: the background loop must still be running.
+    mockDiscovery([target({ id: 'device-page-2' })]);
+
+    // The failed send restarted nothing: the loop's first attempt still
+    // fires at 40 ms.
+    await vi.advanceTimersByTimeAsync(39);
+    expect(client.isConnected).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.isConnected).toBe(true);
+
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({
+      reason: 'reconnect',
+      reconnected: true,
+      target: { id: 'device-page-2' },
+    });
+
+    client.close();
+  });
+
+  it('emits reconnectFailed once when the loop gives up on a listen-only client', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    const failed: HermesReconnectFailedEvent[] = [];
+    const disconnected = vi.fn();
+    const created = vi.fn();
+    client.on('reconnectFailed', (event) => failed.push(event));
+    client.on('disconnected', disconnected);
+    client.on('contextCreated', created);
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // Three attempts, each trying /json then /json/list.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(failed).toStrictEqual([
+      {
+        attempts: 3,
+        code: HERMES_CONNECTION_FAILED,
+        message: expect.stringContaining('ECONNREFUSED'),
+      },
+    ]);
+    expect(disconnected).toHaveBeenCalledTimes(1);
+
+    // Nothing retries for a client that only listens.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(failed).toHaveLength(1);
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.isConnected).toBe(false);
+  });
+
+  it('restarts the stopped reconnect loop when a send fails after it gave up', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 2 },
+    });
+    const failed: HermesReconnectFailedEvent[] = [];
+    const created: HermesContextCreatedEvent[] = [];
+    const reconnected = vi.fn();
+    client.on('reconnectFailed', (event) => failed.push(event));
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('reconnected', reconnected);
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(failed).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    // A caller tries while Metro is still down: its failure restarts the loop.
+    const sending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expectError(await sending, HERMES_CONNECTION_FAILED);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+
+    // The restarted loop begins at the first backoff delay (10 ms).
+    await vi.advanceTimersByTimeAsync(10);
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+
+    // Metro comes back before the restarted loop gives up.
+    mockDiscovery([target({ id: 'device-page-2' })]);
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(client.isConnected).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(
+      created.filter((event) => event.reason === 'reconnect'),
+    ).toHaveLength(1);
+    expect(created[1]).toMatchObject({
+      reason: 'reconnect',
+      reconnected: true,
+      target: { id: 'device-page-2' },
+    });
+    expect(reconnected).toHaveBeenCalledTimes(1);
+    expect(reconnected).toHaveBeenCalledWith(
+      expect.objectContaining({ attempts: 2 }),
+    );
+    expect(failed).toHaveLength(1);
+
+    // Connected again: no further attempt runs.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    client.close();
+  });
+
+  it('retries a pin mismatch and reports it in reconnectFailed when the loop gives up', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      pinnedDeviceId: 'logical-device-1',
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    const failed: HermesReconnectFailedEvent[] = [];
+    client.on('reconnectFailed', (event) => failed.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    mockDiscovery([otherDeviceTarget()]);
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // Every attempt retried; none opened a socket to the other device.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(failed).toStrictEqual([
+      {
+        attempts: 3,
+        code: HERMES_DEVICE_PIN_MISMATCH,
+        message: expect.stringContaining('logical-device-2'),
+      },
+    ]);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // A caller's pin mismatch restarts the stopped loop like any retryable
+    // failure.
+    const sending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expectError(await sending, HERMES_DEVICE_PIN_MISMATCH);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(failed).toHaveLength(2);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    client.close();
+  });
+
+  it('reconnects to the pinned device once it returns after a pin mismatch', async () => {
+    vi.useFakeTimers();
+    const onPin = vi.fn();
+    const client = createClient({
+      pinnedDeviceId: 'logical-device-1',
+      onPin,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 6 },
+    });
+    const failed = vi.fn();
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('reconnectFailed', failed);
+    client.on('contextCreated', (event) => created.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    // Metro restarts and only the other simulator registers at first.
+    mockDiscovery([otherDeviceTarget()]);
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(40);
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.isConnected).toBe(false);
+
+    // The pinned device registers too.
+    mockDiscovery([otherDeviceTarget(), target({ id: 'device-page-2' })]);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(client.isConnected).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(socketAt(1).url).toBe(SOCKET_URL);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({
+      reason: 'reconnect',
+      target: { id: 'device-page-2', logicalDeviceId: 'logical-device-1' },
+    });
+    expect(failed).not.toHaveBeenCalled();
+    expect(onPin).not.toHaveBeenCalled();
+
+    client.close();
+  });
+
+  it('emits reconnectFailed once when WebSocket becomes unavailable and never restarts the loop', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    const failed: HermesReconnectFailedEvent[] = [];
+    client.on('reconnectFailed', (event) => failed.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    socketAt(0).drop('metro restart');
+    vi.stubGlobal('WebSocket', undefined);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(failed).toStrictEqual([
+      {
+        attempts: 1,
+        code: HERMES_WEBSOCKET_UNAVAILABLE,
+        message: expect.any(String),
+      },
+    ]);
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    expectError(result, HERMES_WEBSOCKET_UNAVAILABLE);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(failed).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not emit reconnectFailed when auto-reconnect is disabled', async () => {
+    vi.useFakeTimers();
+    const client = createClient({ reconnect: { maxAttempts: 0 } });
+    const failed = vi.fn();
+    client.on('reconnectFailed', failed);
+
+    await client.connect({ timeoutMs: 1_000 });
+    fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expectError(result, HERMES_CONNECTION_FAILED);
+    expect(failed).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports reason reconnect when a send reconnects after a socket loss', async () => {
+    const client = createClient({ reconnect: { maxAttempts: 0 } });
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+
+    await client.connect({ timeoutMs: 1_000 });
+    mockDiscovery([target({ id: 'device-page-2' })]);
+    socketAt(0).drop('metro restart');
+
+    const result = await client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({
+      reason: 'reconnect',
+      reconnected: true,
+      target: { id: 'device-page-2' },
+    });
+  });
+
+  it('opens one socket when a disconnected listener sends and the reconnect timer fires', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 40, maxDelayMs: 40, maxAttempts: 3 },
+    });
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('disconnected', () => {
+      client
+        .send('Runtime.evaluate', undefined, { timeoutMs: 1_000 })
+        .catch(() => undefined);
+    });
+
+    await client.connect({ timeoutMs: 1_000 });
+    socketAt(0).drop('metro restart');
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.isConnected).toBe(true);
+    // Let the scheduled attempt fire at 40 ms: it must find the caller's
+    // socket and open nothing.
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({
+      reason: 'reconnect',
+      reconnected: true,
+    });
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(socketAt(0).readyState).toBe(FakeWebSocket.closed);
+    expect(socketAt(1).readyState).toBe(FakeWebSocket.openState);
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
+  it('treats a context after contextDestroyed as a reload when no initial context arrived', async () => {
+    const client = createClient({ trackContexts: true });
+    const created: HermesContextCreatedEvent[] = [];
+    const destroyed: HermesContextDestroyedEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('contextDestroyed', (event) => destroyed.push(event));
+
+    await client.connect({ timeoutMs: 1_000 });
+    const socket = socketAt(0);
+
+    // This socket never reported its first execution context.
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextsCleared',
+        params: {},
+      }),
+    );
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { name: 'main', id: 5 } },
+      }),
+    );
+
+    expect(destroyed).toStrictEqual([{ reason: 'reload' }]);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toStrictEqual({
+      target: {
+        id: 'device-page-1',
+        logicalDeviceId: 'logical-device-1',
+        title: 'io.metamask.MetaMask (iPhone 15)',
+      },
+      reconnected: false,
+      reason: 'reload',
+      executionContextId: 5,
+    });
+  });
+
+  it('tracks the first context when it arrives before the Runtime.enable response', async () => {
+    FakeWebSocket.responseFactory = (request) => {
+      if (isIdentityProbe(request)) {
+        return probeResponse(request);
+      }
+      if (isRuntimeEnable(request)) {
+        socketAt(FakeWebSocket.instances.length - 1).receive(
+          JSON.stringify({
+            method: 'Runtime.executionContextCreated',
+            params: { context: { name: 'main', id: 2 } },
+          }),
+        );
+        return { id: request.id, result: {} };
+      }
+      return undefined;
+    };
+    const client = createClient({ trackContexts: true });
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+
+    await client.connect({ timeoutMs: 1_000 });
+
+    // The context seen during Runtime.enable is the connect context: no second
+    // event, and a later context is a reload, not the socket's first context.
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ reason: 'connect' });
+
+    const socket = socketAt(0);
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextDestroyed',
+        params: { executionContextId: 2 },
+      }),
+    );
+    socket.receive(
+      JSON.stringify({
+        method: 'Runtime.executionContextCreated',
+        params: { context: { name: 'main', id: 3 } },
+      }),
+    );
+
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({
+      reason: 'reload',
+      reconnected: false,
+      executionContextId: 3,
+    });
+  });
+
+  it('uses reconnect.connectTimeoutMs for reconnect attempts, not the last caller timeout', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: {
+        initialDelayMs: 10,
+        maxDelayMs: 10,
+        maxAttempts: 3,
+        connectTimeoutMs: 30,
+      },
+    });
+    // The last caller asks for a 5 s connect.
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 5_000 });
+
+    const abortedAfter: number[] = [];
+    const startedAt = Date.now();
+    fetchMock = vi.fn(
+      async (_url: string, init?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            abortedAfter.push(Date.now() - startedAt);
+            reject(new Error('discovery aborted'));
+          });
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    // The attempt fires at 10 ms; its discovery is aborted 30 ms later, far
+    // below the caller's 5 s.
+    await vi.advanceTimersByTimeAsync(40);
+    expect(abortedAfter).toStrictEqual([40]);
+    expect(client.isConnected).toBe(false);
+
+    client.close();
+  });
+
+  it('bounds a send that joins a background reconnect attempt by its own timeout', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: {
+        initialDelayMs: 10,
+        maxDelayMs: 10,
+        maxAttempts: 3,
+        connectTimeoutMs: 10_000,
+      },
+    });
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    // Metro is slow to answer: the background attempt's discovery hangs.
+    let resolveDiscovery!: (value: unknown) => void;
+    fetchMock = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          resolveDiscovery = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    let settledAt: number | undefined;
+    const startedAt = Date.now();
+    const sending = client
+      .send('Runtime.evaluate', undefined, { timeoutMs: 1_000 })
+      .then((result) => {
+        settledAt = Date.now() - startedAt;
+        return result;
+      });
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(settledAt).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+
+    const result = await sending;
+    expectError(result, HERMES_TIMEOUT);
+    expect(settledAt).toBe(1_000);
+    // The send joined the attempt: no discovery or socket of its own.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The background attempt keeps running and succeeds later, within its own
+    // 10 s budget.
+    await vi.advanceTimersByTimeAsync(4_000);
+    resolveDiscovery({ ok: true, json: vi.fn().mockResolvedValue([target()]) });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.isConnected).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({ reason: 'reconnect' });
+
+    client.close();
+  });
+
+  it('gives a background attempt its full connectTimeoutMs after a short caller connect fails', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: {
+        initialDelayMs: 100,
+        maxDelayMs: 100,
+        maxAttempts: 1,
+        connectTimeoutMs: 10_000,
+      },
+    });
+    const created: HermesContextCreatedEvent[] = [];
+    const failed = vi.fn();
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('reconnectFailed', failed);
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    // Discovery hangs until it is aborted; record each abort time.
+    const resolvers: ((value: unknown) => void)[] = [];
+    const abortedAt: number[] = [];
+    const startedAt = Date.now();
+    fetchMock = vi.fn(
+      async (_url: string, init?: { signal?: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          resolvers.push(resolve);
+          init?.signal?.addEventListener('abort', () => {
+            abortedAt.push(Date.now() - startedAt);
+            reject(new Error('discovery aborted'));
+          });
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    // A caller starts a short connect before the background attempt fires.
+    const sending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 200,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The background attempt fires at 100 ms and meets the caller's connect.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The caller's connect gives up at 200 ms per discovery path.
+    await vi.advanceTimersByTimeAsync(300);
+    expectError(await sending, HERMES_CONNECTION_FAILED);
+    expect(abortedAt).toStrictEqual([200, 400]);
+
+    // The attempt then runs its own connect: its discovery is not aborted at
+    // the caller's 200 ms, only at its own 10 s.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(abortedAt).toStrictEqual([200, 400]);
+    expect(failed).not.toHaveBeenCalled();
+
+    resolvers[2]?.({ ok: true, json: vi.fn().mockResolvedValue([target()]) });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.isConnected).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({ reason: 'reconnect' });
+    expect(failed).not.toHaveBeenCalled();
+
+    client.close();
+  });
+
+  it('opens one socket when a background attempt meets a caller connect that succeeds', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 100, maxDelayMs: 100, maxAttempts: 3 },
+    });
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    let resolveDiscovery!: (value: unknown) => void;
+    fetchMock = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          resolveDiscovery = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    const sending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(150);
+    resolveDiscovery({ ok: true, json: vi.fn().mockResolvedValue([target()]) });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((await sending).ok).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({ reason: 'reconnect' });
+
+    client.close();
+  });
+
+  it('fails a send with HERMES_ABORTED while it is still connecting', async () => {
+    fetchMock = vi.fn(async () => new Promise(() => undefined));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient();
+    const controller = new AbortController();
+
+    const sentAt = Date.now();
+    const pending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 500,
+      signal: controller.signal,
+    });
+    await flush();
+    controller.abort();
+
+    const result = await pending;
+
+    expectError(result, HERMES_ABORTED);
+    expect(result.message).toContain('aborted');
+    expect(Date.now() - sentAt).toBeLessThan(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('does not pin, adopt or reconnect when close() lands during discovery', async () => {
+    vi.useFakeTimers();
+    const onPin = vi.fn();
+    const client = createClient({ onPin });
+    let resolveDiscovery!: (value: unknown) => void;
+    fetchMock = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          resolveDiscovery = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    client.close();
+    resolveDiscovery({ ok: true, json: vi.fn().mockResolvedValue([target()]) });
+
+    const result = await connecting;
+
+    expect(result).toMatchObject({ ok: false, code: HERMES_CONNECTION_FAILED });
+    expect(onPin).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(client.isConnected).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not pin or adopt when close() lands during the identity probe', async () => {
+    vi.useFakeTimers();
+    FakeWebSocket.responseFactory = () => undefined;
+    const onPin = vi.fn();
+    const client = createClient({ onPin });
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(socketAt(0).readyState).toBe(FakeWebSocket.openState);
+
+    client.close();
+    expect(socketAt(0).readyState).toBe(FakeWebSocket.closed);
+
+    const result = await connecting;
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('closed'),
+    });
+    expect(onPin).not.toHaveBeenCalled();
+    expect(client.isConnected).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not pin or adopt when close() lands right after the socket opens', async () => {
+    FakeWebSocket.autoOpen = false;
+    const onPin = vi.fn();
+    const client = createClient({ onPin });
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = socketAt(0);
+    // Runs after the client's own open listener, before its connect resumes.
+    socket.addEventListener('open', () => client.close());
+    socket.open();
+
+    const result = await connecting;
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('closed'),
+    });
+    expect(socket.sent).toHaveLength(0);
+    expect(socket.readyState).toBe(FakeWebSocket.closed);
+    expect(onPin).not.toHaveBeenCalled();
+    expect(client.isConnected).toBe(false);
+  });
+
+  it('does not report a connect when close() lands during Runtime.enable', async () => {
+    FakeWebSocket.responseFactory = (request) =>
+      isIdentityProbe(request) ? probeResponse(request) : undefined;
+    const client = createClient({ trackContexts: true });
+    const created = vi.fn();
+    client.on('contextCreated', created);
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.waitFor(() =>
+      expect(socketAt(0).sent.filter(isRuntimeEnable)).toHaveLength(1),
+    );
+    client.close();
+
+    const result = await connecting;
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('closed'),
+    });
+    expect(created).not.toHaveBeenCalled();
+    expect(socketAt(0).readyState).toBe(FakeWebSocket.closed);
+    expect(client.isConnected).toBe(false);
+  });
+
+  it('starts a fresh connect on reopen and never pins from the abandoned one (S1)', async () => {
+    const onPin = vi.fn();
+    const client = createClient({ onPin });
+    const discoveries: ((value: unknown) => void)[] = [];
+    fetchMock = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          discoveries.push(resolve);
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const discovered = { ok: true, json: async () => [target()] };
+
+    const first = client.connect({ timeoutMs: 1_000 });
+    await flush();
+    client.close();
+    const second = client.connect({ timeoutMs: 1_000 });
+    await flush();
+
+    // The reopen ran its own discovery instead of joining the abandoned one.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    discoveries[0]?.(discovered);
+    expect(await first).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('closed'),
+    });
+    expect(onPin).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+
+    discoveries[1]?.(discovered);
+    expect((await second).ok).toBe(true);
+    expect(onPin).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
+  it('reopens with a fresh socket after close() lands while the socket is connecting (S2)', async () => {
+    FakeWebSocket.autoOpen = false;
+    const client = createClient();
+
+    const first = client.connect({ timeoutMs: 1_000 });
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    client.close();
+    const second = client.connect({ timeoutMs: 1_000 });
+
+    expect(await first).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('closed'),
+    });
+    expect(socketAt(0).readyState).toBe(FakeWebSocket.closed);
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    socketAt(1).open();
+
+    expect((await second).ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
+  it('reports a reopen as connect, not reconnect, when a background attempt was in flight (S3)', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 5, maxDelayMs: 5, maxAttempts: 3 },
+    });
+    const events: string[] = [];
+    client.on('reconnected', () => events.push('reconnected'));
+    client.on('contextCreated', (event) =>
+      events.push(`created:${event.reason}`),
+    );
+    await client.connect({ timeoutMs: 1_000 });
+
+    const discoveries: ((value: unknown) => void)[] = [];
+    fetchMock = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          discoveries.push(resolve);
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(5);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    client.close();
+    const reopened = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const discovered = { ok: true, json: async () => [target()] };
+    discoveries[0]?.(discovered);
+    discoveries[1]?.(discovered);
+
+    expect((await reopened).ok).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(events).toStrictEqual(['created:connect', 'created:connect']);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
+  it('fails a first connect whose socket is lost during Runtime.enable, without disconnected (S4)', async () => {
+    vi.useFakeTimers();
+    FakeWebSocket.responseFactory = (request) =>
+      isIdentityProbe(request) ? probeResponse(request) : undefined;
+    const client = createClient({
+      trackContexts: true,
+      reconnect: { initialDelayMs: 5, maxDelayMs: 5, maxAttempts: 2 },
+    });
+    const events: string[] = [];
+    client.on('contextCreated', (event) =>
+      events.push(`created:${event.reason}`),
+    );
+    client.on('disconnected', () => events.push('disconnected'));
+    client.on('reconnectFailed', () => events.push('reconnectFailed'));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socketAt(0).sent.filter(isRuntimeEnable)).toHaveLength(1);
+    socketAt(0).drop('gone');
+
+    expect(await connecting).toStrictEqual({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message:
+        'Hermes CDP connection failed: the socket closed while enabling runtime events',
+    });
+
+    // Listeners never saw this connection, so they hear nothing about it, and
+    // no reconnect loop runs for a connection that never completed.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(events).toStrictEqual([]);
+    expect(client.isConnected).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps reconnecting when a reconnect socket is lost during Runtime.enable', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      trackContexts: true,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 10, maxAttempts: 3 },
+    });
+    const events: string[] = [];
+    client.on('contextCreated', (event) =>
+      events.push(`created:${event.reason}`),
+    );
+    client.on('disconnected', () => events.push('disconnected'));
+    client.on('reconnected', () => events.push('reconnected'));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    // The first reconnect socket never answers Runtime.enable and drops.
+    FakeWebSocket.responseFactory = (request) =>
+      isIdentityProbe(request) ? probeResponse(request) : undefined;
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    FakeWebSocket.responseFactory = defaultResponseFactory;
+    socketAt(1).drop('gone again');
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(events).toStrictEqual([
+      'created:connect',
+      'disconnected',
+      'reconnected',
+      'created:reconnect',
+    ]);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
+  it('reports a throwing listener through the listenerError event', async () => {
+    const client = createClient();
+    const errors: HermesListenerErrorEvent[] = [];
+    const received: HermesCdpEvent[] = [];
+    const failure = new Error('listener failed');
+    client.on('listenerError', () => {
+      throw new Error('nested listener failure');
+    });
+    client.on('listenerError', (event) => errors.push(event));
+    client.on('Runtime.consoleAPICalled', () => {
+      throw failure;
+    });
+    client.on('Runtime.consoleAPICalled', (event) => received.push(event));
+
+    await client.connect({ timeoutMs: 1_000 });
+    socketAt(0).receive(
+      JSON.stringify({ method: 'Runtime.consoleAPICalled', params: {} }),
+    );
+
+    expect(received).toHaveLength(1);
+    expect(errors).toStrictEqual([
+      { event: 'Runtime.consoleAPICalled', error: failure },
+    ]);
+  });
+});

@@ -1,6 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 
 import * as publicApi from './index.js';
+import type {
+  HermesClientEventMap,
+  HermesContextCreatedEvent,
+  HermesContextDestroyedEvent,
+  HermesDisconnectedEvent,
+  HermesListenerErrorEvent,
+  HermesReconnectedEvent,
+  HermesReconnectFailedEvent,
+} from './index.js';
 
 describe('public API surface', () => {
   it('exports the element locator helpers consumers depend on', () => {
@@ -26,6 +35,18 @@ describe('public API surface', () => {
       value: 'submit',
       confidence: 'high',
     });
+  });
+
+  it('exports HermesClient and every payload type of its event map', () => {
+    expect(typeof publicApi.HermesClient).toBe('function');
+    expectTypeOf<HermesClientEventMap>().toEqualTypeOf<{
+      contextCreated: HermesContextCreatedEvent;
+      contextDestroyed: HermesContextDestroyedEvent;
+      disconnected: HermesDisconnectedEvent;
+      reconnected: HermesReconnectedEvent;
+      reconnectFailed: HermesReconnectFailedEvent;
+      listenerError: HermesListenerErrorEvent;
+    }>();
   });
 
   it('exports the typed idb transport error', () => {

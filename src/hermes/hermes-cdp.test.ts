@@ -729,7 +729,7 @@ describe('runHermesCdp', () => {
     expect(result.message).toContain('timed out');
   });
 
-  it('user-method timeout → HERMES_CONNECTION_FAILED via finally close', async () => {
+  it('user-method timeout → HERMES_TIMEOUT and closes the socket', async () => {
     vi.useFakeTimers();
     MockWebSocket.responseFactory = (request) =>
       request.id === 1 ? defaultResponseFactory(request) : undefined;
@@ -740,7 +740,8 @@ describe('runHermesCdp', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     const result = await resultPromise;
 
-    expect(result.ok).toBe(false);
+    expectError(result, HERMES_TIMEOUT);
+    expect(result.message).toContain('timed out');
     expect(socketAt(0).readyState).toBe(MockWebSocket.closed);
   });
 
