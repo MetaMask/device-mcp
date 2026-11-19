@@ -249,7 +249,7 @@ describe('HermesClient', () => {
   });
 
   it('connects once and runs the identity probe once across many sends', async () => {
-    const client = createClient();
+    const client = createClient({ trackContexts: true });
 
     const first = await client.send(
       'Runtime.evaluate',
@@ -311,7 +311,7 @@ describe('HermesClient', () => {
   });
 
   it('sends Runtime.enable once per socket', async () => {
-    const client = createClient();
+    const client = createClient({ trackContexts: true });
 
     await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
     await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
@@ -319,6 +319,41 @@ describe('HermesClient', () => {
     const enableMessages = socketAt(0).sent.filter(isRuntimeEnable);
     expect(enableMessages).toStrictEqual([
       { id: 2, method: 'Runtime.enable', params: {} },
+    ]);
+  });
+
+  it('does not send Runtime.enable or report reloads by default', async () => {
+    const client = createClient();
+    const created: HermesContextCreatedEvent[] = [];
+    const destroyed = vi.fn();
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('contextDestroyed', destroyed);
+
+    await client.send('Runtime.evaluate', undefined, { timeoutMs: 1_000 });
+    const socket = socketAt(0);
+
+    expect(socket.sent.filter(isRuntimeEnable)).toHaveLength(0);
+    expect(socket.sent.map((request) => request.id)).toStrictEqual([1, 2]);
+
+    // Even if Hermes streamed context events, no reload is reported.
+    for (const message of [
+      {
+        method: 'Runtime.executionContextCreated',
+        params: { context: { id: 1 } },
+      },
+      { method: 'Runtime.executionContextDestroyed', params: {} },
+      { method: 'Runtime.executionContextsCleared', params: {} },
+      {
+        method: 'Runtime.executionContextCreated',
+        params: { context: { id: 2 } },
+      },
+    ]) {
+      socket.receive(JSON.stringify(message));
+    }
+
+    expect(destroyed).not.toHaveBeenCalled();
+    expect(created).toStrictEqual([
+      expect.objectContaining({ reason: 'connect' }),
     ]);
   });
 
@@ -343,7 +378,7 @@ describe('HermesClient', () => {
   });
 
   it('emits one contextDestroyed and one reload contextCreated when the app reloads on the same socket', async () => {
-    const client = createClient();
+    const client = createClient({ trackContexts: true });
     const created: HermesContextCreatedEvent[] = [];
     const destroyed: HermesContextDestroyedEvent[] = [];
     const raw: HermesCdpEvent[] = [];
@@ -415,7 +450,7 @@ describe('HermesClient', () => {
       }
       return undefined;
     };
-    const client = createClient();
+    const client = createClient({ trackContexts: true });
     const created = vi.fn();
     client.on('contextCreated', created);
 
@@ -449,7 +484,7 @@ describe('HermesClient', () => {
 
   it('matches concurrent responses by id, even out of order', async () => {
     FakeWebSocket.responseFactory = controlOnly;
-    const client = createClient();
+    const client = createClient({ trackContexts: true });
 
     const first = client.send(
       'Runtime.evaluate',
@@ -475,7 +510,7 @@ describe('HermesClient', () => {
 
   it('fails with HERMES_TIMEOUT on a per-call timeout and drops the pending entry', async () => {
     FakeWebSocket.responseFactory = controlOnly;
-    const client = createClient();
+    const client = createClient({ trackContexts: true });
 
     const result = await client.send(
       'Runtime.evaluate',
@@ -505,7 +540,7 @@ describe('HermesClient', () => {
   it('fails with HERMES_ABORTED when the signal aborts and drops the pending entry', async () => {
     FakeWebSocket.responseFactory = controlOnly;
     const controller = new AbortController();
-    const client = createClient();
+    const client = createClient({ trackContexts: true });
 
     const pending = client.send(
       'Runtime.evaluate',
@@ -736,6 +771,7 @@ describe('HermesClient', () => {
 
   it('reconnects after an unexpected close, rediscovers the target and emits contextCreated again', async () => {
     const client = createClient({
+      trackContexts: true,
       reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 3 },
     });
     const disconnected: { reason: string }[] = [];
@@ -1195,7 +1231,7 @@ describe('HermesClient', () => {
   });
 
   it('treats a context after contextDestroyed as a reload when no initial context arrived', async () => {
-    const client = createClient();
+    const client = createClient({ trackContexts: true });
     const created: HermesContextCreatedEvent[] = [];
     const destroyed: HermesContextDestroyedEvent[] = [];
     client.on('contextCreated', (event) => created.push(event));
@@ -1248,7 +1284,7 @@ describe('HermesClient', () => {
       }
       return undefined;
     };
-    const client = createClient();
+    const client = createClient({ trackContexts: true });
     const created: HermesContextCreatedEvent[] = [];
     client.on('contextCreated', (event) => created.push(event));
 

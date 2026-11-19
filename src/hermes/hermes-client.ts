@@ -17,10 +17,10 @@
  * exponential backoff. Every successful (re)connect emits `contextCreated`.
  *
  * An app reload does NOT close the socket: the runtime swaps its JavaScript
- * context in place. With `trackContexts` on (the default) the client enables
+ * context in place. With `trackContexts` on (off by default) the client enables
  * `Runtime` context events, emits `contextDestroyed` when the old context goes
  * away and `contextCreated` (`reason: 'reload'`) for the new one, so callers can
- * re-apply their scripts.
+ * re-apply their scripts. With it off, a reload is not reported.
  */
 
 import type { HermesCdpResult } from './hermes-cdp.js';
@@ -110,17 +110,26 @@ export type HermesClientOptions = {
   /** Automatic reconnect tuning. */
   reconnect?: HermesClientReconnectOptions;
   /**
-   * Track JavaScript execution contexts and emit `contextCreated` /
-   * `contextDestroyed` lifecycle events (default `true`).
+   * Track JavaScript execution contexts and emit `contextDestroyed` and
+   * `contextCreated` (`reason: 'reload'`) lifecycle events for an app reload
+   * (default `false`). The `connect` and `reconnect` `contextCreated` events
+   * fire either way.
    *
    * When enabled, the client sends `Runtime.enable` itself after each
    * connection so Hermes streams `Runtime.executionContextCreated`,
    * `Runtime.executionContextDestroyed` and `Runtime.executionContextsCleared`
    * over the socket; an app reload keeps the socket open, so this is the only
-   * signal that the JavaScript context was replaced. Cost: `Runtime.enable`
-   * also makes Hermes stream `Runtime.consoleAPICalled` (and other `Runtime`
-   * events) on the socket; listeners that do not consume them still receive
-   * them.
+   * signal that the JavaScript context was replaced.
+   *
+   * Cost, while the socket is open: `Runtime.enable` also makes Hermes send a
+   * `Runtime.consoleAPICalled` event, with object previews, for every
+   * `console.*` call in the app, which costs JS-thread time. Hermes also keeps
+   * every object argument of those calls alive in its remote-objects table
+   * (object group `ConsoleObjectGroup`) until a
+   * `Runtime.releaseObjectGroup { objectGroup: 'ConsoleObjectGroup' }`, which
+   * this client never sends. A long session therefore holds every logged
+   * object; callers that turn this on and log a lot should send that release
+   * themselves from time to time. Leave it off unless you need reload events.
    */
   trackContexts?: boolean;
 };
@@ -199,13 +208,15 @@ export type HermesCdpEvent = {
  * - `reconnect`: a new socket after the old one closed (Metro restart, socket
  *   loss).
  * - `reload`: a new JS context on the SAME socket (app reload / fast refresh).
+ *   Only reported with `trackContexts` on.
  */
 export type HermesContextCreatedReason = 'connect' | 'reconnect' | 'reload';
 
 /**
  * Payload of the `contextCreated` lifecycle event: emitted after every
- * successful connect, after every reconnect, and for every new JavaScript
- * execution context created on an open socket (app reload).
+ * successful connect, after every reconnect, and, with `trackContexts` on, for
+ * every new JavaScript execution context created on an open socket (app
+ * reload).
  */
 export type HermesContextCreatedEvent = {
   /** The verified target of the connection. */
@@ -221,6 +232,7 @@ export type HermesContextCreatedEvent = {
 /**
  * Payload of the `contextDestroyed` lifecycle event, emitted when an open
  * socket reports that its JavaScript context went away (a reload started).
+ * Only emitted with `trackContexts` on.
  */
 export type HermesContextDestroyedEvent = {
   /** Contexts are only destroyed by a reload on the same socket. */
@@ -309,7 +321,8 @@ type PendingCall = {
  * first call), subscribe with {@link on}, and call {@link close} when done.
  *
  * Reloads keep the socket open, so a closed socket only means a lost connection
- * (Metro restart). When `trackContexts` is on (the default), the client enables
+ * (Metro restart). When `trackContexts` is on (it is off by default, see
+ * {@link HermesClientOptions.trackContexts} for its cost), the client enables
  * `Runtime` context events and emits a `contextCreated` lifecycle event for
  * every new JavaScript context on the open socket, so callers can re-apply
  * their scripts.
@@ -419,7 +432,7 @@ export class HermesClient {
     this.#origin = options.origin;
     this.#pinnedDeviceId = options.pinnedDeviceId;
     this.#onPin = options.onPin;
-    this.#trackContexts = options.trackContexts ?? true;
+    this.#trackContexts = options.trackContexts ?? false;
     this.#reconnect = {
       initialDelayMs:
         options.reconnect?.initialDelayMs ?? DEFAULT_RECONNECT_INITIAL_DELAY_MS,
