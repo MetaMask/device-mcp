@@ -426,6 +426,13 @@ export class HermesClient {
 
   #explicitlyClosed = false;
 
+  /**
+   * Bumped by {@link close}. A connect started under an older epoch was
+   * abandoned: it must not pin, call `onPin`, adopt its socket, touch the
+   * connection state or emit events, and a reopen never joins it.
+   */
+  #connectEpoch = 0;
+
   constructor(options: HermesClientOptions) {
     this.#metroPort = options.metroPort;
     this.#appId = options.appId;
@@ -509,8 +516,11 @@ export class HermesClient {
       return await waitAtMost(joined, timeoutMs);
     }
 
+    const epoch = this.#connectEpoch;
     const result = await this.#connectOnce(timeoutMs);
-    this.#resumeReconnectAfterFailedCall(result);
+    if (epoch === this.#connectEpoch) {
+      this.#resumeReconnectAfterFailedCall(result);
+    }
     return result;
   }
 
@@ -659,10 +669,14 @@ export class HermesClient {
   /**
    * Stops reconnecting, closes the socket and fails pending calls.
    *
-   * Idempotent. A later {@link connect} reopens the client.
+   * An in-flight connect is abandoned: its callers get a failure, it closes any
+   * socket it opened, and it never pins, adopts or emits. Idempotent. A later
+   * {@link connect} reopens the client with a fresh connect.
    */
   close(): void {
     this.#explicitlyClosed = true;
+    this.#connectEpoch += 1;
+    this.#inFlightConnect = undefined;
     this.#socketLost = false;
     this.#resetReconnect();
     this.#failAllPending(
@@ -711,9 +725,10 @@ export class HermesClient {
     }
 
     const reconnected = this.#socketLost;
-    const promise = this.#doConnect(timeoutMs, reconnected)
+    const epoch = this.#connectEpoch;
+    const promise = this.#doConnect(timeoutMs, reconnected, epoch)
       .then((result) => {
-        if (result.ok) {
+        if (result.ok && epoch === this.#connectEpoch) {
           this.#socketLost = false;
           this.#resetReconnect();
           if (reconnectAttempts !== undefined) {
@@ -743,14 +758,21 @@ export class HermesClient {
   /**
    * Discovers, opens, probes and adopts a target. Never throws.
    *
+   * Every await is followed by an epoch check: a connect abandoned by
+   * {@link close} closes its own socket and returns without pinning, calling
+   * `onPin`, adopting the socket or changing the connection status, even when
+   * the client was reopened in the meantime.
+   *
    * @param timeoutMs - The connect timeout.
    * @param reconnected - True when the previous connection was lost
    * unexpectedly, used to fail closed on a device pin mismatch.
+   * @param epoch - The {@link close} epoch this connect started in.
    * @returns The verified target or a classified failure.
    */
   async #doConnect(
     timeoutMs: number,
     reconnected: boolean,
+    epoch: number,
   ): Promise<HermesConnectResult> {
     if (typeof WebSocket !== 'function') {
       this.#status = 'closed';
@@ -763,7 +785,7 @@ export class HermesClient {
 
     try {
       const targets = await fetchDiscoveryTargets(this.#metroPort, timeoutMs);
-      if (this.#explicitlyClosed) {
+      if (epoch !== this.#connectEpoch) {
         return closedDuringConnectResult();
       }
 
@@ -818,19 +840,20 @@ export class HermesClient {
       this.#connectingSocket = connectingSocket;
 
       await waitForSocketOpen(connectingSocket, timeoutMs);
-      if (this.#explicitlyClosed) {
+      if (epoch !== this.#connectEpoch) {
         return closedDuringConnectResult();
       }
 
       // The probe runs once per socket, with id 1; user calls start at 2.
       const probe = await runIdentityProbe(connectingSocket, timeoutMs, 1);
-      if (!probe.ok) {
-        return { ok: false, code: probe.code, message: probe.message };
-      }
       // Checked after every await of the connect path: a close() during the
       // connect must not pin the device, call `onPin` or adopt the socket.
-      if (this.#explicitlyClosed) {
+      // close() closes this socket, which also fails the probe.
+      if (epoch !== this.#connectEpoch) {
         return closedDuringConnectResult();
+      }
+      if (!probe.ok) {
+        return { ok: false, code: probe.code, message: probe.message };
       }
 
       const targetDeviceId = selection.target.reactNative?.logicalDeviceId;
@@ -875,6 +898,11 @@ export class HermesClient {
         const enabled = await this.send('Runtime.enable', undefined, {
           timeoutMs,
         });
+        // close() fails the pending Runtime.enable, so this also covers a
+        // close() while it was in flight.
+        if (epoch !== this.#connectEpoch) {
+          return closedDuringConnectResult();
+        }
         if (!enabled.ok) {
           this.#socketTracksContexts = false;
           this.#sawContextOnSocket = false;
@@ -891,6 +919,10 @@ export class HermesClient {
 
       return { ok: true, target };
     } catch (error) {
+      // close() closes the connecting socket, which rejects the open wait.
+      if (epoch !== this.#connectEpoch) {
+        return closedDuringConnectResult();
+      }
       const message = error instanceof Error ? error.message : String(error);
       return {
         ok: false,
@@ -902,7 +934,11 @@ export class HermesClient {
         this.#connectingSocket = undefined;
       }
       if (!adopted) {
-        this.#status = 'closed';
+        // An abandoned connect must not mark a reopened client's connect (or
+        // its adopted socket) closed.
+        if (epoch === this.#connectEpoch) {
+          this.#status = 'closed';
+        }
         if (socket) {
           closeSocket(socket);
         }

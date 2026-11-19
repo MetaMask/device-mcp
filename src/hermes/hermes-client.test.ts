@@ -78,15 +78,26 @@ class FakeWebSocket extends EventTarget {
     }
   }
 
+  /**
+   * Closes the socket. Like Node's WebSocket, closing a CONNECTING socket fires
+   * `error` and then `close` at once.
+   */
   close(): void {
     if (this.readyState === FakeWebSocket.closed) {
       return;
     }
+    const wasConnecting = this.readyState === FakeWebSocket.connecting;
     this.readyState = FakeWebSocket.closed;
+    if (wasConnecting) {
+      this.dispatchEvent(new Event('error'));
+    }
     this.dispatchEvent(new Event('close'));
   }
 
   open(): void {
+    if (this.readyState !== FakeWebSocket.connecting) {
+      return;
+    }
     this.readyState = FakeWebSocket.openState;
     this.dispatchEvent(new Event('open'));
   }
@@ -1606,6 +1617,164 @@ describe('HermesClient', () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not pin or adopt when close() lands right after the socket opens', async () => {
+    FakeWebSocket.autoOpen = false;
+    const onPin = vi.fn();
+    const client = createClient({ onPin });
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = socketAt(0);
+    // Runs after the client's own open listener, before its connect resumes.
+    socket.addEventListener('open', () => client.close());
+    socket.open();
+
+    const result = await connecting;
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('closed'),
+    });
+    expect(socket.sent).toHaveLength(0);
+    expect(socket.readyState).toBe(FakeWebSocket.closed);
+    expect(onPin).not.toHaveBeenCalled();
+    expect(client.isConnected).toBe(false);
+  });
+
+  it('does not report a connect when close() lands during Runtime.enable', async () => {
+    FakeWebSocket.responseFactory = (request) =>
+      isIdentityProbe(request) ? probeResponse(request) : undefined;
+    const client = createClient({ trackContexts: true });
+    const created = vi.fn();
+    client.on('contextCreated', created);
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.waitFor(() =>
+      expect(socketAt(0).sent.filter(isRuntimeEnable)).toHaveLength(1),
+    );
+    client.close();
+
+    const result = await connecting;
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('closed'),
+    });
+    expect(created).not.toHaveBeenCalled();
+    expect(socketAt(0).readyState).toBe(FakeWebSocket.closed);
+    expect(client.isConnected).toBe(false);
+  });
+
+  it('starts a fresh connect on reopen and never pins from the abandoned one (S1)', async () => {
+    const onPin = vi.fn();
+    const client = createClient({ onPin });
+    const discoveries: ((value: unknown) => void)[] = [];
+    fetchMock = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          discoveries.push(resolve);
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const discovered = { ok: true, json: async () => [target()] };
+
+    const first = client.connect({ timeoutMs: 1_000 });
+    await flush();
+    client.close();
+    const second = client.connect({ timeoutMs: 1_000 });
+    await flush();
+
+    // The reopen ran its own discovery instead of joining the abandoned one.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    discoveries[0]?.(discovered);
+    expect(await first).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('closed'),
+    });
+    expect(onPin).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+
+    discoveries[1]?.(discovered);
+    expect((await second).ok).toBe(true);
+    expect(onPin).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
+  it('reopens with a fresh socket after close() lands while the socket is connecting (S2)', async () => {
+    FakeWebSocket.autoOpen = false;
+    const client = createClient();
+
+    const first = client.connect({ timeoutMs: 1_000 });
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    client.close();
+    const second = client.connect({ timeoutMs: 1_000 });
+
+    expect(await first).toMatchObject({
+      ok: false,
+      code: HERMES_CONNECTION_FAILED,
+      message: expect.stringContaining('closed'),
+    });
+    expect(socketAt(0).readyState).toBe(FakeWebSocket.closed);
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    socketAt(1).open();
+
+    expect((await second).ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(client.isConnected).toBe(true);
+
+    client.close();
+  });
+
+  it('reports a reopen as connect, not reconnect, when a background attempt was in flight (S3)', async () => {
+    const client = createClient({
+      reconnect: { initialDelayMs: 5, maxDelayMs: 5, maxAttempts: 3 },
+    });
+    const events: string[] = [];
+    client.on('reconnected', () => events.push('reconnected'));
+    client.on('contextCreated', (event) =>
+      events.push(`created:${event.reason}`),
+    );
+    await client.connect({ timeoutMs: 1_000 });
+
+    const discoveries: ((value: unknown) => void)[] = [];
+    fetchMock = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          discoveries.push(resolve);
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    client.close();
+    const reopened = client.connect({ timeoutMs: 1_000 });
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const discovered = { ok: true, json: async () => [target()] };
+    discoveries[0]?.(discovered);
+    discoveries[1]?.(discovered);
+
+    expect((await reopened).ok).toBe(true);
+    await delay(50);
+
+    expect(events).toStrictEqual(['created:connect', 'created:connect']);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(client.isConnected).toBe(true);
+
+    client.close();
   });
 
   it('reports a throwing listener through the listenerError event', async () => {
