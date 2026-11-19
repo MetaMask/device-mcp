@@ -145,6 +145,22 @@ function target(
   };
 }
 
+/**
+ * A MetaMask target on another simulator (a different logical device).
+ *
+ * @returns The discovery entry.
+ */
+function otherDeviceTarget(): Record<string, unknown> {
+  return target({
+    id: 'other-device',
+    webSocketDebuggerUrl: `ws://localhost:${METRO_PORT}/inspector/debug?device=device-2&page=1`,
+    reactNative: {
+      logicalDeviceId: 'logical-device-2',
+      capabilities: { nativePageReloads: true },
+    },
+  });
+}
+
 function mockDiscovery(targets: unknown[]): void {
   fetchMock = vi.fn().mockResolvedValue({
     ok: true,
@@ -1082,7 +1098,7 @@ describe('HermesClient', () => {
     client.close();
   });
 
-  it('emits reconnectFailed once on a pin mismatch and never restarts the loop', async () => {
+  it('retries a pin mismatch and reports it in reconnectFailed when the loop gives up', async () => {
     vi.useFakeTimers();
     const client = createClient({
       pinnedDeviceId: 'logical-device-1',
@@ -1095,39 +1111,79 @@ describe('HermesClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect((await connecting).ok).toBe(true);
 
-    mockDiscovery([
-      target({
-        id: 'other-device',
-        webSocketDebuggerUrl: `ws://localhost:${METRO_PORT}/inspector/debug?device=device-2&page=1`,
-        reactNative: {
-          logicalDeviceId: 'logical-device-2',
-          capabilities: { nativePageReloads: true },
-        },
-      }),
-    ]);
-    socketAt(0).drop('app reload');
+    mockDiscovery([otherDeviceTarget()]);
+    socketAt(0).drop('metro restart');
     await vi.advanceTimersByTimeAsync(1_000);
 
+    // Every attempt retried; none opened a socket to the other device.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(failed).toStrictEqual([
       {
-        attempts: 1,
+        attempts: 3,
         code: HERMES_DEVICE_PIN_MISMATCH,
         message: expect.stringContaining('logical-device-2'),
       },
     ]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
 
-    // A caller hitting the same terminal failure does not restart the loop.
+    // A caller's pin mismatch restarts the stopped loop like any retryable
+    // failure.
     const sending = client.send('Runtime.evaluate', undefined, {
       timeoutMs: 1_000,
     });
     await vi.advanceTimersByTimeAsync(0);
     expectError(await sending, HERMES_DEVICE_PIN_MISMATCH);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
 
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(failed).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(failed).toHaveLength(2);
     expect(FakeWebSocket.instances).toHaveLength(1);
+
+    client.close();
+  });
+
+  it('reconnects to the pinned device once it returns after a pin mismatch', async () => {
+    vi.useFakeTimers();
+    const onPin = vi.fn();
+    const client = createClient({
+      pinnedDeviceId: 'logical-device-1',
+      onPin,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 40, maxAttempts: 6 },
+    });
+    const failed = vi.fn();
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('reconnectFailed', failed);
+    client.on('contextCreated', (event) => created.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    // Metro restarts and only the other simulator registers at first.
+    mockDiscovery([otherDeviceTarget()]);
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(40);
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(client.isConnected).toBe(false);
+
+    // The pinned device registers too.
+    mockDiscovery([otherDeviceTarget(), target({ id: 'device-page-2' })]);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(client.isConnected).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(socketAt(1).url).toBe(SOCKET_URL);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({
+      reason: 'reconnect',
+      target: { id: 'device-page-2', logicalDeviceId: 'logical-device-1' },
+    });
+    expect(failed).not.toHaveBeenCalled();
+    expect(onPin).not.toHaveBeenCalled();
+
+    client.close();
   });
 
   it('emits reconnectFailed once when WebSocket becomes unavailable and never restarts the loop', async () => {

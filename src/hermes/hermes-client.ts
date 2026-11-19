@@ -260,10 +260,10 @@ export type HermesReconnectedEvent = {
 
 /**
  * Payload of the `reconnectFailed` lifecycle event, emitted once each time the
- * background reconnect loop gives up: after `maxAttempts` failed attempts, or
- * at once on a terminal failure (`HERMES_DEVICE_PIN_MISMATCH`,
- * `HERMES_WEBSOCKET_UNAVAILABLE`). The client then stays disconnected until a
- * caller connects.
+ * background reconnect loop gives up: after `maxAttempts` failed attempts (the
+ * last one may be `HERMES_DEVICE_PIN_MISMATCH` when Metro only lists another
+ * device), or at once when `HERMES_WEBSOCKET_UNAVAILABLE`, the only terminal
+ * failure. The client then stays disconnected until a caller connects.
  */
 export type HermesReconnectFailedEvent = {
   /** How many backoff attempts ran before the loop gave up. */
@@ -330,13 +330,16 @@ type PendingCall = {
  * An unexpected socket loss starts a background reconnect loop. A caller's
  * {@link connect} or {@link send} never stops that loop, and a successful one is
  * reported as `contextCreated` with `reason: 'reconnect'`. When the loop gives
- * up (after `maxAttempts`, or at once on a device pin mismatch or a missing
- * WebSocket) it emits `reconnectFailed` and the client stays disconnected.
+ * up (after `maxAttempts`, or at once when no `WebSocket` implementation
+ * exists) it emits `reconnectFailed` and the client stays disconnected.
  * While the connection is lost, a failed caller-driven attempt continues a
- * running loop, or restarts a stopped one from the first backoff delay; a
- * terminal failure (`HERMES_DEVICE_PIN_MISMATCH`, `HERMES_WEBSOCKET_UNAVAILABLE`)
- * never restarts it. A client that only listens should handle
- * `reconnectFailed`: nothing else retries for it.
+ * running loop, or restarts a stopped one from the first backoff delay. The
+ * decision depends only on that caller's own failure: every code restarts the
+ * loop except `HERMES_WEBSOCKET_UNAVAILABLE`. A device pin mismatch is
+ * retryable (Metro may list the other device first after a restart); the pin
+ * filter means a socket is never opened to, or adopted for, the wrong device.
+ * A client that only listens should handle `reconnectFailed`: nothing else
+ * retries for it.
  *
  * A listener that throws is isolated and reported through the `listenerError`
  * lifecycle event; it never breaks the socket handler or the other listeners.
@@ -493,9 +496,9 @@ export class HermesClient {
    *
    * A connect never stops the background reconnect loop. When it fails while
    * the connection is lost and the loop has stopped (it gave up), the loop
-   * restarts from the first backoff delay, unless the failure is terminal
-   * (`HERMES_DEVICE_PIN_MISMATCH`, `HERMES_WEBSOCKET_UNAVAILABLE`). A running
-   * loop keeps its own schedule.
+   * restarts from the first backoff delay, unless this connect's own failure is
+   * `HERMES_WEBSOCKET_UNAVAILABLE`, the only terminal failure. A running loop
+   * keeps its own schedule.
    *
    * @param options - The connect timeout.
    * @returns The verified target or a classified failure.
@@ -985,8 +988,9 @@ export class HermesClient {
    * whose loop gave up recovers once a caller tries again.
    *
    * Does nothing after {@link close}, while the loop is still running, or when
-   * the failure is terminal (device pin mismatch, WebSocket unavailable):
-   * retrying cannot fix those.
+   * the failure is terminal (`HERMES_WEBSOCKET_UNAVAILABLE`): retrying cannot
+   * fix that. The decision depends only on this failure, not on how the loop
+   * stopped.
    *
    * @param result - The failed caller-driven connect result.
    */
@@ -1003,7 +1007,8 @@ export class HermesClient {
   /**
    * Turns a pinned selection failure into `HERMES_DEVICE_PIN_MISMATCH` during a
    * reconnect when Metro reports a different device. Inspection only: no socket
-   * is opened for the wrong device.
+   * is opened for the wrong device. The code is informative (it names the
+   * device Metro listed); the reconnect loop retries it like any other failure.
    *
    * @param targets - All discovered targets.
    * @param code - The selection failure code.
@@ -1322,9 +1327,9 @@ export class HermesClient {
    *
    * Does nothing when the client is already connected: a caller (for example a
    * `disconnected` listener) may have connected before the timer fired, and a
-   * second socket must never be opened. Failures schedule the next backoff
-   * step; a device pin mismatch or a missing WebSocket stops the loop at once
-   * (and emits `reconnectFailed`) so the wrong device is never used.
+   * second socket must never be opened. Failures, including a device pin
+   * mismatch, schedule the next backoff step; a missing WebSocket stops the
+   * loop at once (and emits `reconnectFailed`).
    */
   async #attemptReconnect(): Promise<void> {
     if (this.#explicitlyClosed) {
@@ -1550,17 +1555,15 @@ async function waitAtMost(
 
 /**
  * Whether a connect failure is terminal for the reconnect loop: retrying cannot
- * fix a device pin mismatch (it must never connect to the wrong device) or a
- * missing WebSocket implementation.
+ * fix a missing WebSocket implementation. A device pin mismatch is NOT
+ * terminal: target selection filters by the pin, so no socket is ever opened to
+ * the other device, and the pinned device may register with Metro later.
  *
  * @param result - The failed connect result.
  * @returns True when the loop must stop and not restart on its own.
  */
 function isTerminalConnectFailure(result: HermesFailureResult): boolean {
-  return (
-    result.code === HERMES_DEVICE_PIN_MISMATCH ||
-    result.code === HERMES_WEBSOCKET_UNAVAILABLE
-  );
+  return result.code === HERMES_WEBSOCKET_UNAVAILABLE;
 }
 
 /**
