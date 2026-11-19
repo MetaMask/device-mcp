@@ -82,10 +82,15 @@ export type HermesClientReconnectOptions = {
   maxAttempts?: number;
   /**
    * Connect timeout for automatic reconnect attempts, in milliseconds
-   * (default 10 s). Per-call `timeoutMs` values never shorten a reconnect
-   * attempt: an attempt that finds a caller's connect in flight waits for it
-   * (so no second socket opens) and, if it fails, then runs its own connect
-   * with this full timeout.
+   * (default 10 s). Like a caller's `timeoutMs`, it applies to each connect
+   * step on its own: the `/json` and the fallback `/json/list` discovery, the
+   * WebSocket open, the identity probe and, with `trackContexts` on,
+   * `Runtime.enable`. One attempt can therefore take up to about 4 × this
+   * value (5 × with `trackContexts` on).
+   *
+   * Per-call `timeoutMs` values never shorten a reconnect attempt: an attempt
+   * that finds a caller's connect in flight waits for it (so no second socket
+   * opens) and, if it fails, then runs its own connect with this full timeout.
    */
   connectTimeoutMs?: number;
 };
@@ -141,7 +146,12 @@ export type HermesClientOptions = {
  * Options for {@link HermesClient.connect}.
  */
 export type HermesConnectOptions = {
-  /** Timeout in milliseconds for discovery, the socket open and the probe. */
+  /**
+   * Timeout in milliseconds for each connect step on its own: the `/json` and
+   * the fallback `/json/list` discovery, the socket open, the probe and, with
+   * `trackContexts` on, `Runtime.enable` (up to about 4 × `timeoutMs` in all,
+   * 5 × with tracking).
+   */
   timeoutMs: number;
 };
 
@@ -174,18 +184,26 @@ export type HermesConnectResult =
  */
 export type HermesSendOptions = {
   /**
-   * Per-phase timeout in milliseconds. It bounds each phase of the call on its
+   * Per-step timeout in milliseconds. It bounds each step of the call on its
    * own, not their sum:
    * - Connect, when the client is not connected. If this call starts the
-   *   connect, each connect step (discovery, socket open, identity probe) gets
-   *   `timeoutMs`, as in `runHermesCdp`. If a connect is already in
-   *   flight (another call's, or a background reconnect attempt), this call
-   *   waits for it at most `timeoutMs`, then fails with `HERMES_TIMEOUT`; the
-   *   shared connect keeps running for the others.
+   *   connect, each of these steps gets its own `timeoutMs`, as in
+   *   `runHermesCdp`:
+   *   1. discovery of `/json`, then 2. of `/json/list` (only if `/json`
+   *      failed);
+   *   3. the WebSocket open;
+   *   4. the identity probe;
+   *   5. `Runtime.enable`, only with `trackContexts` on.
+   *
+   *   If a connect is already in flight (another call's, or a background
+   *   reconnect attempt), this call instead waits for it at most `timeoutMs`,
+   *   then fails with `HERMES_TIMEOUT`; the shared connect keeps running for
+   *   the others.
    * - Response: once connected, the CDP response gets `timeoutMs`.
    *
-   * So a call that has to connect can take longer than `timeoutMs`. To bound
-   * the total time, pass `signal: AbortSignal.timeout(n)`.
+   * So a cold `send` can take up to about 5 × `timeoutMs` (6 × with
+   * `trackContexts` on); a connected one, `timeoutMs`. To bound the total
+   * time, pass `signal: AbortSignal.timeout(n)`.
    */
   timeoutMs: number;
   /**
@@ -321,7 +339,14 @@ type PendingCall = {
  * Persistent, verified Hermes CDP connection.
  *
  * Create one per session, call {@link send} for CDP methods (it connects on the
- * first call), subscribe with {@link on}, and call {@link close} when done.
+ * first call), subscribe with {@link on}, and call {@link close} when done: an
+ * open socket keeps the Node process alive.
+ *
+ * One socket serves every call, so CDP domain state lasts across calls until
+ * the socket is lost or closed: an enabled domain (`Debugger.enable`),
+ * breakpoints, a paused debugger, object groups. `runHermesCdp` opened and
+ * closed a socket per call, which reset that state each time; callers that
+ * set such state should undo it (or {@link close} the client) when done.
  *
  * Reloads keep the socket open, so a closed socket only means a lost connection
  * (Metro restart). When `trackContexts` is on (it is off by default, see
@@ -683,6 +708,9 @@ export class HermesClient {
 
   /**
    * Stops reconnecting, closes the socket and fails pending calls.
+   *
+   * Call it when done: the client's timers are unref'd, but an open WebSocket
+   * keeps the Node process alive.
    *
    * An in-flight connect is abandoned: its callers get a failure, it closes any
    * socket it opened, and it never pins, adopts or emits. Idempotent. A later
@@ -1629,7 +1657,9 @@ function readCloseReason(event: Event): string {
 }
 
 /**
- * Unrefs a Node timer so an idle client never keeps the process alive.
+ * Unrefs a Node timer so the client's own timers (call timeouts, backoff) never
+ * keep the process alive. An open WebSocket still does: a connected client
+ * keeps Node running until {@link HermesClient.close} is called.
  *
  * @param timer - The timer handle (a `NodeJS.Timeout` in Node).
  */
