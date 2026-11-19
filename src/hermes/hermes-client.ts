@@ -1350,72 +1350,48 @@ export class HermesClient {
   }
 
   /**
-   * Runs one reconnect attempt.
+   * Runs one reconnect attempt. Called only from the backoff timer, which
+   * every successful connect and every {@link close} clear, so the client is
+   * open and disconnected when it starts.
    *
-   * Does nothing when the client is already connected: a caller (for example a
-   * `disconnected` listener) may have connected before the timer fired, and a
-   * second socket must never be opened. Failures, including a device pin
-   * mismatch, schedule the next backoff step; a missing WebSocket stops the
-   * loop at once (and emits `reconnectFailed`).
+   * A caller (for example a `disconnected` listener) may have started a
+   * connect before the timer fired; the attempt waits for it, and a second
+   * socket is never opened. Failures, including a device pin mismatch,
+   * schedule the next backoff step; a missing WebSocket stops the loop at once
+   * (and emits `reconnectFailed`). Never rejects.
    */
   async #attemptReconnect(): Promise<void> {
-    if (this.#explicitlyClosed) {
-      return;
-    }
-    if (this.isConnected) {
-      this.#resetReconnect();
-      return;
-    }
     const generation = this.#reconnectGeneration;
-    try {
-      // A caller's connect is already in flight, with the caller's (possibly
-      // shorter) timeouts. Wait for it instead of opening a second socket; if
-      // it fails, this attempt then runs its own connect with the full
-      // `connectTimeoutMs`.
-      let callerConnect = this.#inFlightConnect;
-      while (callerConnect) {
-        await callerConnect;
-        if (
-          this.#explicitlyClosed ||
-          generation !== this.#reconnectGeneration
-        ) {
-          return;
-        }
-        if (this.isConnected) {
-          this.#resetReconnect();
-          return;
-        }
-        callerConnect = this.#inFlightConnect;
-      }
-      const result = await this.#connectOnce(
-        this.#reconnect.connectTimeoutMs,
-        this.#reconnectAttempt,
-      );
-      // A close(), a success or a restart while this attempt was in flight
-      // already decided what happens next.
-      if (this.#explicitlyClosed || generation !== this.#reconnectGeneration) {
+    // A caller's connect is already in flight, with the caller's (possibly
+    // shorter) timeouts. Wait for it instead of opening a second socket; if it
+    // fails, this attempt then runs its own connect with the full
+    // `connectTimeoutMs`. Connect promises never reject.
+    let callerConnect = this.#inFlightConnect;
+    while (callerConnect) {
+      await callerConnect;
+      // Every successful connect and every close() bumps the generation (via
+      // #resetReconnect), so an unchanged generation means the client is still
+      // disconnected and this loop still owns the retry.
+      if (generation !== this.#reconnectGeneration) {
         return;
       }
-      if (result.ok || this.isConnected) {
-        this.#resetReconnect();
-        return;
-      }
-      if (isTerminalConnectFailure(result)) {
-        this.#stopReconnect(result);
-        return;
-      }
-      this.#scheduleReconnect(result);
-    } catch (error) {
-      if (this.#explicitlyClosed || generation !== this.#reconnectGeneration) {
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      this.#scheduleReconnect({
-        ok: false,
-        code: HERMES_CONNECTION_FAILED,
-        message: `Hermes CDP connection failed: ${message}`,
-      });
+      callerConnect = this.#inFlightConnect;
     }
+    const result = await this.#connectOnce(
+      this.#reconnect.connectTimeoutMs,
+      this.#reconnectAttempt,
+    );
+    // Same rule: a success (`result.ok`), a close() or a restart while this
+    // attempt was in flight already decided what happens next. `result.ok`
+    // only narrows the type: a success always changed the generation.
+    if (generation !== this.#reconnectGeneration || result.ok) {
+      return;
+    }
+    if (isTerminalConnectFailure(result)) {
+      this.#stopReconnect(result);
+      return;
+    }
+    this.#scheduleReconnect(result);
   }
 
   /**
