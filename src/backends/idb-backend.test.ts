@@ -5,7 +5,12 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { parseIdbHierarchy, mapIdbElement, IdbBackend } from './idb-backend.js';
+import {
+  parseIdbDescribeAll,
+  parseIdbHierarchy,
+  mapIdbElement,
+  IdbBackend,
+} from './idb-backend.js';
 import { IdbUnavailableError } from './idb-errors.js';
 import type { UIElement } from './types.js';
 import { findElement, generateLocators } from '../utils/element.js';
@@ -49,6 +54,7 @@ vi.mock('../utils/platform.js', () => ({
   resolveIdbPath: vi.fn().mockResolvedValue('/usr/local/bin/idb'),
   idbSupportsApiSelection: vi.fn().mockResolvedValue(false),
   idbSupportsNestedDescribe: vi.fn().mockResolvedValue(false),
+  idbSupportsCompleteDescribe: vi.fn().mockResolvedValue(false),
   chooseAxApi: vi.fn().mockReturnValue(null),
   detectPlatform: vi.fn(),
   detectAllDevices: vi.fn(),
@@ -61,6 +67,9 @@ const mockReadFile = vi.mocked(readFile);
 const mockSupportsApi = vi.mocked(platformModule.idbSupportsApiSelection);
 const mockChooseAxApi = vi.mocked(platformModule.chooseAxApi);
 const mockSupportsNested = vi.mocked(platformModule.idbSupportsNestedDescribe);
+const mockSupportsComplete = vi.mocked(
+  platformModule.idbSupportsCompleteDescribe,
+);
 
 describe('parseIdbHierarchy', () => {
   it('treats an empty children array on a root object as a leaf', () => {
@@ -184,6 +193,108 @@ describe('parseIdbHierarchy with synthetic flat and nested fixtures', () => {
     generateLocators(elements)
       .map((loc) => loc.description)
       .sort();
+
+  it('maps the --format complete document like the nested tree', () => {
+    const complete = parseIdbDescribeAll(
+      fixture('idb-describe-all-login-complete.json'),
+    );
+
+    expect(complete).toStrictEqual({
+      hierarchy: nested,
+      format: 'complete',
+      truncated: false,
+      backend: 'axbridge-exclusive',
+    });
+    expect(
+      parseIdbHierarchy(fixture('idb-describe-all-login-complete.json')),
+    ).toStrictEqual(nested);
+  });
+
+  it('reads truncated from the --format complete document', () => {
+    const document = JSON.parse(
+      fixture('idb-describe-all-login-complete.json'),
+    ) as Record<string, unknown>;
+
+    const read = parseIdbDescribeAll(
+      JSON.stringify({ ...document, truncated: true }),
+    );
+
+    expect(read.truncated).toBe(true);
+    expect(read.hierarchy).toStrictEqual(nested);
+  });
+
+  it.each([
+    ['flat', 'idb-describe-all-login-flat.json'],
+    ['nested', 'idb-describe-all-login-nested.json'],
+  ])('reads the %s format as legacy and not truncated', (_name, file) => {
+    const read = parseIdbDescribeAll(fixture(file));
+
+    expect(read.format).toBe('legacy');
+    expect(read.truncated).toBe(false);
+    expect(read.backend).toBeUndefined();
+    expect(read.hierarchy).toStrictEqual(parseIdbHierarchy(fixture(file)));
+  });
+
+  it('reads output that is not JSON as invalid', () => {
+    expect(parseIdbDescribeAll('oops')).toMatchObject({
+      format: 'invalid',
+      truncated: false,
+      hierarchy: [{ type: 'raw', label: 'oops' }],
+    });
+  });
+
+  it.each(['null', '42', '"text"', 'true'])(
+    'reads a JSON root that is neither an array nor an object (%s) as invalid',
+    (raw) => {
+      expect(parseIdbDescribeAll(raw)).toStrictEqual({
+        hierarchy: [
+          {
+            type: 'raw',
+            label: raw,
+            frame: { x: 0, y: 0, width: 0, height: 0 },
+            enabled: true,
+          },
+        ],
+        format: 'invalid',
+        truncated: false,
+      });
+    },
+  );
+
+  it('reads a document with backend null as complete, without a backend', () => {
+    const document = JSON.parse(
+      fixture('idb-describe-all-login-complete.json'),
+    ) as Record<string, unknown>;
+
+    expect(
+      parseIdbDescribeAll(
+        JSON.stringify({ ...document, backend: null, truncated: true }),
+      ),
+    ).toStrictEqual({
+      hierarchy: nested,
+      format: 'complete',
+      truncated: true,
+    });
+  });
+
+  it.each([
+    ['missing', {}],
+    ['null', { elements: null }],
+  ])(
+    'reads a document whose elements are %s as complete and empty',
+    (_name, elements) => {
+      expect(
+        parseIdbDescribeAll(
+          JSON.stringify({ backend: 'ax', truncated: false, ...elements }),
+        ),
+      ).toStrictEqual({
+        hierarchy: [],
+        format: 'complete',
+        truncated: false,
+        backend: 'ax',
+      });
+    },
+  );
 
   it('preserves tree shape and maps both formats identically in pre-order', () => {
     expect(flat.every((el) => el.children === undefined)).toBe(true);
@@ -2268,6 +2379,286 @@ describe('IdbBackend.snapshot accessibility backend selection', () => {
     expect(hierarchy[0].children?.[0].identifier).toBe('log-in-button');
     expect(hierarchy[0].children?.[0].children).toBeUndefined();
   });
+
+  describe('--format complete', () => {
+    // Three levels: Application > Other > Button.
+    const tree = [
+      {
+        type: 'Application',
+        label: 'MetaMask',
+        frame: { x: 0, y: 0, width: 402, height: 874 },
+        children: [
+          {
+            type: 'Other',
+            frame: { x: 0, y: 0, width: 402, height: 874 },
+            children: [
+              {
+                type: 'Button',
+                label: 'Unlock',
+                identifier: 'log-in-button',
+                frame: { x: 24, y: 396, width: 354, height: 48 },
+                children: [],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const document = (truncated: boolean, servedBy = 'axbridge-exclusive') =>
+      JSON.stringify({
+        backend: servedBy,
+        elements: tree,
+        modal: null,
+        screen: { width: 402, height: 874 },
+        target: { kind: 'frontmost' },
+        truncated,
+      });
+
+    const describeCalls = (): string[][] =>
+      mockExecStrict.mock.calls
+        .filter(([, args]) => args?.[1] === 'describe-all')
+        .map(([, args]) => args);
+
+    beforeEach(() => {
+      mockSupportsApi.mockResolvedValue(false);
+      mockSupportsNested.mockResolvedValue(true);
+      mockSupportsComplete.mockResolvedValue(true);
+    });
+
+    afterEach(() => {
+      mockSupportsComplete.mockResolvedValue(false);
+    });
+
+    it('requests --format complete instead of --nested', async () => {
+      mockExecStrict.mockResolvedValue(document(false));
+
+      await backend.snapshot();
+
+      expect(describeCalls()).toStrictEqual([
+        describeArgs(['--format', 'complete']),
+      ]);
+    });
+
+    it('passes --format complete with every --api attempt and the ax supplement', async () => {
+      mockSupportsApi.mockResolvedValue(true);
+      mockChooseAxApi.mockReturnValue('axbridge');
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.includes('describe') && args?.includes('--json')) {
+          return JSON.stringify({ os_version: '26.1', name: 'iPhone' });
+        }
+        if (args?.includes('axbridge')) {
+          throw new Error('axbridge backend requested accessibility failed');
+        }
+        return document(false, 'ax');
+      });
+
+      await backend.snapshot();
+
+      expect(describeCalls()).toStrictEqual(
+        expect.arrayContaining([
+          describeArgs(['--api', 'axbridge', '--format', 'complete']),
+          describeArgs(['--api', 'ax', '--format', 'complete']),
+        ]),
+      );
+      expect(describeCalls().every((args) => !args.includes('--nested'))).toBe(
+        true,
+      );
+    });
+
+    it('returns the nested tree and the raw document, without warnings', async () => {
+      const raw = document(false);
+      mockExecStrict.mockResolvedValue(raw);
+
+      const result = await backend.snapshot();
+
+      expect(result.raw).toBe(raw);
+      expect(result.hierarchy).toStrictEqual(
+        parseIdbHierarchy(JSON.stringify(tree)),
+      );
+      expect(result.hierarchy[0].children?.[0].children?.[0].identifier).toBe(
+        'log-in-button',
+      );
+      expect(result).not.toHaveProperty('warnings');
+    });
+
+    it('warns when the companion truncated the tree', async () => {
+      mockExecStrict.mockResolvedValue(document(true));
+
+      const result = await backend.snapshot();
+
+      expect(result.warnings).toStrictEqual([
+        'ax-tree-truncated(backend=axbridge-exclusive,depth=3,nodes=3)',
+      ]);
+      expect(result.hierarchy).toStrictEqual(
+        parseIdbHierarchy(JSON.stringify(tree)),
+      );
+    });
+
+    it('measures the warning on the read, not on the ax supplement', async () => {
+      mockSupportsApi.mockResolvedValue(true);
+      mockChooseAxApi.mockReturnValue('axbridge');
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.includes('describe') && args?.includes('--json')) {
+          return JSON.stringify({ os_version: '27.0', name: 'iPhone' });
+        }
+        if (args?.includes('axbridge')) {
+          return document(true);
+        }
+        return JSON.stringify({
+          backend: 'ax',
+          truncated: false,
+          elements: [
+            {
+              type: 'Button',
+              identifier: 'extra-button',
+              frame: { x: 1, y: 1, width: 10, height: 10 },
+            },
+          ],
+        });
+      });
+
+      const result = await backend.snapshot();
+
+      expect(
+        findElement(result.hierarchy, { identifier: 'extra-button' }),
+      ).not.toBeNull();
+      expect(result.warnings).toStrictEqual([
+        'ax-tree-truncated(backend=axbridge-exclusive,depth=3,nodes=3)',
+      ]);
+    });
+
+    it('reports backend=ax when the ax fallback serves a truncated read', async () => {
+      mockSupportsApi.mockResolvedValue(true);
+      mockChooseAxApi.mockReturnValue('axbridge');
+      mockExecStrict.mockImplementation(async (_cmd, args) => {
+        if (args?.includes('describe') && args?.includes('--json')) {
+          return JSON.stringify({ os_version: '27.0', name: 'iPhone' });
+        }
+        if (args?.includes('axbridge')) {
+          throw new Error('axbridge backend requested accessibility failed');
+        }
+        return document(true, 'ax');
+      });
+
+      const result = await backend.snapshot();
+
+      expect(result.warnings).toStrictEqual([
+        'ax-tree-truncated(backend=ax,depth=3,nodes=3)',
+      ]);
+      expect(result.hierarchy).toStrictEqual(
+        parseIdbHierarchy(JSON.stringify(tree)),
+      );
+    });
+
+    it.each([
+      ['empty', ''],
+      ['null', null],
+    ])(
+      'leaves out a backend that is %s and keeps --format complete',
+      async (_name, servedBy) => {
+        mockExecStrict.mockResolvedValue(
+          JSON.stringify({
+            backend: servedBy,
+            elements: tree,
+            truncated: true,
+          }),
+        );
+
+        const result = await backend.snapshot();
+        await backend.snapshot();
+
+        expect(result.warnings).toStrictEqual([
+          'ax-tree-truncated(depth=3,nodes=3)',
+        ]);
+        expect(describeCalls()).toStrictEqual([
+          describeArgs(['--format', 'complete']),
+          describeArgs(['--format', 'complete']),
+        ]);
+      },
+    );
+
+    it('falls back to --nested for good when the companion ignores --format complete', async () => {
+      // A companion that predates format selection answers with a flat tree.
+      const flat = JSON.stringify([
+        { type: 'Application', frame: { x: 0, y: 0, width: 402, height: 874 } },
+      ]);
+      const nested = JSON.stringify(tree);
+      mockExecStrict.mockImplementation(async (_cmd, args) =>
+        args?.includes('--format') ? flat : nested,
+      );
+
+      const first = await backend.snapshot();
+      const second = await backend.snapshot();
+
+      expect(describeCalls()).toStrictEqual([
+        describeArgs(['--format', 'complete']),
+        describeArgs(['--nested']),
+        describeArgs(['--nested']),
+      ]);
+      for (const result of [first, second]) {
+        expect(result.raw).toBe(nested);
+        expect(result.hierarchy).toStrictEqual(parseIdbHierarchy(nested));
+        expect(result).not.toHaveProperty('warnings');
+      }
+    });
+
+    it.each(['not json', 'null'])(
+      'keeps requesting --format complete after the output %s',
+      async (first) => {
+        mockExecStrict.mockResolvedValueOnce(first);
+        mockExecStrict.mockResolvedValue(document(false));
+
+        await backend.snapshot();
+        await backend.snapshot();
+
+        expect(describeCalls()).toStrictEqual([
+          describeArgs(['--format', 'complete']),
+          describeArgs(['--format', 'complete']),
+        ]);
+      },
+    );
+  });
+
+  it.each([
+    ['no --format complete, --nested', true, ['--nested']],
+    ['no --format complete, no --nested', false, []],
+  ])(
+    'keeps the output of an idb without --format complete (%s)',
+    async (_name, nestedSupported, extra) => {
+      mockSupportsApi.mockResolvedValue(false);
+      mockSupportsNested.mockResolvedValue(nestedSupported);
+      mockSupportsComplete.mockResolvedValue(false);
+      const raw = JSON.stringify([
+        {
+          type: 'Application',
+          AXLabel: 'MetaMask',
+          frame: { x: 0, y: 0, width: 402, height: 874 },
+          children: [
+            {
+              type: 'Button',
+              AXUniqueId: 'log-in-button',
+              frame: { x: 24, y: 396, width: 354, height: 48 },
+            },
+          ],
+        },
+      ]);
+      mockExecStrict.mockResolvedValue(raw);
+
+      const result = await backend.snapshot();
+
+      expect(mockExecStrict).toHaveBeenCalledExactlyOnceWith(
+        '/usr/local/bin/idb',
+        describeArgs(extra),
+        connectionOptions,
+      );
+      expect(result).toStrictEqual({
+        platform: 'ios',
+        hierarchy: parseIdbHierarchy(raw),
+        raw,
+        timestamp: expect.any(Number),
+      });
+    },
+  );
 
   describe('ax supplement for axbridge', () => {
     const node = (

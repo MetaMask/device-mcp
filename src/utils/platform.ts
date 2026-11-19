@@ -218,6 +218,22 @@ export async function idbSupportsNestedDescribe(
   return help === null ? false : /(?:^|[\s[])--nested(?=[\s\]]|$)/mu.test(help);
 }
 
+/**
+ * Probe support for the consolidated document
+ * (`describe-all --format complete`), which also reports truncation.
+ *
+ * @param idbPath - The `idb` executable to probe.
+ * @returns True when `--format` lists `complete`.
+ */
+export async function idbSupportsCompleteDescribe(
+  idbPath: string,
+): Promise<boolean> {
+  const help = await readDescribeAllHelp(idbPath);
+  return help === null
+    ? false
+    : /(?:^|[\s[])--format \{[^}]*\bcomplete\b[^}]*\}/mu.test(help);
+}
+
 const pendingHelpReads = new Map<string, Promise<string | null>>();
 
 /**
