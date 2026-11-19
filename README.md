@@ -236,6 +236,8 @@ Elements are identified by accessibility attributes — not internal refs. Match
 
 ¹ `enter` sends HID key 40 (Return); `home` and `lock` use `idb ui button HOME|LOCK`. iOS has no back button, so `back` fails with `UNSUPPORTED_ON_IOS`. `device_type` clears the focused field first with Command+A (`idb ui key 4 --command`) and Backspace (`idb ui key 42`).
 
+On the IDB backend, when the idb client supports `idb ui describe-all --format complete`, `SnapshotResult` also reports `warnings` when the read is incomplete. Today the only warning is `ax-tree-truncated(backend=<name>,depth=<n>,nodes=<n>)`: the idb companion stopped the accessibility read at its size bound, so elements on screen can be missing from `hierarchy`. `backend` is the idb backend that served the read (left out when idb names none), and `depth` and `nodes` are the deepest level and the element count of the tree that came back. `device_snapshot` prints the warnings on a `Warnings:` line. `warnings` is absent when there are none. With such a client, `raw` is the `--format complete` document (`{ backend, truncated, elements, … }`) instead of the tree array.
+
 #### Android snapshot on continuously-redrawing screens
 
 `uiautomator dump` calls `UiAutomation.waitForIdle` internally, which never
@@ -323,7 +325,8 @@ The `device-mcp` MCP server CLI passes no option, so it uses
 
 On the ADB backend, each `SnapshotResult` also reports `source` (`'dump'` or
 `'instrument'`, the path that produced the tree) and `captureMs` (the capture
-time, including failed attempts and fallbacks).
+time, including failed attempts and fallbacks). For the iOS `warnings` field,
+see [Backend Implementation](#backend-implementation).
 
 The helper is a `testOnly` APK installed with `adb install -t`, so it only
 installs on developer emulators/attached devices, never on locked-down or

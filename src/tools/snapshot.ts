@@ -30,6 +30,9 @@ export function registerSnapshotTool(
               text: [
                 `Platform: ${result.platform}`,
                 `Timestamp: ${new Date(result.timestamp).toISOString()}`,
+                ...(result.warnings?.length
+                  ? [`Warnings: ${result.warnings.join('; ')}`]
+                  : []),
                 `Elements:`,
                 formatted,
               ].join('\n'),

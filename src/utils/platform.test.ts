@@ -6,6 +6,7 @@ import {
   detectAllDevices,
   detectPlatform,
   idbSupportsApiSelection,
+  idbSupportsCompleteDescribe,
   idbSupportsNestedDescribe,
   resolveIdbPath,
   MultipleDevicesError,
@@ -847,6 +848,62 @@ describe('idbSupportsNestedDescribe', () => {
     expect(api).toBe(true);
     expect(nested).toBe(true);
     expect(mockExec).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('idbSupportsCompleteDescribe', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it.each([
+    {
+      name: 'unified client',
+      stdout: [
+        'usage: idb ui describe-all [-h] [--udid UDID] [--nested]',
+        '                           [--format {default,nested,complete}]',
+        '  --format {default,nested,complete}',
+      ].join('\n'),
+      exitCode: 0,
+      supported: true,
+    },
+    {
+      name: 'no complete value',
+      stdout: '[--format {default,nested}] [--nested]',
+      exitCode: 0,
+      supported: false,
+    },
+    {
+      name: 'complete outside --format',
+      stdout: '[--nested]\n  a complete description of the screen',
+      exitCode: 0,
+      supported: false,
+    },
+    {
+      name: 'no --format',
+      stdout: 'usage: idb ui describe-all [--udid UDID] [--nested]',
+      exitCode: 0,
+      supported: false,
+    },
+    {
+      name: 'non-zero exit',
+      stdout: '[--format {default,nested,complete}]',
+      exitCode: 2,
+      supported: false,
+    },
+  ])(
+    'detects --format complete support: $name',
+    async ({ stdout, exitCode, supported }) => {
+      mockExec.mockResolvedValue({ stdout, stderr: '', exitCode });
+
+      expect(await idbSupportsCompleteDescribe('idb')).toBe(supported);
+    },
+  );
+
+  it('is false when the help probe fails', async () => {
+    mockExec.mockRejectedValue(new Error('ENOENT'));
+
+    expect(await idbSupportsCompleteDescribe('/bad/idb')).toBe(false);
   });
 });
 
