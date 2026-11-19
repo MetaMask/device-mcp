@@ -82,8 +82,10 @@ export type HermesClientReconnectOptions = {
   maxAttempts?: number;
   /**
    * Connect timeout for automatic reconnect attempts, in milliseconds
-   * (default 10 s). Per-call `timeoutMs` values only apply to the call's own
-   * connect, so a short call timeout never shortens later reconnect attempts.
+   * (default 10 s). Per-call `timeoutMs` values never shorten a reconnect
+   * attempt: an attempt that finds a caller's connect in flight waits for it
+   * (so no second socket opens) and, if it fails, then runs its own connect
+   * with this full timeout.
    */
   connectTimeoutMs?: number;
 };
@@ -159,9 +161,25 @@ export type HermesConnectResult =
  * Options for {@link HermesClient.send}.
  */
 export type HermesSendOptions = {
-  /** Per-call timeout in milliseconds. */
+  /**
+   * Per-phase timeout in milliseconds. It bounds each phase of the call on its
+   * own, not their sum:
+   * - Connect, when the client is not connected. If this call starts the
+   *   connect, each connect step (discovery, socket open, identity probe) gets
+   *   `timeoutMs`, as in `runHermesCdp`. If a connect is already in
+   *   flight (another call's, or a background reconnect attempt), this call
+   *   waits for it at most `timeoutMs`, then fails with `HERMES_TIMEOUT`; the
+   *   shared connect keeps running for the others.
+   * - Response: once connected, the CDP response gets `timeoutMs`.
+   *
+   * So a call that has to connect can take longer than `timeoutMs`. To bound
+   * the total time, pass `signal: AbortSignal.timeout(n)`.
+   */
   timeoutMs: number;
-  /** Aborts the call; the pending response is discarded. */
+  /**
+   * Aborts the call, including its wait for a connect; the pending response is
+   * discarded. `AbortSignal.timeout(n)` bounds the total time of the call.
+   */
   signal?: AbortSignal;
 };
 
@@ -446,8 +464,11 @@ export class HermesClient {
    *
    * Idempotent: when already connected it resolves with the current target, and
    * concurrent callers share one in-flight connect (one discovery fetch, one
-   * socket, one identity probe). Emits `contextCreated` on success, with
-   * `reason: 'reconnect'` when the previous connection was lost unexpectedly.
+   * socket, one identity probe). A caller that joins a connect already in
+   * flight waits for it at most its own `timeoutMs`, then gets
+   * `HERMES_TIMEOUT` while the connect keeps running. Emits `contextCreated`
+   * on success, with `reason: 'reconnect'` when the previous connection was
+   * lost unexpectedly.
    * A client closed with {@link close} reopens.
    *
    * A connect never stops the background reconnect loop. When it fails while
@@ -467,6 +488,14 @@ export class HermesClient {
       return { ok: true, target: this.#target };
     }
 
+    const joined = this.#inFlightConnect;
+    if (joined) {
+      // Another caller or the reconnect loop owns this connect and its
+      // timeouts: wait for it at most this call's own timeout. It keeps running
+      // for the others when this call stops waiting.
+      return await waitAtMost(joined, timeoutMs);
+    }
+
     // Read before connecting: a failure that ends the loop's own last attempt
     // (which this call may share) must not restart the loop it just stopped.
     const loopStopped = !this.#reconnectRunning;
@@ -480,10 +509,12 @@ export class HermesClient {
   /**
    * Sends one CDP method over the persistent socket and awaits its response.
    *
-   * Connects first when needed. Many calls can be in flight: responses are
-   * matched by CDP `id`. On timeout the call fails with `HERMES_TIMEOUT`; on
-   * abort with `HERMES_ABORTED`. Both remove the pending entry, so a late
-   * response is ignored. A CDP-level error becomes `HERMES_CDP_FAILED`.
+   * Connects first when needed; see {@link HermesSendOptions.timeoutMs} for how
+   * the timeout applies to the connect and the response. Many calls can be in
+   * flight: responses are matched by CDP `id`. On timeout the call fails with
+   * `HERMES_TIMEOUT`; on abort with `HERMES_ABORTED`. Both remove the pending
+   * entry, so a late response is ignored. A CDP-level error becomes
+   * `HERMES_CDP_FAILED`.
    *
    * @param method - The CDP method, e.g. `Runtime.evaluate`.
    * @param params - The CDP parameters.
@@ -1261,6 +1292,25 @@ export class HermesClient {
     }
     const generation = this.#reconnectGeneration;
     try {
+      // A caller's connect is already in flight, with the caller's (possibly
+      // shorter) timeouts. Wait for it instead of opening a second socket; if
+      // it fails, this attempt then runs its own connect with the full
+      // `connectTimeoutMs`.
+      let callerConnect = this.#inFlightConnect;
+      while (callerConnect) {
+        await callerConnect;
+        if (
+          this.#explicitlyClosed ||
+          generation !== this.#reconnectGeneration
+        ) {
+          return;
+        }
+        if (this.isConnected) {
+          this.#resetReconnect();
+          return;
+        }
+        callerConnect = this.#inFlightConnect;
+      }
       const result = await this.#connectOnce(
         this.#reconnect.connectTimeoutMs,
         this.#reconnectAttempt,
@@ -1421,6 +1471,37 @@ function closedDuringConnectResult(): HermesFailureResult {
     code: HERMES_CONNECTION_FAILED,
     message: `${CLIENT_CLOSED_MESSAGE} before the connection completed`,
   };
+}
+
+/**
+ * Waits for a shared connect at most `timeoutMs`. The connect itself keeps
+ * running; only this wait stops.
+ *
+ * @param connecting - The shared in-flight connect.
+ * @param timeoutMs - The longest this caller waits, in milliseconds.
+ * @returns The connect result, or `HERMES_TIMEOUT` when the wait ran out first.
+ */
+async function waitAtMost(
+  connecting: Promise<HermesConnectResult>,
+  timeoutMs: number,
+): Promise<HermesConnectResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<HermesFailureResult>((resolve) => {
+    timer = setTimeout(() => {
+      resolve({
+        ok: false,
+        code: HERMES_TIMEOUT,
+        message: `Hermes CDP connect did not complete within ${timeoutMs}ms`,
+      });
+    }, timeoutMs);
+    unrefTimer(timer);
+  });
+
+  try {
+    return await Promise.race([connecting, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

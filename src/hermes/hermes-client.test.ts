@@ -1318,6 +1318,180 @@ describe('HermesClient', () => {
     client.close();
   });
 
+  it('bounds a send that joins a background reconnect attempt by its own timeout', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: {
+        initialDelayMs: 10,
+        maxDelayMs: 10,
+        maxAttempts: 3,
+        connectTimeoutMs: 10_000,
+      },
+    });
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    // Metro is slow to answer: the background attempt's discovery hangs.
+    let resolveDiscovery!: (value: unknown) => void;
+    fetchMock = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          resolveDiscovery = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    let settledAt: number | undefined;
+    const startedAt = Date.now();
+    const sending = client
+      .send('Runtime.evaluate', undefined, { timeoutMs: 1_000 })
+      .then((result) => {
+        settledAt = Date.now() - startedAt;
+        return result;
+      });
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(settledAt).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+
+    const result = await sending;
+    expectError(result, HERMES_TIMEOUT);
+    expect(settledAt).toBe(1_000);
+    // The send joined the attempt: no discovery or socket of its own.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The background attempt keeps running and succeeds later, within its own
+    // 10 s budget.
+    await vi.advanceTimersByTimeAsync(4_000);
+    resolveDiscovery({ ok: true, json: vi.fn().mockResolvedValue([target()]) });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.isConnected).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({ reason: 'reconnect' });
+
+    client.close();
+  });
+
+  it('gives a background attempt its full connectTimeoutMs after a short caller connect fails', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: {
+        initialDelayMs: 100,
+        maxDelayMs: 100,
+        maxAttempts: 1,
+        connectTimeoutMs: 10_000,
+      },
+    });
+    const created: HermesContextCreatedEvent[] = [];
+    const failed = vi.fn();
+    client.on('contextCreated', (event) => created.push(event));
+    client.on('reconnectFailed', failed);
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    // Discovery hangs until it is aborted; record each abort time.
+    const resolvers: ((value: unknown) => void)[] = [];
+    const abortedAt: number[] = [];
+    const startedAt = Date.now();
+    fetchMock = vi.fn(
+      async (_url: string, init?: { signal?: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          resolvers.push(resolve);
+          init?.signal?.addEventListener('abort', () => {
+            abortedAt.push(Date.now() - startedAt);
+            reject(new Error('discovery aborted'));
+          });
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    // A caller starts a short connect before the background attempt fires.
+    const sending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 200,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The background attempt fires at 100 ms and meets the caller's connect.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The caller's connect gives up at 200 ms per discovery path.
+    await vi.advanceTimersByTimeAsync(300);
+    expectError(await sending, HERMES_CONNECTION_FAILED);
+    expect(abortedAt).toStrictEqual([200, 400]);
+
+    // The attempt then runs its own connect: its discovery is not aborted at
+    // the caller's 200 ms, only at its own 10 s.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(abortedAt).toStrictEqual([200, 400]);
+    expect(failed).not.toHaveBeenCalled();
+
+    resolvers[2]?.({ ok: true, json: vi.fn().mockResolvedValue([target()]) });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.isConnected).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({ reason: 'reconnect' });
+    expect(failed).not.toHaveBeenCalled();
+
+    client.close();
+  });
+
+  it('opens one socket when a background attempt meets a caller connect that succeeds', async () => {
+    vi.useFakeTimers();
+    const client = createClient({
+      reconnect: { initialDelayMs: 100, maxDelayMs: 100, maxAttempts: 3 },
+    });
+    const created: HermesContextCreatedEvent[] = [];
+    client.on('contextCreated', (event) => created.push(event));
+
+    const connecting = client.connect({ timeoutMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await connecting).ok).toBe(true);
+
+    let resolveDiscovery!: (value: unknown) => void;
+    fetchMock = vi.fn(
+      async () =>
+        new Promise((resolve) => {
+          resolveDiscovery = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    socketAt(0).drop('metro restart');
+
+    const sending = client.send('Runtime.evaluate', undefined, {
+      timeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(150);
+    resolveDiscovery({ ok: true, json: vi.fn().mockResolvedValue([target()]) });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((await sending).ok).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(created).toHaveLength(2);
+    expect(created[1]).toMatchObject({ reason: 'reconnect' });
+
+    client.close();
+  });
+
   it('fails a send with HERMES_ABORTED while it is still connecting', async () => {
     fetchMock = vi.fn(async () => new Promise(() => undefined));
     vi.stubGlobal('fetch', fetchMock);
