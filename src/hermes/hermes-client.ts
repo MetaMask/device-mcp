@@ -1070,11 +1070,10 @@ export class HermesClient {
     if (!unpinned.ok) {
       return undefined;
     }
+    // Never the pinned device: the pinned selection is this selection filtered
+    // by the pin, and it found nothing.
     const deviceId =
       unpinned.target.reactNative?.logicalDeviceId ?? '<missing>';
-    if (deviceId === pinnedDeviceId) {
-      return undefined;
-    }
     return {
       ok: false,
       code: HERMES_DEVICE_PIN_MISMATCH,
