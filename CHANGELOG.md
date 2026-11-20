@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.0]
 
-### Uncategorized
+### Added
 
 - feat: HermesClient, a persistent Hermes CDP connection ([#54](https://github.com/MetaMask/device-mcp/pull/54))
 - feat: report truncated iOS accessibility trees as snapshot warnings ([#59](https://github.com/MetaMask/device-mcp/pull/59))
+
+### Fixed
+
 - fix: refuse Android taps on a covered target (TARGET_OBSCURED) ([#61](https://github.com/MetaMask/device-mcp/pull/61))
 - fix: adb empty typeText clears the field; verify dismissKeyboard ([#60](https://github.com/MetaMask/device-mcp/pull/60))
 
