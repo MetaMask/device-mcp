@@ -2850,6 +2850,16 @@ describe('IdbBackend keys and buttons', () => {
     );
   });
 
+  it('only clears the field for an empty string', async () => {
+    await backend.typeText('');
+
+    // `idb ui text ""` exits 1, so it is skipped like the ADB backend does.
+    expect(idbCalls()).toStrictEqual([
+      ['ui', 'key', '4', '--command', '--udid', udid],
+      ['ui', 'key', '42', '--udid', udid],
+    ]);
+  });
+
   it('presses Return to dismiss a visible keyboard', async () => {
     mockExecStrict.mockImplementation(async (_cmd, args) =>
       args?.[1] === 'describe-all' ? hierarchyWith(['Keyboard']) : '',

@@ -15,8 +15,8 @@ export function registerTypeTool(
       description:
         'Type text into the currently focused input field. ' +
         'Tap an input element first to focus it, then call this. ' +
-        'The field is cleared before typing on all backends. On Android ' +
-        '(adb), an empty string clears the field.',
+        'The field is cleared before typing on all backends. An empty ' +
+        'string only clears the field.',
       inputSchema: {
         text: z.string().describe('Text to type'),
       },
