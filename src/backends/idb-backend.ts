@@ -733,6 +733,10 @@ export class IdbBackend implements DeviceBackend {
    * strict execution so a failed clear rejects instead of appending to the
    * old value. On an empty field the two keys do nothing.
    *
+   * Empty text stops after the clear: `idb ui text ""` exits 1 with
+   * "Request was not sent", and the field is already empty. This matches the
+   * ADB backend.
+   *
    * @param text - The text to type.
    */
   async typeText(text: string): Promise<void> {
@@ -752,6 +756,9 @@ export class IdbBackend implements DeviceBackend {
       '--udid',
       this.#udid,
     ]);
+    if (text.length === 0) {
+      return;
+    }
     await this.#execStrict(this.#idbPath, [
       'ui',
       'text',
