@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0]
+
+### Fixed
+
+- fix: allow typing empty text on iOS ([#65](https://github.com/MetaMask/device-mcp/pull/65))
+
 ## [0.9.0]
 
 ### Added
@@ -131,7 +137,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.device-session` file for attaching to existing Appium sessions or creating new ones
 - 16 MCP tools: `device_snapshot`, `device_screenshot`, `device_info`, `device_tap_element`, `device_tap_coordinates`, `device_type`, `device_swipe`, `device_long_press`, `device_wait_for`, `device_app_state`, `device_open_app`, `device_close_app`, `device_press_button`, `device_dismiss_keyboard`, `device_dismiss_alert`, `device_logs`
 
-[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/MetaMask/device-mcp/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/MetaMask/device-mcp/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/MetaMask/device-mcp/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/MetaMask/device-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/MetaMask/device-mcp/compare/v0.6.0...v0.7.0
