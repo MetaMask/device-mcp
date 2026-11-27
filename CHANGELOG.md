@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.10.0]
 
-### Uncategorized
+### Fixed
 
 - fix: allow typing empty text on iOS ([#65](https://github.com/MetaMask/device-mcp/pull/65))
 
